@@ -705,8 +705,8 @@ StringRef StringRefOf(const char* s) {
 
 void SimulationConfig::generateNormalConfig(int minimumReplication) {
 	set_config("new");
-	bool generateFearless = g_random->random01() < 0.5;
-	datacenters = generateFearless ? ( minimumReplication > 0 || g_random->random01() < 0.5 ? 4 : 6 ) : g_random->randomInt( 1, 4 );
+	bool generateFearless =  g_random->random01() < 0.5; //false;
+	datacenters = generateFearless ? ( minimumReplication > 0 || g_random->random01() < 0.5 ? 4 : 6 ) : g_random->randomInt( 1, 4 ); //1
 	if (g_random->random01() < 0.25) db.desiredTLogCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.masterProxyCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.resolverCount = g_random->randomInt(1,7);
@@ -715,7 +715,12 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 	} else {
 		set_config("memory");
 	}
+	//db.desiredTLogCount = 1;
+	//db.masterProxyCount = 1;
+	//db.resolverCount = 1;
 
+	//replication_type= 1 means single replication
+	//int replication_type = 3;//For debug
 	int replication_type = std::max(minimumReplication, datacenters > 4 ? g_random->randomInt(1,3) : std::min(g_random->randomInt(0,6), 3));
 	switch (replication_type) {
 	case 0: {

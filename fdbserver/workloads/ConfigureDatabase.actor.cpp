@@ -28,6 +28,7 @@
 // "ssd" is an alias to the preferred type which skews the random distribution toward it but that's okay.
 static const char* storeTypes[] = { "ssd", "ssd-1", "ssd-2", "memory" };
 static const char* redundancies[] = { "single", "double", "triple" };
+//static const char* redundancies[] = { "single", "double" };
 
 struct ConfigureDatabaseWorkload : TestWorkload {
 	double testDuration;

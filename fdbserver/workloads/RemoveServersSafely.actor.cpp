@@ -230,9 +230,13 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 		std::vector<AddressExclusion> killableAddrs;
 		std::vector<ISimulator::ProcessInfo*>	killProcArray, killableProcesses, processesLeft, processesDead;
 
+		TraceEvent("ProtectServers").detail("Kill2Total", killAddrs.size()).detail("ToProtect", describe(killAddrs)).detail("Loc", 1);
 		// Get the list of processes matching network address
 		for (auto processInfo : getServers()) {
 			auto processNet = AddressExclusion(processInfo->address.ip, processInfo->address.port);
+			TraceEvent("ProtectServers").detail("Loc", 1).detail("ProcessInfo", processInfo->toString())
+					.detail("IsAvailable", processInfo->isAvailable()).detail("IsCleared", processInfo->isCleared())
+					.detail("NotInKillAddress", killAddrs.find(processNet) == killAddrs.end());
 			// Mark all of the unavailable as dead
 			if (!processInfo->isAvailable() || processInfo->isCleared())
 				processesDead.push_back(processInfo);
@@ -243,15 +247,20 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 				killProcArray.push_back(processInfo);
 		}
 
+		TraceEvent("ProtectServers").detail("Kill2Total", killAddrs.size()).detail("ToProtect", describe(killAddrs)).detail("Loc", 2);
 		// Identify the largest set of processes which can be killed
 		int	randomIndex;
 		bool bCanKillProcess;
 		ISimulator::ProcessInfo*	randomProcess;
+
+		//auto deadProcess = processesDead.back();//MX: processesDead may be empty. because all processes isCleared is 1 //MX: This may be a bug?
 		for (int killsLeft = killProcArray.size(); killsLeft > 0; killsLeft --)
 		{
 			// Select a random kill process
 			randomIndex = g_random->randomInt(0, killsLeft);
+			TraceEvent("ProtectServers").detail("Loc", 2).detail("KillsLeft", killsLeft).detail("RandomIndex", randomIndex);
 			randomProcess = killProcArray[randomIndex];
+			TraceEvent("ProtectServers").detail("Loc", 2).detail("KillsLeft", killsLeft).detail("RandomProcessInfo", randomProcess->toString());
 			processesDead.push_back(randomProcess);
 			killProcArray[randomIndex] = killProcArray.back();
 			killProcArray.pop_back();
@@ -268,7 +277,7 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 				killableProcesses.push_back(randomProcess);
 				killableAddrs.push_back(AddressExclusion(randomProcess->address.ip, randomProcess->address.port));
 				TraceEvent("RemoveAndKill").detail("Step", "identifyVictim")
-					.detail("VictimCount", killableAddrs.size()).detail("Victim",randomProcess->toString())
+					.detail("VictimCount", killableAddrs.size()).detail("Victim", randomProcess->toString())
 					.detail("Victims", describe(killableAddrs));
 			}
 			// Move the process to the keep array
@@ -277,6 +286,7 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 				processesDead.pop_back();
 			}
 		}
+		TraceEvent("ProtectServers").detail("Kill2Total", killAddrs.size()).detail("ToProtect", describe(killAddrs)).detail("Loc", 3);
 
 		return killableProcesses;
 	}
