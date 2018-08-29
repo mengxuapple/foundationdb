@@ -24,6 +24,7 @@
 
 #include "flow/flow.h"
 
+//MX: Define the type of nodes. Master, Storage, etc.
 struct ProcessClass {
 	// This enum is stored in restartInfo.ini for upgrade tests, so be very careful about changing the existing items!
 	enum ClassType { UnsetClass, StorageClass, TransactionClass, ResolutionClass, TesterClass, ProxyClass, MasterClass, StatelessClass, LogClass, ClusterControllerClass, LogRouterClass, InvalidClass = -1 };
@@ -160,10 +161,13 @@ public:
 
 	std::string describeZone() const { return describeValue(keyZoneId); }
 	std::string describeDataHall() const { return describeValue(keyDataHallId); }
+	std::string describeDcId() const { return describeValue(keyDcId); }
+	std::string describeMachineId() const { return describeValue(keyMachineId); }
+	std::string describeProcessId() const { return describeValue(keyProcessId); }
 
 	Optional<Standalone<StringRef>> processId() const { return get(keyProcessId); }
 	Optional<Standalone<StringRef>> zoneId() const { return get(keyZoneId); }
-	Optional<Standalone<StringRef>> machineId() const { return get(keyMachineId); }
+	Optional<Standalone<StringRef>> machineId() const { return get(keyMachineId); } //default is ""
 	Optional<Standalone<StringRef>> dcId() const { return get(keyDcId); }
 	Optional<Standalone<StringRef>> dataHallId() const { return get(keyDataHallId); }
 
