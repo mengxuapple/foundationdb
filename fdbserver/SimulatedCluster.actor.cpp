@@ -715,7 +715,12 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 	} else {
 		set_config("memory");
 	}
+	//db.desiredTLogCount = 1;
+	//db.masterProxyCount = 1;
+	//db.resolverCount = 1;
 
+	//replication_type= 1 means single replication
+	//int replication_type = 3;//For debug
 	int replication_type = std::max(minimumReplication, datacenters > 4 ? g_random->randomInt(1,3) : std::min(g_random->randomInt(0,6), 3));
 	switch (replication_type) {
 	case 0: {
