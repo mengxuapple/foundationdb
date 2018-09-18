@@ -241,7 +241,16 @@ public:
 		return v;
 	}
 	virtual int size() { return servers.size(); }
+
 	virtual vector<UID> const& getServerIDs() { return serverIDs; }
+	virtual std::string getServerIDsStr() {
+		std::string str = "";
+		for ( auto &id : serverIDs ) {
+			str += id.toString() + ";";
+		}
+		return str;
+	}
+
 	virtual void addDataInFlightToTeam( int64_t delta ) {
 		for(int i=0; i<servers.size(); i++)
 			servers[i]->dataInFlightToServer += delta;
@@ -1423,10 +1432,38 @@ struct DDTeamCollection {
 		return totalServerIndex;
 	}
 
+	void traceServerInfo() {
+		TraceEvent("ServerInfo").detail("Size", server_info.size());
+
+		//return;//Debug timeout problem
+
+		int i = 0;
+		for ( auto &server : server_info ) {
+			UID const &uid = server.first;
+			TraceEvent("ServerInfo").detail("ServerInfoIndex", i++)
+					.detail("ServerID", server.first.toString())
+					.detail("ServerTeamOwned", server.second->teams.size());
+			TraceEvent("ServerStatus", uid).detail("Healthy", !server_status.get(uid).isUnhealthy())
+					.detail("MachineIsValid", server_info[uid]->machine.isValid())
+					.detail("MachineTeamSize", server_info[uid]->machine.isValid() ? server_info[uid]->machine->machineTeams.size() : -1);
+		}
+	}
+
+	void traceServerTeamInfo() {
+		TraceEvent("ServerTeamInfo").detail("Size", teams.size());
+
+		int i = 0;
+		for ( auto &team : teams ) {
+			TraceEvent("ServerTeamInfo").detail("TeamIndex", i++)
+				.detail("MemberIDs", team->getServerIDsStr());
+		}
+	}
+
+
 	void traceMachineInfo() {
 		TraceEvent("MachineInfo").detail("Size", machine_info.size());
 
-		return;//Debug timeout problem
+		//return;//Debug timeout problem
 
 		int i = 0;
 		for ( auto &machine: machine_info ) {
@@ -1446,27 +1483,10 @@ struct DDTeamCollection {
 		}
 	}
 
-	void traceServerInfo() {
-		TraceEvent("ServerInfo").detail("Size", server_info.size());
-
-		return;//Debug timeout problem
-
-		int i = 0;
-		for ( auto &server: server_info ) {
-			UID const &uid = server.first;
-			TraceEvent("ServerInfo").detail("ServerInfoIndex", i++)
-					.detail("ServerID", server.first.toString())
-					.detail("ServerTeamOwned", server.second->teams.size());
-			TraceEvent("ServerStatus", uid).detail("Healthy", !server_status.get(uid).isUnhealthy())
-					.detail("MachineIsValid", server_info[uid]->machine.isValid())
-					.detail("MachineTeamSize", server_info[uid]->machine.isValid() ? server_info[uid]->machine->machineTeams.size() : -1);
-		}
-	}
-
 	void traceMachineLocalityMap() {
 		TraceEvent("MachineLocalityMap").detail("Size", machineLocalityMap.size());
 
-		return;//Debug timeout problem
+		//return;//Debug timeout problem
 
 		int i = 0;
 		for ( auto &uid: machineLocalityMap.getObjects() ) {
@@ -1501,7 +1521,7 @@ struct DDTeamCollection {
 		TraceEvent("RebuildMachineLocalityMap").detail("NumHealthyMachine", numHealthyMachine);
 	}
 
-	int isMachineHealthy(Reference<TCMachineInfo> machine) {
+	int isMachineHealthy( Reference<TCMachineInfo> machine ) {
 		 assert(machine.isValid());
 		 for ( auto &server : machine->serversOnMachine ) {
 		 	if ( !server_status.get(server->id).isUnhealthy() )
@@ -1510,6 +1530,38 @@ struct DDTeamCollection {
 		 return false;
 	}
 
+	/**
+	 * Does there exist a server on the machine that has no larger than  DESIRED_TEAMS_PER_SERVER
+	 * @param machine to be checked
+	 * @return true if yes; and false otherwise
+	 */
+	int isMachineAvailable( Reference<TCMachineInfo> machine ) {
+		assert( machine.isValid() );
+		int numFullServers = 0; // Number of fully utilized servers which have max. team number
+		for ( auto &server : machine->serversOnMachine ) {
+			if ( server->teams.size() >=  SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER )
+				++numFullServers;
+		}
+		if ( numFullServers == machine->serversOnMachine.size() )
+			return false;
+		else
+			return true;
+	}
+
+	/**
+	 * Are ALL machines in the machineTeam available?
+	 * @param machineTeam to be checked
+	 * @return true if yes; and false otherwise
+	 */
+	int isMachineTeamAvailable( Reference<TCMachineTeamInfo> machineTeam ) {
+		assert( machineTeam.isValid() );
+		for ( auto &machine : machineTeam->machines ) {
+			if ( !isMachineAvailable(machine) )
+				return false;
+		}
+
+		return true;
+	}
 
 	/**
 	 * Create machineTeamsToBuild number of machine teams
@@ -1527,6 +1579,7 @@ struct DDTeamCollection {
 		int machineTeamsToBuild = 0;
 		machineTeamsToBuild = machine_info.size() * SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER; // must after constructMachinesFromServers();
 		//machineTeamsToBuild = 2; //TODO: Test! Set machine team number = 2
+		machineTeamsToBuild = machineTeamsToBuild - machineTeams.size();
 
 		// Trace global information to help debug
 		TraceEvent("AddAllMachineTeams")
@@ -1564,6 +1617,8 @@ struct DDTeamCollection {
 					continue;
 				//skip unhealthy machines
 				if ( !isMachineHealthy(machine.second) )
+					continue;
+				if ( !isMachineAvailable(machine.second) )
 					continue;
 
 				int teamCount = machine.second->machineTeams.size();
@@ -1603,7 +1658,7 @@ struct DDTeamCollection {
 			std::vector<UID*> bestTeam;
 			int bestScore = std::numeric_limits<int>::max();
 			int maxAttempts = SERVER_KNOBS->BEST_OF_AMT;// BEST_OF_AMT = 4
-			for( int i = 0; i < maxAttempts && i < 100; i++) {
+			for ( int i = 0; i < maxAttempts && i < 100; i++) {
 				// Choose a team that balances the # of teams per server, among the teams that have the least-utilized server
 				team.clear();
 				//MX: We first choose a server with least utilization; we then choose a team that must include the least used server
@@ -1612,10 +1667,10 @@ struct DDTeamCollection {
 				//printf("addBestMachineTeams: call selectReplicas() at attempt:%d\n", i);
 				auto success = machineLocalityMap.selectReplicas(configuration.storagePolicy, forcedAttributes, team);
 				//printf("addBestMachineTeams: selectReplicas() success:%d at attempt:%d\n", success, i);
-				if(!success) {
+				if ( !success ) {
 					break;//MX: re-select the forcedAtrributes server
 				}
-				if(forcedAttributes.size() > 0) {
+				if ( forcedAttributes.size() > 0 ) {
 					team.push_back((UID*)machineLocalityMap.getObject(forcedAttributes[0]));
 				}
 
@@ -1626,10 +1681,13 @@ struct DDTeamCollection {
 					if ( server_info.find(*pUID) == server_info.end() ) {
 						TraceEvent("AddMachineTeamsBestOf").detail("AddedMachineTeams", addedMachineTeams)
 								.detail("Attempt", i).detail("ServerInfoSize", server_info.size())
-								.detail("InvalidUID", (*pUID).toString());
+								.detail("InvalidUID", (*pUID).toString())
+								.detail("ServerTeamNum", server_info[*pUID]->teams.size())
+								.detail("DesiredTeamsPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
 						traceMachineInfo();
-						traceServerInfo();
 						traceMachineLocalityMap();
+						traceServerInfo();
+						traceServerTeamInfo();
 						valid = false;
 						break;
 					}
@@ -1668,11 +1726,11 @@ struct DDTeamCollection {
 			*/
 
 			//Step 5: Restore machine from its representative process team and get the machine team
-			if( bestTeam.size() == configuration.storageTeamSize) {
+			if( bestTeam.size() == configuration.storageTeamSize ) {
 				//vector<UID> processIDs;
 				vector<Standalone<StringRef>> machineIDs;
 
-				for (auto process = bestTeam.begin(); process < bestTeam.end(); process++) {
+				for ( auto process = bestTeam.begin(); process < bestTeam.end(); process++ ) {
 					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
 					if ( machine_info.find(machine_id) == machine_info.end() ) {
 						TraceEvent(SevError, "MachineIDNotFound").detail("MachineID", machine_id.printable())
@@ -1746,6 +1804,10 @@ struct DDTeamCollection {
 				leastUsedServers.push_back(server.second->id);
 			}
 		}
+		if ( minTeamCount >= SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER ) {
+			TraceEvent(SevWarn, "NoIdleServer").detail("MinTeamCountPerServer", minTeamCount)
+				.detail("DesiredTeamsPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
+		}
 		TraceEvent("FindLeastUsedServersOnMachineTeams").detail("LeastUsedServerSize", leastUsedServers.size());
 		//printf("FindLeastUsedServersOnMachineTeams:LeastUsedServerSize:%d\n", leastUsedServers.size());
 		return leastUsedServers;
@@ -1803,7 +1865,9 @@ struct DDTeamCollection {
 		for ( auto &machineTeam: chosenMachine->machineTeams ) {
 			//usedMachineTeamMap.insert(MapPair<Reference<TCMachineTeamInfo>, int>(machineTeam, 0));
 			assert(machineTeam.isValid());
-			usedMachineTeamMap.insert(std::make_pair(machineTeam, 0));
+			//Only include machine team that does not have a full-capacity machine
+			if ( isMachineTeamAvailable(machineTeam) )
+				usedMachineTeamMap.insert(std::make_pair(machineTeam, 0));
 		}
 		//increase the machine team count when chosenServerID's server team uses it
 		/*
@@ -1943,8 +2007,9 @@ struct DDTeamCollection {
 
 		TraceEvent("AddTeamsBestOf").detail("TraceMachineServerLocalityInfo", 1).detail("TeamsToBuild", teamsToBuild);
 		traceMachineInfo();
-		traceServerInfo();
 		traceMachineLocalityMap();
+		traceServerInfo();
+		traceServerTeamInfo();
 
 		printf("Sanity check server's machine status after machine team is built\n");
 		sanityCheckServersMachine();
@@ -2006,6 +2071,8 @@ struct DDTeamCollection {
 			int tmpIndex = 0;
 			for ( auto &machine: chosenMachineTeam->machines ) {
 				UID chosenServer = machine->findOneLeastUsedServer();
+				// sanity check which can be removed later because it can be expensive in hot path
+				assert( server_info[chosenServer]->teams.size() <= SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER );
 				serverTeam.push_back(chosenServer);
 				TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
 			}
@@ -2031,6 +2098,13 @@ struct DDTeamCollection {
 			}
 
 		}
+		TraceEvent("AddTeamsBestOf").detail("AddedTeamNumber", addedTeams)
+				.detail("AimToBuildMachineNumber", teamsToBuild).detail("CurrentTeamNumber", teams.size())
+				.detail("StorageTeamSize", configuration.storageTeamSize);
+		traceMachineInfo();
+		traceMachineLocalityMap();
+		traceServerInfo();
+		traceServerTeamInfo();
 		return addedTeams;
 	}
 
@@ -3451,21 +3525,6 @@ ACTOR Future<Void> dataDistribution(
 }
 
 
-void traceServerInfo(DDTeamCollection* collection, int processCount) {
-	for (int id = 1; id <= processCount; id++ ) {
-		UID uid(id, 0);
-		LocalityData locality = collection->server_status.get(uid).locality;
-		TraceEvent("ServerInfo", uid)
-				.detail("MachineId", locality.describeMachineId())
-				.detail("ZoneId", locality.describeZone())
-				.detail("DatahallId", locality.describeDataHall())
-				.detail("DcId", locality.describeDcId());
-	}
-
-	return;
-}
-
-
 DDTeamCollection* testTeamCollection(int teamSize, IRepPolicyRef policy, int processCount) {
 	Database database = DatabaseContext::create(
 		Reference<AsyncVar<ClientDBInfo>>(new AsyncVar<ClientDBInfo>()),
@@ -3509,8 +3568,6 @@ DDTeamCollection* testTeamCollection(int teamSize, IRepPolicyRef policy, int pro
 		//Machine info
 		collection->constructMachineFor1Server(uid);
 	}
-
-	traceServerInfo(collection, processCount);
 
 	return collection;
 }
@@ -3567,8 +3624,6 @@ DDTeamCollection* testTeamCollectionMX1(int teamSize, IRepPolicyRef policy, int 
 		collection->server_status.set(uid, ServerStatus(false, false, interface.locality));
 	}
 
-	traceServerInfo(collection, processCount);
-
 	return collection;
 }
 
@@ -3624,8 +3679,6 @@ DDTeamCollection* testMachineTeamCollection(int teamSize, IRepPolicyRef policy, 
 
 	int totalServerIndex = collection->constructMachinesFromServers();
 	printf("testMachineTeamCollection: constructMachine for %d servers\n", totalServerIndex);
-
-	traceServerInfo(collection, processCount);
 
 	return collection;
 }
