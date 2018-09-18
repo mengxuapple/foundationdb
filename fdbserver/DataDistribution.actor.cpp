@@ -1531,39 +1531,6 @@ struct DDTeamCollection {
 	}
 
 	/**
-	 * Does there exist a server on the machine that has no larger than  DESIRED_TEAMS_PER_SERVER
-	 * @param machine to be checked
-	 * @return true if yes; and false otherwise
-	 */
-	int isMachineAvailable( Reference<TCMachineInfo> machine ) {
-		assert( machine.isValid() );
-		int numFullServers = 0; // Number of fully utilized servers which have max. team number
-		for ( auto &server : machine->serversOnMachine ) {
-			if ( server->teams.size() >=  SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER )
-				++numFullServers;
-		}
-		if ( numFullServers == machine->serversOnMachine.size() )
-			return false;
-		else
-			return true;
-	}
-
-	/**
-	 * Are ALL machines in the machineTeam available?
-	 * @param machineTeam to be checked
-	 * @return true if yes; and false otherwise
-	 */
-	int isMachineTeamAvailable( Reference<TCMachineTeamInfo> machineTeam ) {
-		assert( machineTeam.isValid() );
-		for ( auto &machine : machineTeam->machines ) {
-			if ( !isMachineAvailable(machine) )
-				return false;
-		}
-
-		return true;
-	}
-
-	/**
 	 * Create machineTeamsToBuild number of machine teams
 	 * Step 1: Create machineInfo by grouping servers (i.e., processes) using server's machineId tag in LocalityData
 	 * Step 2: Pick the set of least machine teams, one of which will be used to form server teams
@@ -1617,8 +1584,6 @@ struct DDTeamCollection {
 					continue;
 				//skip unhealthy machines
 				if ( !isMachineHealthy(machine.second) )
-					continue;
-				if ( !isMachineAvailable(machine.second) )
 					continue;
 
 				int teamCount = machine.second->machineTeams.size();
@@ -1735,7 +1700,6 @@ struct DDTeamCollection {
 					if ( machine_info.find(machine_id) == machine_info.end() ) {
 						TraceEvent(SevError, "MachineIDNotFound").detail("MachineID", machine_id.printable())
 							.detail("ServerID", **process).detail("IsServerLocalityMachineIDChanged", "TBD");
-						//TODO: Fixme: server_info
 					}
 					machineIDs.push_back(machine_id);
 				}
@@ -1804,10 +1768,6 @@ struct DDTeamCollection {
 				leastUsedServers.push_back(server.second->id);
 			}
 		}
-		if ( minTeamCount >= SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER ) {
-			TraceEvent(SevWarn, "NoIdleServer").detail("MinTeamCountPerServer", minTeamCount)
-				.detail("DesiredTeamsPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
-		}
 		TraceEvent("FindLeastUsedServersOnMachineTeams").detail("LeastUsedServerSize", leastUsedServers.size());
 		//printf("FindLeastUsedServersOnMachineTeams:LeastUsedServerSize:%d\n", leastUsedServers.size());
 		return leastUsedServers;
@@ -1865,9 +1825,6 @@ struct DDTeamCollection {
 		for ( auto &machineTeam: chosenMachine->machineTeams ) {
 			//usedMachineTeamMap.insert(MapPair<Reference<TCMachineTeamInfo>, int>(machineTeam, 0));
 			assert(machineTeam.isValid());
-			//Only include machine team that does not have a full-capacity machine
-			if ( isMachineTeamAvailable(machineTeam) )
-				usedMachineTeamMap.insert(std::make_pair(machineTeam, 0));
 		}
 		//increase the machine team count when chosenServerID's server team uses it
 		/*
@@ -1882,15 +1839,9 @@ struct DDTeamCollection {
 						serverTeam.isValid(), serverTeam->machineTeam.isValid(), chosenServerID);
 				break;
 			}
- 			if ( usedMachineTeamMap.find(serverTeam->machineTeam) == usedMachineTeamMap.end() ) {
-				fprintf(stdout, "serverID:%s machineTeam is not found in usedMachineTeamMap (size=%d)\n",
-						chosenServerID.toString().c_str(), usedMachineTeamMap.size());
-				break;
+			if ( usedMachineTeamMap.find(serverTeam->machineTeam) != usedMachineTeamMap.end() ) {
+				usedMachineTeamMap[serverTeam->machineTeam]++;
 			}
-			assert( usedMachineTeamMap.find(serverTeam->machineTeam) != usedMachineTeamMap.end() );
-			int count = usedMachineTeamMap[serverTeam->machineTeam];
-			++count;
-			usedMachineTeamMap[serverTeam->machineTeam] = count;
 		}
 		//choose 1 machine team from the least used machine teams by chosenServerID, which may or may not be used once
 		/*
@@ -1914,6 +1865,11 @@ struct DDTeamCollection {
 			result = g_random->randomChoice(leastUsedMachineTeams);
 			return 0;
 		} else {
+			TraceEvent(SevWarn, "FindOneLeastUsedMachineTeamFail").detail("NumAvailableMachine", 0);
+			traceMachineInfo();
+			traceMachineTeamInfo();
+			traceServerInfo();
+			traceServerTeamInfo();
 			return 1;
 		}
 	}
@@ -2071,8 +2027,6 @@ struct DDTeamCollection {
 			int tmpIndex = 0;
 			for ( auto &machine: chosenMachineTeam->machines ) {
 				UID chosenServer = machine->findOneLeastUsedServer();
-				// sanity check which can be removed later because it can be expensive in hot path
-				assert( server_info[chosenServer]->teams.size() <= SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER );
 				serverTeam.push_back(chosenServer);
 				TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
 			}
