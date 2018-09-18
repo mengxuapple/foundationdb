@@ -156,6 +156,13 @@ public:
 	bool isValid() const { return ptr != NULL; }
 	explicit operator bool() const { return ptr != NULL; }
 
+	/*
+	//Enable reference as key in map and set
+	int operator<( Reference const& other ) const {
+		return **this < *other;
+	}
+	 */
+
 private:
 	P *ptr;
 };
