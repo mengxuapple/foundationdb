@@ -1555,19 +1555,22 @@ struct DDTeamCollection {
 	 * Step 5: Use the server team to construct the machine team, and update the machineInfo
 	 * @return number of added machine teams
 	 */
-	int addBestMachineTeams(int serverTeamsToBuild) {
+	int addBestMachineTeams(int targetMachineTeamsToBuild) {
 		//TODO: modify the following content for the function
 		int addedMachineTeams = 0;
 		int totalServerIndex = 0;
 		int machineTeamsToBuild = 0;
-		machineTeamsToBuild = machine_info.size() * SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER; // must after constructMachinesFromServers();
-		machineTeamsToBuild = std::max(serverTeamsToBuild, machineTeamsToBuild);
+
+		//machineTeamsToBuild = machine_info.size() * SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER; // must after constructMachinesFromServers();
+		//machineTeamsToBuild = std::max(targetMachineTeamsToBuild, machineTeamsToBuild);
 		//machineTeamsToBuild = 2; //TODO: Test! Set machine team number = 2
-		machineTeamsToBuild = machineTeamsToBuild - machineTeams.size();
+		//machineTeamsToBuild = machineTeamsToBuild - machineTeams.size();
+		machineTeamsToBuild = targetMachineTeamsToBuild;
 
 		// Trace global information to help debug
 		TraceEvent("AddAllMachineTeams")
 				.detail("MachineTeamsToBuild", machineTeamsToBuild)
+				.detail("CurrentMachineTeamNumber", machineTeams.size())
 				.detail("CurrentTotalMachines", machine_info.size())
 				.detail("DesiredTeamPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
 		traceMachineInfo();
@@ -1685,6 +1688,7 @@ struct DDTeamCollection {
 				}
 
 				int score = 0;
+				vector<Standalone<StringRef>> machineIDs;
 				for(auto process = team.begin(); process != team.end(); process++) {
 					TraceEvent("AddMachineTeamsBestOf").detail("AddedMachineTeams", addedMachineTeams)
 						.detail("Attempt", i).detail("ServerInfoSize", server_info.size())
@@ -1694,6 +1698,13 @@ struct DDTeamCollection {
 					score += server_info[**process]->teams.size();
 					TraceEvent("AddMachineTeamsBestOf").detail("AddedTeams", addedMachineTeams)
 						.detail("Attempt", i).detail("CurrentScore", score);
+					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
+					machineIDs.push_back(machine_id);
+				}
+				std::sort(machineIDs.begin(), machineIDs.end());
+				if ( machineTeamExists(machineIDs) ) { //check the existance of the potential machine team before we use it
+					maxAttempts += 1;
+					continue;
 				}
 
 				//printf("AddBestMachineTeams: representative process team score: %d at attempt id: %d\n", score, i);
@@ -1701,6 +1712,9 @@ struct DDTeamCollection {
 				if(score < bestScore) {
 					bestTeam = team;//MX:bestTeam is the team, which has the smallest number of teams its team members belong to.
 					bestScore = score;
+					//TODO: We should not directly assign the first one with the best score as the final result! It may give us unbalanced result
+					//TODO: There should be a better approach to handle the load balancing! Otherwise, we will be stuck in the random test that
+					//test the total number of teams built and the number of teams per server
 				}
 			}
 			/*
@@ -2039,7 +2053,7 @@ struct DDTeamCollection {
 	 * Step 4: Randomly pick 1 server from each machine in the machine team into the server team
 	 * Step 5: Step 4: Add the server team after sanity check
 	 */
-	int addTeamsBestOf( int teamsToBuild) {
+	int addTeamsBestOf( int teamsToBuild ) {
 		int addedMachineTeams = 0;
 		assert(teamsToBuild > 0);
 
@@ -2082,6 +2096,11 @@ struct DDTeamCollection {
 			machineTeamStats.insert(std::make_pair(machineTeam, 0));
 		}
 		while( addedTeams < teamsToBuild ) {
+			//==================================================
+
+
+
+			//==================================================
 
 			/*
 			//Step 2: Find the least used servers and randomly pick one.
@@ -2129,7 +2148,57 @@ struct DDTeamCollection {
 				.detail("ChosenServerMachineID", server_info[chosenServerID]->machine->machineID.toString())
 				.detail("MachineIDs", chosenMachineTeam->getMachineIDsStr());
 			 */
+
+			std::vector<UID> bestServerTeam;
+			Reference<TCMachineTeamInfo> bestChosenMachineTeam;
+			int bestScore = std::numeric_limits<int>::max();
+			int maxAttempts = SERVER_KNOBS->BEST_OF_AMT;// BEST_OF_AMT = 4
+			for ( int i = 0; i < maxAttempts && i < 100; i++) {
+				//Chose the least used machine team
+				Reference<TCMachineTeamInfo> chosenMachineTeam;
+				if ( findOneLeastUsedMachineTeam(machineTeamStats, machineTeamPenalties, chosenMachineTeam) ) {
+					TraceEvent(SevError, "MachineTeamNotFound").detail("MachineTeamNumber", machineTeams.size());
+					traceAllInfo();
+					break;
+				}
+				TraceEvent("ChosenMachineTeam").detail("MachineIDs", chosenMachineTeam->getMachineIDsStr())
+						.detail("MachineTeamScore", chosenMachineTeam.isValid() ? machineTeamStats[chosenMachineTeam] : -1);
+
+				//Step 4: Randomly pick 1 server from each machine in the machine team into the server team
+				vector<UID> serverTeam;
+				int tmpIndex = 0;
+				for ( auto &machine: chosenMachineTeam->machines ) {
+					UID chosenServer = machine->findOneLeastUsedServer();
+					serverTeam.push_back(chosenServer);
+					TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
+				}
+
+				//Step 5: Add the server team
+				if( serverTeam.size() != configuration.storageTeamSize) {
+					TraceEvent(SevWarn, "DataDistributionBuildTeams", masterId).detail("Reason","Unable to make desiredTeams")
+							.detail("AddedTeams", addedTeams).detail("TeamsToBuild", teamsToBuild)
+							.detail("IncorrectTeamSize", serverTeam.size());
+					maxAttempts++;
+					continue;
+				}
+				std::sort(serverTeam.begin(), serverTeam.end());
+				if ( teamExists( serverTeam ) ) {
+					machineTeamPenalties[chosenMachineTeam] += 1; //std::max(machineTeamStats[chosenMachineTeam] / 2, 1);
+					maxAttempts += 1;
+					continue;
+				}
+				int score = 0;
+				for ( auto &server : serverTeam ) {
+					score += server_info[server]->teams.size();
+				}
+				if ( score < bestScore ) {
+					bestScore = score;
+					bestServerTeam = serverTeam; //TODO: Efficiency can be improved
+					bestChosenMachineTeam = chosenMachineTeam;
+				}
+			}
 			//Chose the least used machine team
+			/*
 			Reference<TCMachineTeamInfo> chosenMachineTeam;
 			if ( findOneLeastUsedMachineTeam(machineTeamStats, machineTeamPenalties, chosenMachineTeam) ) {
 				TraceEvent(SevError, "MachineTeamNotFound").detail("MachineTeamNumber", machineTeams.size());
@@ -2155,15 +2224,20 @@ struct DDTeamCollection {
 					.detail("IncorrectTeamSize", serverTeam.size());
 				break;
 			}
-			std::sort(serverTeam.begin(), serverTeam.end());
+			*/
 
-			if( !teamExists( serverTeam ) ) {
-				addTeam(serverTeam.begin(), serverTeam.end());
+			if ( bestServerTeam.size() != configuration.storageTeamSize ) //not find any team
+				break;
+
+			std::sort(bestServerTeam.begin(), bestServerTeam.end());
+
+			if( !teamExists( bestServerTeam ) ) {
+				addTeam(bestServerTeam.begin(), bestServerTeam.end(), true);
 				addedTeams++;
 			} else {
 				//Decrease the priority the chosenMachineTeam will be chosen again by increasing its team score
 				//Otherwise, we may trap into the least used machine team which always generate an existing server team
-				machineTeamPenalties[chosenMachineTeam] += std::max(machineTeamStats[chosenMachineTeam] / 2, 1);
+				//machineTeamPenalties[chosenMachineTeam] += std::max(machineTeamStats[chosenMachineTeam] / 2, 1);
 			}
 
 			if(++loopCount > 2*teamsToBuild*(configuration.storageTeamSize+1) ) {
