@@ -190,6 +190,9 @@ public:
 
 	std::string getMachineIDsStr() {
 		std::string str;
+		if ( this == NULL )
+			return "[unset]";
+
 		for ( auto &id: machineIDs ) {
 			str = str + id.contents().toString() + ";";
 		}
@@ -925,6 +928,25 @@ struct DDTeamCollection {
 				}
 			}
 
+			int valid = true;
+			if ( bestOption.present() ) {
+				vector<UID> serverIDs = bestOption.get()->getServerIDs();
+				for ( int i = 0; i < serverIDs.size(); ++i ) {
+					if ( self->server_info.find(serverIDs[i]) == self->server_info.end() ) {
+						valid = false;
+						break;
+					}
+				}
+			} else {
+				valid = false;
+			}
+
+			if ( !valid ) {
+				self->traceAllInfo();
+			}
+
+
+
 			req.reply.send( bestOption );
 			return Void();
 		} catch( Error &e ) {
@@ -1219,6 +1241,8 @@ struct DDTeamCollection {
 		for ( auto i = begin; i != end; ++i ) {
 			if (server_info.find(*i) != server_info.end()) {
 				newTeamServers.push_back(server_info[*i]);
+			} else {
+				TraceEvent(SevWarn, "AddTeamServerNotFound").detail("ServerID", *i);
 			}
 		}
 
@@ -1271,6 +1295,7 @@ struct DDTeamCollection {
 		} else { // foundMachineTeam == true
 			teamInfo->machineTeam = machineTeamInfo;
 			teamInfo->tracker = teamTracker( this, teamInfo );
+			assert( teamInfo->serverIDs.size() > 0 );
 			teams.push_back( teamInfo );
 			for ( int i=0;i<newTeamServers.size();i++ ) {
 				server_info[ newTeamServers[i]->id ]->teams.push_back( teamInfo );
@@ -1463,6 +1488,7 @@ struct DDTeamCollection {
 		int i = 0;
 		for ( auto &team : teams ) {
 			TraceEvent("ServerTeamInfo").detail("TeamIndex", i++)
+				.detail("ServerNumber", team->serverIDs.size())
 				.detail("MemberIDs", team->getServerIDsStr());
 		}
 	}
@@ -1772,6 +1798,15 @@ struct DDTeamCollection {
 		printf("[DEBUG] checked machine status for %d total servers' \n", i);
 	}
 
+	bool isMachineTeamValid( Reference<TCMachineTeamInfo> const &machineTeam ) {
+		for ( auto &machine : machineTeam->machines ) {
+			if ( !machine.isValid() || machine_info.find(machine->machineID) != machine_info.end()
+			 	|| machine_info[machine->machineID]->serversOnMachine.size() == 0 )
+				return false;
+		}
+		return true;
+	}
+
 	/*
 	 * Set a random machine team among those have the smallest machine-team-score
 	 * Return 0 if succeed; return 1 otherwise
@@ -1781,6 +1816,11 @@ struct DDTeamCollection {
 			 					Reference<TCMachineTeamInfo> &targetMachineTeam ) {
 		machineTeamStats.clear();
 		for ( auto &machineTeam : machineTeams ) {
+			if ( !isMachineTeamValid(machineTeam) ) {
+				TraceEvent(SevWarn, "MachineTeamInvalid").detail("MachineInfo", machineTeam->getMachineIDsStr());
+				continue;
+			}
+
 			int score = calculateMachineTeamScore(machineTeam);
 			assert ( machineTeamPenalties.find(machineTeam) != machineTeamPenalties.end() );
 			score += machineTeamPenalties[machineTeam]; //Penalize the team if we chose an existing server team from the machine team
@@ -1802,6 +1842,7 @@ struct DDTeamCollection {
 			targetMachineTeam = g_random->randomChoice(leastUsedMachineTeams);
 			return 0;
 		} else {
+			traceAllInfo();
 			return 1;
 		}
 
@@ -1871,6 +1912,24 @@ struct DDTeamCollection {
 		}
 
 		return leastUsedMachineTeam;
+	}
+
+	UID findLeastUsedServerOnMachine(Reference<TCMachineInfo> machine) {
+		vector<UID> leastUsedServers;
+		int minTeamNumber = std::numeric_limits<int>::max();
+		for ( auto &server: machine->serversOnMachine ) {
+			if ( !server.isValid() || server_info.find(server->id) == server_info.end() )
+				continue;
+			if ( server->teams.size() < minTeamNumber ) {
+				minTeamNumber = server->teams.size();
+				leastUsedServers.clear();
+			}
+			if ( minTeamNumber <= server->teams.size() ) {
+				leastUsedServers.push_back(server->id);
+			}
+		}
+
+		return g_random->randomChoice(leastUsedServers);
 	}
 
 	/*
@@ -2061,45 +2120,45 @@ struct DDTeamCollection {
 			constructMachinesFromServers();
 			TraceEvent("AddTeamsBestOfBuildMachineInfo").detail("ServerInfoSize", server_info.size()).detail("MachineInfoSize", machine_info.size());
 		}
-		//Step 1: Create beast machine teams
-		int machineTeamsToBuild = machine_info.size() * SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER;
-		addedMachineTeams = addBestMachineTeams(teamsToBuild); //Compute the number of machine teams based on the server teams to build
-		TraceEvent("AddTeamsBestOf").detail("AddedMachineTeamsNumber", addedMachineTeams)
-			.detail("AimToBuildMachineNumber", machineTeamsToBuild).detail("MachineTeamsNumber", machineTeams.size())
-			.detail("CurrentUniqueMachineTeamNum", countMachineTeams()).detail("StorageTeamSize", configuration.storageTeamSize)
-			.detail("TeamsToBuild", teamsToBuild).detail("CurrentTeamNumber", teams.size());
-		printf("addTeamsBestOf: finish adding %d machine teams, aim to build %d machine teams, (have %d machine teams now)\n",
-			   addedMachineTeams, machineTeamsToBuild, machineTeams.size());
-		if ( machineTeamsToBuild !=  machineTeams.size() ) {
-			traceMachineTeamInfo();
-		}
-
-		TraceEvent("AddTeamsBestOf").detail("TraceMachineServerLocalityInfo", 1).detail("TeamsToBuild", teamsToBuild);
-		traceAllInfo();
-
-		printf("Sanity check server's machine status after machine team is built\n");
-		sanityCheckServersMachine();
 
 		int addedTeams = 0;
-		TraceEvent("AddTeamsBestOf")
-				.detail("TeamsToBuild", teamsToBuild)
-				.detail("ServerInfoSize", server_info.size())
-				.detail("MachineLocalityMapSize", machineLocalityMap.size())
-				.detail("MachineInfoSize", machine_info.size())
-				.detail("MachineTeamNumber", machineTeams.size());
-
 		int loopCount = 0;
-		std::map<Reference<TCMachineTeamInfo>, int, CompareTCMachineTeamInfoRef> machineTeamStats;
-		std::map<Reference<TCMachineTeamInfo>, int, CompareTCMachineTeamInfoRef> machineTeamPenalties;
-		for ( auto &machineTeam : machineTeams ) {
-			machineTeamPenalties.insert(std::make_pair(machineTeam, 0));
-			machineTeamStats.insert(std::make_pair(machineTeam, 0));
-		}
+
+		int machineTeamThreashold = machine_info.size() * SERVER_KNOBS->MAX_TEAMS_PER_SERVER;
 		while( addedTeams < teamsToBuild ) {
 			//==================================================
+			//Step 1: Create beast machine teams
+			int machineTeamsToBuild = 1; //machine_info.size() * SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER;
+			if ( machineTeams.size() < machineTeamThreashold  ) { //TODO: Should we add extra machine team when we cannot find a valid server team?
+				addedMachineTeams = addBestMachineTeams(machineTeamsToBuild); //Compute the number of machine teams based on the server teams to build
+				TraceEvent("AddTeamsBestOf").detail("AddedMachineTeamsNumber", addedMachineTeams)
+						.detail("AimToBuildMachineNumber", machineTeamsToBuild).detail("MachineTeamsNumber", machineTeams.size())
+						.detail("CurrentUniqueMachineTeamNum", countMachineTeams()).detail("StorageTeamSize", configuration.storageTeamSize)
+						.detail("TeamsToBuild", teamsToBuild).detail("CurrentTeamNumber", teams.size());
+				printf("addTeamsBestOf: finish adding %d machine teams, aim to build %d machine teams, (have %d machine teams now)\n",
+					   addedMachineTeams, machineTeamsToBuild, machineTeams.size());
 
+				TraceEvent("AddTeamsBestOf").detail("TraceMachineServerLocalityInfo", 1).detail("TeamsToBuild", teamsToBuild);
+				traceAllInfo();
 
+				TraceEvent("AddTeamsBestOf")
+						.detail("TeamsToBuild", teamsToBuild)
+						.detail("ServerInfoSize", server_info.size())
+						.detail("MachineLocalityMapSize", machineLocalityMap.size())
+						.detail("MachineInfoSize", machine_info.size())
+						.detail("MachineTeamNumber", machineTeams.size());
+			} else {
+				TraceEvent(SevWarn, "AddTeamsBestOf").detail("ReachMaximumMachineTeamNumber", "Reason")
+					.detail("MachineTeamNum", machineTeams.size()).detail("MachineTeamThreshold", machineTeamThreashold)
+					.detail("MachineNumber", machine_info.size()).detail("MaxTeamsPerServer", SERVER_KNOBS->MAX_TEAMS_PER_SERVER);
+			}
 
+			std::map<Reference<TCMachineTeamInfo>, int, CompareTCMachineTeamInfoRef> machineTeamStats;
+			std::map<Reference<TCMachineTeamInfo>, int, CompareTCMachineTeamInfoRef> machineTeamPenalties;
+			for ( auto &machineTeam : machineTeams ) {
+				machineTeamPenalties.insert(std::make_pair(machineTeam, 0));
+				machineTeamStats.insert(std::make_pair(machineTeam, 0));
+			}
 			//==================================================
 
 			/*
@@ -2168,7 +2227,7 @@ struct DDTeamCollection {
 				vector<UID> serverTeam;
 				int tmpIndex = 0;
 				for ( auto &machine: chosenMachineTeam->machines ) {
-					UID chosenServer = machine->findOneLeastUsedServer();
+					UID chosenServer = findLeastUsedServerOnMachine(machine); //machine->findOneLeastUsedServer();
 					serverTeam.push_back(chosenServer);
 					TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
 				}
@@ -2232,7 +2291,7 @@ struct DDTeamCollection {
 			std::sort(bestServerTeam.begin(), bestServerTeam.end());
 
 			if( !teamExists( bestServerTeam ) ) {
-				addTeam(bestServerTeam.begin(), bestServerTeam.end(), true);
+				addTeam(bestServerTeam.begin(), bestServerTeam.end(), true);//TODO: set initialTeam to false
 				addedTeams++;
 			} else {
 				//Decrease the priority the chosenMachineTeam will be chosen again by increasing its team score
@@ -2418,7 +2477,7 @@ struct DDTeamCollection {
 
 			TraceEvent("BuildTeamsBegin", self->masterId).detail("MX", 1).detail("StorageTeamSize", self->configuration.storageTeamSize);
 
-			teamCount = std::max(teamCount, desiredTeams + totalTeamCount - maxTeams );//MX:Q:why use max value here?
+			teamCount = std::max(teamCount, desiredTeams + totalTeamCount - maxTeams );// situation when unhealthy teams are a LOT.
 
 			if( desiredTeams > teamCount ) {
 				std::set<UID> desiredServerSet;
@@ -2557,12 +2616,12 @@ struct DDTeamCollection {
 
 		// For each server in a team with the removedServer, erase shared teams from the list of teams in that other server
 		for( auto it = serversWithAjoiningTeams.begin(); it != serversWithAjoiningTeams.end(); ++it ) {
-			auto& teams = server_info[ *it ]->teams;
-			for( int t = 0; t < teams.size(); t++ ) {
-				auto& serverIds = teams[t]->getServerIDs();
+			auto &serverTeams = server_info[ *it ]->teams;
+			for( int t = 0; t < serverTeams.size(); t++ ) {
+				auto& serverIds = serverTeams[t]->getServerIDs();
 				if ( std::count( serverIds.begin(), serverIds.end(), removedServer ) ) {
-					teams[t--] = teams.back();
-					teams.pop_back();
+					serverTeams[t--] = serverTeams.back();
+					serverTeams.pop_back();
 				}
 			}
 		}
@@ -2585,17 +2644,27 @@ struct DDTeamCollection {
 				machinesWithAjoiningTeams.insert( machineTeam->machineIDs.begin(), machineTeam->machineIDs.end() );
 			}
 			machinesWithAjoiningTeams.erase(removedMachineInfo->machineID);
+			//machinesWithAjoiningTeams.insert(removedMachineInfo->machineID);
 			// For each machine in a machine team with the removed machine, erase shared machine team from the list of teams
 			for( auto it = machinesWithAjoiningTeams.begin(); it != machinesWithAjoiningTeams.end(); ++it ) {
 				auto& machineTeams = machine_info[ *it ]->machineTeams;
 				for( int t = 0; t < machineTeams.size(); t++ ) {
-					auto& machineTeam = machineTeams[t];
+					auto &machineTeam = machineTeams[t];
 					if ( std::count( machineTeam->machineIDs.begin(), machineTeam->machineIDs.end(), removedMachineInfo->machineID ) ) {
 						machineTeams[t--] = machineTeams.back();
 						machineTeams.pop_back();
 					}
 				}
 			}
+			//Remove global machine team that includes removedMachineInfo
+			for ( int t = 0; t < machineTeams.size(); t++ ) {
+				auto &machineTeam = machineTeams[t];
+				if ( std::count( machineTeam->machineIDs.begin(), machineTeam->machineIDs.end(), removedMachineInfo->machineID) ) {
+					machineTeams[t--] = machineTeams.back();
+					machineTeams.pop_back();
+				}
+			}
+
 			// Remove removedMachineInfo from machine's global info
 			// Q: Should I remove LocalityEntry from machineLocalityMap? Will it break the relation between LocalityEntry and Value?
 			machine_info.erase(removedMachineInfo->machineID);
