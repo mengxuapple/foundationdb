@@ -1218,6 +1218,10 @@ struct DDTeamCollection {
 
 				state vector<std::vector<UID>> builtTeams;
 
+				//Test the original code: Always use addTeamsBestOf and avoid using addAllTeams
+				int addedTeams = self->addTeamsBestOf( teamsToBuild );
+				TraceEvent("AddTeamsBestOf", self->masterId).detail("CurrentTeams", self->teams.size()).detail("AddedTeams", addedTeams);
+				/*
 				if( self->configuration.storageTeamSize > 3) {
 					int addedTeams = self->addTeamsBestOf( teamsToBuild );
 					TraceEvent("AddTeamsBestOf", self->masterId).detail("CurrentTeams", self->teams.size()).detail("AddedTeams", addedTeams);
@@ -1236,6 +1240,7 @@ struct DDTeamCollection {
 						TraceEvent("AddTeamsBestOf", self->masterId).detail("CurrentTeams", self->teams.size()).detail("AddedTeams", addedTeams);
 					}
 				}
+				 */
 			}
 		}
 
