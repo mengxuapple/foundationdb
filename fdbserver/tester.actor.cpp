@@ -630,6 +630,8 @@ ACTOR Future<DistributedTestResults> runWorkload( Database cx, std::vector< Test
 		.detail("TesterCount", testers.size()).detail("Phases", spec.phases)
 		.detail("TestTimeout", spec.timeout)
 		.detail("Database", printable( database ));
+	printf("TestRunning, WorkloadTitle:%s TesterCount:%d Phases:%d\n",
+			printable(spec.title).c_str(), testers.size(), spec.phases);
 	state vector< Future< WorkloadInterface > > workRequests;
 	state vector<vector<PerfMetric>> metricsResults;
 

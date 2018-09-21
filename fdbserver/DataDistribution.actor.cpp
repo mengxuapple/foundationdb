@@ -186,6 +186,8 @@ public:
 		for(int i=0; i<machines.size(); i++)
 			machineIDs.push_back(machines[i]->machineID);
 		sort(machineIDs.begin(), machineIDs.end());
+		TraceEvent("TCMachineTeamInfoConstructor").detail("MachineIDsSize", machineIDs.size())
+			.detail("MachineIDs", getMachineIDsStr());
 	}
 
 	std::string getMachineIDsStr() {
@@ -232,9 +234,14 @@ public:
 	TCTeamInfo( vector< Reference<TCServerInfo> > const& servers )
 		: servers(servers), healthy(true), priority(PRIORITY_TEAM_HEALTHY), wrongConfiguration(false)
 	{
+		if ( servers.size() <= 0 ) {
+			TraceEvent(SevError, "TCTeamInfoConstructor").detail("ServersSize", servers.size());
+		}
 		serverIDs.reserve(servers.size());
 		for(int i=0; i<servers.size(); i++)
 			serverIDs.push_back(servers[i]->id);
+		TraceEvent(SevWarn, "TCTeamInfoConstructor").detail("ServersSize", servers.size())
+				.detail("ServersInfo", getServerIDsStr());
 	}
 	virtual vector<StorageServerInterface> getLastKnownServerInterfaces() {
 		vector<StorageServerInterface> v;
@@ -796,7 +803,9 @@ struct DDTeamCollection {
 
 			if( !self->teams.size() ) {
 				TraceEvent(SevWarn, "NoTeamExist").detail("SourceUIDVectorSize", req.sources.size())
-					.detail("SourceUID[0]", req.sources.size() ? req.sources[0].toString() : "[unset]");
+					.detail("SourceUID[0]", req.sources.size() ? req.sources[0].toString() : "[unset]")
+					.detail("Debug", "CheckInfoBelow");
+				self->traceAllInfo();
 				req.reply.send( Optional<Reference<IDataDistributionTeam>>() );
 				return Void();
 			}
@@ -848,6 +857,7 @@ struct DDTeamCollection {
 
 				if( foundExact || (req.wantsTrueBest && bestOption.present() ) ) {
 					ASSERT( bestOption.present() );
+					//TODO: Check the team size: be sure team size is correct
 					req.reply.send( bestOption );
 					return Void();
 				}
@@ -942,6 +952,7 @@ struct DDTeamCollection {
 			}
 
 			if ( !valid ) {
+				TraceEvent("GetTeamInvalidTeam");
 				self->traceAllInfo();
 			}
 
@@ -986,7 +997,7 @@ struct DDTeamCollection {
 					}
 				}
 				if( !foundTeam ) {
-					addTeam(serverIds.begin(), serverIds.begin() + configuration.storageTeamSize );
+					addTeam(serverIds.begin(), serverIds.begin() + configuration.storageTeamSize, true);
 				}
 			}
 		}
@@ -1246,9 +1257,18 @@ struct DDTeamCollection {
 			}
 		}
 
+		if ( newTeamServers.empty() ) {
+			TraceEvent(SevWarn, "TeamCreation").detail("CanNotCreateEmptyTeam", 1).detail("Debug", "CallerCheckBeforeCall");
+			return;
+		} else if ( newTeamServers.size() != configuration.storageTeamSize ) {
+			TraceEvent(SevWarn, "TeamCreation").detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
+		} else {
+			TraceEvent("TeamCreation").detail("TeamSizeToCreate", newTeamServers.size());
+		}
 
 		Reference<TCTeamInfo> teamInfo( new TCTeamInfo( newTeamServers ) );
-		TraceEvent("TeamCreation", masterId).detail("IsInitialTeam", isInitialTeam).detail("Team", teamInfo->getDesc());
+		TraceEvent(SevWarn, "TeamCreation", masterId).detail("IsInitialTeam", isInitialTeam)
+			.detail("Team", teamInfo->getDesc()).detail("ServerSize", newTeamServers.size());
 		/*
 		printf("addTeam(): validate the to-be-added team in teamTracker. Team info:%s\n", teamInfo->getDesc().c_str());
 		 */
@@ -1332,6 +1352,8 @@ struct DDTeamCollection {
 				fprintf(stdout, "WARNING: machine_id:%s does not exit\n", i->contents().toString().c_str());
 			}
 		}
+
+		TraceEvent("MachineTeamCreation").detail("MachineTeamSizeToConstruct", machines.size());
 
 		Reference<TCMachineTeamInfo> machineTeamInfo( new TCMachineTeamInfo( machines ) );
 		TraceEvent("AddMachineTeam", masterId).detail("MachineIDs", machineTeamInfo->getMachineIDsStr());
@@ -1503,7 +1525,8 @@ struct DDTeamCollection {
 		for ( auto &machine: machine_info ) {
 			TraceEvent("MachineInfo").detail("MachineInfoIndex", i++)
 				.detail("MachineID", machine.first.contents().toString())
-				.detail("MachineTeamOwned", machine.second->machineTeams.size());
+				.detail("MachineTeamOwned", machine.second->machineTeams.size())
+				.detail("ServersOnMachine", machine.second->serversOnMachine.size());
 		}
 	}
 
@@ -1594,7 +1617,7 @@ struct DDTeamCollection {
 		machineTeamsToBuild = targetMachineTeamsToBuild;
 
 		// Trace global information to help debug
-		TraceEvent("AddAllMachineTeams")
+		TraceEvent("AddMachineTeams")
 				.detail("MachineTeamsToBuild", machineTeamsToBuild)
 				.detail("CurrentMachineTeamNumber", machineTeams.size())
 				.detail("CurrentTotalMachines", machine_info.size())
@@ -1727,6 +1750,11 @@ struct DDTeamCollection {
 					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
 					machineIDs.push_back(machine_id);
 				}
+				if ( !isMachineIDValid(machineIDs) ) {
+					maxAttempts += 1;
+					continue;
+				}
+
 				std::sort(machineIDs.begin(), machineIDs.end());
 				if ( machineTeamExists(machineIDs) ) { //check the existance of the potential machine team before we use it
 					maxAttempts += 1;
@@ -1776,7 +1804,9 @@ struct DDTeamCollection {
 				break;
 			}
 		}
-		printf("addBestMachineTeams: finish adding %d machine teams...\n", addedMachineTeams);
+		TraceEvent("AddMachineTeam").detail("AddedMachineTeam", addedMachineTeams)
+			.detail("MachineTeamsToBuild", targetMachineTeamsToBuild);
+		//printf("addBestMachineTeams: finish adding %d machine teams...\n", addedMachineTeams);
 		return addedMachineTeams;
 	}
 
@@ -1800,9 +1830,29 @@ struct DDTeamCollection {
 
 	bool isMachineTeamValid( Reference<TCMachineTeamInfo> const &machineTeam ) {
 		for ( auto &machine : machineTeam->machines ) {
-			if ( !machine.isValid() || machine_info.find(machine->machineID) != machine_info.end()
-			 	|| machine_info[machine->machineID]->serversOnMachine.size() == 0 )
+			if ( !machine.isValid() || machine_info.find(machine->machineID) == machine_info.end()
+			 	|| machine_info[machine->machineID]->serversOnMachine.size() == 0 ) {
+				if ( !machine.isValid() )
+					TraceEvent(SevWarn, "InvalidMachineTeam").detail("IsValid", machine.isValid());
+				else
+					TraceEvent(SevWarn, "InvalidMachineTeam").detail("IsValid", machine.isValid())
+							.detail("InMachineInfo", machine_info.find(machine->machineID) != machine_info.end())
+							.detail("ServerNumber", machine_info[machine->machineID]->serversOnMachine.size());
+
 				return false;
+			}
+		}
+		return true;
+	}
+
+	bool isMachineIDValid( vector<Standalone<StringRef>> const &machineIDs ) {
+		for ( auto &id : machineIDs ) {
+			if ( machine_info.find(id) == machine_info.end()
+				 || machine_info[id]->serversOnMachine.size() == 0 ) {
+				TraceEvent("InvalidMachineID").detail("MachineID", id.contents().printable())
+					.detail("ServerNumber", machine_info[id]->serversOnMachine.size());
+				return false;
+			}
 		}
 		return true;
 	}
@@ -1842,6 +1892,7 @@ struct DDTeamCollection {
 			targetMachineTeam = g_random->randomChoice(leastUsedMachineTeams);
 			return 0;
 		} else {
+			TraceEvent("LeastUsedMachineTeamsNotFound").detail("Debug", "CheckInfoBelow");
 			traceAllInfo();
 			return 1;
 		}
@@ -2104,6 +2155,31 @@ struct DDTeamCollection {
 		return alwaysOnSameMachineTeam;
 	}
 
+	void sanityCheckCreatedTeams (vector<Reference<TCTeamInfo>> &old_teams) {
+		int error = 0;
+		for ( auto &team : teams ) {
+			bool isOld = false;
+			for ( auto &old_team : old_teams ) {
+				if ( team == old_team ) {
+					isOld = true;
+					break;
+				}
+			}
+			if ( isOld )
+				continue;
+
+			//check newly created team info
+			if ( team->size() != configuration.storageTeamSize ) {
+				TraceEvent("BuildInvalidTeam").detail("ExpectedTeamSize", configuration.storageTeamSize)
+					.detail("TeamSize", team->size()).detail("TeamInfo", team->getServerIDsStr());
+				error++;
+			}
+		}
+		if ( error > 0 ) {
+			TraceEvent("BuildInvalidTeam").detail("InvalidTeamNumber", error).detail("Debug", "CheckInfoAbove");
+		}
+	}
+
 	/**
 	 * Create server teams based on machine teams
 	 * Step 1: Create best machine teams from least used machines
@@ -2112,6 +2188,7 @@ struct DDTeamCollection {
 	 * Step 4: Randomly pick 1 server from each machine in the machine team into the server team
 	 * Step 5: Step 4: Add the server team after sanity check
 	 */
+	 //TODO: VALIDATE THE TEAM'S INVARIANTES BEFORE RETURN. CRASH THE SYSTEM ON PURPOSE TO IDENTIFY THE PROBLEM!
 	int addTeamsBestOf( int teamsToBuild ) {
 		int addedMachineTeams = 0;
 		assert(teamsToBuild > 0);
@@ -2123,8 +2200,14 @@ struct DDTeamCollection {
 
 		int addedTeams = 0;
 		int loopCount = 0;
-
 		int machineTeamThreashold = machine_info.size() * SERVER_KNOBS->MAX_TEAMS_PER_SERVER;
+
+		TraceEvent("AddTeamsBestOf").detail("TeamsToBuild", teamsToBuild).detail("CurrentTeamNum", teams.size())
+			.detail("MachineTeamThreshold", machineTeamThreashold);
+
+		//For sanity check
+		vector<Reference<TCTeamInfo>> old_teams = teams;
+
 		while( addedTeams < teamsToBuild ) {
 			//==================================================
 			//Step 1: Create beast machine teams
@@ -2310,7 +2393,26 @@ struct DDTeamCollection {
 				.detail("AimToBuildTeamNumber", teamsToBuild).detail("CurrentTeamNumber", teams.size())
 				.detail("StorageTeamSize", configuration.storageTeamSize)
 				.detail("MachineTeamNum", machineTeams.size());
+
+		//Compute the maximum teams
+		int machineNum = machine_info.size();
+		int maxMachineTeams = 0;
+		for ( int i = 0; i < configuration.storageTeamSize; ++i ) {
+			maxMachineTeams += ( machineNum - i );
+		}
+		for ( int i = 1; i <= configuration.storageTeamSize; ++i ) {
+			maxMachineTeams = maxMachineTeams / i;
+		}
+		if (  addedTeams < teamsToBuild && teams.size() < maxMachineTeams ) {
+			TraceEvent(SevError, "MissValidTeams").detail("Debug","CheckSysInfoBelow");
+			traceAllInfo();
+			printf("Error in my code. Exit early!");
+			TraceEvent(SevError, "ExitMX").detail("ErrorOnPurpose", * (int *) NULL);
+		}
+
 		traceAllInfo();
+		sanityCheckCreatedTeams(old_teams);
+
 		return addedTeams;
 	}
 
@@ -2450,6 +2552,11 @@ struct DDTeamCollection {
 			}
 		}
 		uniqueMachines = machines.size();
+		TraceEvent("BuildTeams").detail("ServerNumber", self->server_info.size()).detail("UniqueMachines", uniqueMachines)
+			.detail("StorageTeamSize", self->configuration.storageTeamSize);
+		if ( self->teams.size() == 0 ) {
+			self->traceAllInfo();
+		}
 
 		// If there are too few machines to even build teams or there are too few represented datacenters, build no new teams
 		if( uniqueMachines >= self->configuration.storageTeamSize ) {
@@ -2475,7 +2582,8 @@ struct DDTeamCollection {
 				.detail("UniqueMachines", uniqueMachines).detail("TeamSize", self->configuration.storageTeamSize).detail("Servers", serverCount)
 				.detail("CurrentTrackedTeams", self->teams.size()).detail("HealthyTeamCount", teamCount).detail("TotalTeamCount", totalTeamCount);
 
-			TraceEvent("BuildTeamsBegin", self->masterId).detail("MX", 1).detail("StorageTeamSize", self->configuration.storageTeamSize);
+			TraceEvent("BuildTeamsBegin", self->masterId).detail("TeamCount", teamCount)
+				.detail("DesiredTeams", desiredTeams).detail("TotalTeamCount", totalTeamCount).detail("MaxTeams", maxTeams);
 
 			teamCount = std::max(teamCount, desiredTeams + totalTeamCount - maxTeams );// situation when unhealthy teams are a LOT.
 
@@ -2494,7 +2602,12 @@ struct DDTeamCollection {
 				int useMachineTeam = 1;
 				if ( useMachineTeam == 1) {
 					int addedTeams = self->addTeamsBestOf( teamsToBuild );
-					TraceEvent("AddTeamsBestOf", self->masterId).detail("CurrentTeams", self->teams.size()).detail("AddedTeams", addedTeams);
+					TraceEvent("AddTeamsBestOfInBuildTeam", self->masterId).detail("TeamsToBuild", teamsToBuild)
+						.detail("CurrentTeams", self->teams.size()).detail("AddedTeams", addedTeams);
+					if ( addedTeams <= 0 && self->teams.size() == 0 ) {
+						TraceEvent(SevWarn, "NoTeamAfterBuildTeam").detail("TeamNum", self->teams.size()).detail("Debug", "CheckInformationBelow");
+						self->traceAllInfo();
+					}
 				} else { //TODO: Remove the else content.
 					if( self->configuration.storageTeamSize > 3) {
 						int addedTeams = self->addTeamsBestOf( teamsToBuild );
@@ -2596,6 +2709,7 @@ struct DDTeamCollection {
 		*/
 
 		r->tracker = storageServerTracker( this, cx, r.getPtr(), &server_status, lock, masterId, &server_info, serverChanges, errorOut, addedVersion );
+		//doBuildTeams = true;
 		restartTeamBuilder.trigger();
 	}
 

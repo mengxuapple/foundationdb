@@ -630,7 +630,17 @@ struct ConsistencyCheckWorkload : TestWorkload
 			//In a quiescent database, check that the team size is the same as the desired team size
 			if(self->firstClient && self->performQuiescentChecks && sourceStorageServers.size() != configuration.usableRegions*configuration.storageTeamSize)
 			{
-				TraceEvent("ConsistencyCheck_InvalidTeamSize").detail("ShardBegin", printable(range.begin)).detail("ShardEnd", printable(range.end)).detail("TeamSize", sourceStorageServers.size()).detail("DesiredTeamSize", configuration.storageTeamSize);
+				TraceEvent("ConsistencyCheck_InvalidTeamSize").detail("ShardBegin", printable(range.begin))
+					.detail("ShardEnd", printable(range.end)).detail("TeamSize", sourceStorageServers.size())
+					.detail("DestServerSize", destStorageServers.size())
+					.detail("DesiredTeamSize", configuration.storageTeamSize)
+					.detail("UsableRegions", configuration.usableRegions);
+				//MX: record the server reponsible for the problematic shards
+				int i = 0;
+				for ( auto& id : sourceStorageServers ) {
+					TraceEvent("IncorrectSizeTeamInfo").detail("TeamUID", id).detail("TeamIndex", i++);
+				}
+				//TraceEvent(SevError, "QuitCheck").detail("ErrorOnPurpose", *(int *) NULL);
 				self->testFailure("Invalid team size");
 				return false;
 			}
@@ -1070,7 +1080,8 @@ struct ConsistencyCheckWorkload : TestWorkload
 					}
 				}
 				if( !found ) {
-					TraceEvent("ConsistencyCheck_NoStorage").detail("Address", workers[i].first.address());
+					TraceEvent("ConsistencyCheck_NoStorage").detail("Address", workers[i].first.address())
+						.detail("ProcessClass?=StorageClass", workers[i].second == ProcessClass::StorageClass);
 					missingStorage.insert(workers[i].first.locality.dcId());
 				}
 			}
