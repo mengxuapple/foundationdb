@@ -921,6 +921,18 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 				if (foundTeams && anyHealthy) {
 					break;
 				}
+
+				TraceEvent(SevError, "BestTeamStuckOnce").detail("BestTeamsSize",bestTeams.size());
+				int i = 0;
+				for ( auto &team : bestTeams ) {
+					TraceEvent(SevWarn, "BestTeam").detail("IsSource", team.second).detail("ServerUID", "CheckBelow");
+					for ( auto &uid : team.first->getServerIDs() ) {
+						TraceEvent("Server").detail("Index", i).detail("UID", uid);
+					}
+					i++;
+				}
+				TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+
 				TEST(true); //did not find a healthy destination team on the first attempt
 				stuckCount++;
 				TraceEvent(stuckCount > 50 ? SevWarnAlways : SevWarn, "BestTeamStuck", masterId).suppressFor(1.0).detail("Count", stuckCount);
@@ -953,6 +965,18 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 					}
 				}
 			}
+
+			//MX: Sanity check
+			for (auto &destTeam : destinationTeams) {
+				if ( destTeam.servers.size() != self->teamSize ) {
+					TraceEvent(SevError, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
+						.detail("DestTeamSize", destTeam.servers.size()).detail("Debug", "CheckDestTeamUID");
+					for ( auto &id : destTeam.servers ) {
+						TraceEvent(SevError, "IncorrectDestTeamSize\t").detail("UID", id);
+					}
+				}
+			}
+
 
 			self->shardsAffectedByTeamFailure->moveShard(rd.keys, destinationTeams);
 

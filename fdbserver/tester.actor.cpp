@@ -669,7 +669,7 @@ ACTOR Future<DistributedTestResults> runWorkload( Database cx, std::vector< Test
 
 	if( spec.phases & TestWorkload::EXECUTION ) {
 		TraceEvent("TestStarting").detail("WorkloadTitle", printable(spec.title));
-		printf("running test...\n");
+		printf("running test (%s)...\n", printable(spec.title).c_str());
 		std::vector< Future<Void> > starts;
 		for(int i= 0; i < workloads.size(); i++)
 			starts.push_back( workloads[i].start.template getReply<Void>() );
@@ -685,22 +685,26 @@ ACTOR Future<DistributedTestResults> runWorkload( Database cx, std::vector< Test
 
 		state std::vector< Future<bool> > checks;
 		TraceEvent("CheckingResults");
-		printf("checking tests...\n");
+		printf("checking test (%s)...\n", printable(spec.title).c_str());
 		for(int i= 0; i < workloads.size(); i++)
 			checks.push_back( workloads[i].check.template getReply<bool>() );
 		Void _ = wait( waitForAll( checks ) );
 		
 		for(int i = 0; i < checks.size(); i++) {
-			if(checks[i].get())
+			if(checks[i].get()) {
 				success++;
-			else
+				printf("workload[%d] check success\n", i);
+			}
+			else {
 				failure++;
+				printf("workload[%d] check fails\n", i);
+			}
 		}
 	}
 
 	if( spec.phases & TestWorkload::METRICS ) {
 		state std::vector< Future<vector<PerfMetric>> > metricTasks;
-		printf("fetching metrics...\n");
+		printf("fetching metrics (%s)...\n", printable(spec.title).c_str());
 		TraceEvent("TestFetchingMetrics").detail("WorkloadTitle", printable(spec.title));
 		for(int i= 0; i < workloads.size(); i++)
 			metricTasks.push_back( workloads[i].metrics.template getReply<vector<PerfMetric>>() );
@@ -719,8 +723,12 @@ ACTOR Future<DistributedTestResults> runWorkload( Database cx, std::vector< Test
 
 	// Stopping the workloads is unreliable, but they have a timeout
 	// FIXME: stop if one of the above phases throws an exception
-	for(int i=0; i<workloads.size(); i++)
+	for(int i=0; i<workloads.size(); i++) {
+		printf("Workload[%d] stop send\n", i);
 		workloads[i].stop.send(ReplyPromise<Void>());
+	}
+
+	printf("Reach the end of runWorkload(), success:%d, failure:%d\n", success, failure);
 
 	return DistributedTestResults( aggregateMetrics( metricsResults ), success, failure );
 }
@@ -734,7 +742,9 @@ ACTOR Future<Void> changeConfiguration(Database cx, std::vector< TesterInterface
 	options.push_back_deep(options.arena(), KeyValueRef(LiteralStringRef("configMode"), configMode));
 	spec.options.push_back_deep(spec.options.arena(), options);
 
+	printf("changeConfig, runWorkload start...");
 	DistributedTestResults testResults = wait(runWorkload(cx, testers, database, spec));
+	printf("changeConfig, runWorkload end...\n");
 	return Void();
 }
 
@@ -762,8 +772,11 @@ ACTOR Future<Void> checkConsistency(Database cx, std::vector< TesterInterface > 
 
 	state double start = now();
 	state bool lastRun = false;
+	state int loop_i = 0;
 	loop {
+		printf("checkConsistency loop:%d, softTimeLimit:%.2f, timeElapsed:%d runWorkload start\n", loop_i++, softTimeLimit, now() - start);
 		DistributedTestResults testResults = wait(runWorkload(cx, testers, database, spec));
+		printf("checkConsistency, testResults.ok:%d lastRun:%d timeElapsed:%.2f \n", testResults.ok(), lastRun, now() - start);
 		if(testResults.ok() || lastRun) {
 			if( g_network->isSimulated() ) {
 				g_simulator.connectionFailuresDisableDuration = connectionFailures;
@@ -774,6 +787,7 @@ ACTOR Future<Void> checkConsistency(Database cx, std::vector< TesterInterface > 
 			spec.options[0].push_back_deep(spec.options.arena(), KeyValueRef(LiteralStringRef("failureIsError"), LiteralStringRef("true")));
 			lastRun = true;
 		}
+		printf("checkConsistency repairDeadDatacenter start..\n");
 		Void _ = wait( repairDeadDatacenter(cx, dbInfo, "ConsistencyCheck") );
 	}
 }
@@ -782,14 +796,18 @@ ACTOR Future<bool> runTest( Database cx, std::vector< TesterInterface > testers,
 {
 	state DistributedTestResults testResults;
 
+	printf("runTest start: testersNumber:%d database:%s, TestSpec\n", testers.size(), database.toString().c_str());
 	try {
 		Future<DistributedTestResults> fTestResults = runWorkload( cx, testers, database, spec );
+		printf("runTest runWorkload finish, spec.timeout:%d\n", spec.timeout);
 		if( spec.timeout > 0 ) {
 			fTestResults = timeoutError( fTestResults, spec.timeout );
 		}
 		DistributedTestResults _testResults = wait( fTestResults );
+		printf("runTest wait fTestResults finish\n");
 		testResults = _testResults;
 		logMetrics( testResults.metrics );
+		printf("runTest logMetrics finish\n");
 	} catch(Error& e) {
 		if( e.code() == error_code_timed_out ) {
 			TraceEvent(SevError, "TestFailure").error(e).detail("Reason", "Test timed out").detail("Timeout", spec.timeout);
@@ -801,7 +819,9 @@ ACTOR Future<bool> runTest( Database cx, std::vector< TesterInterface > testers,
 	}
 
 	state bool ok = testResults.ok();
+	printf("runTest testResults finish\n");
 
+	printf("Spec info: useDB:%d, dumpAfterTest:%d, runConsistencyCheck:%d\n", spec.useDB, spec.dumpAfterTest, spec.runConsistencyCheck);
 	if( spec.useDB ) {
 		if( spec.dumpAfterTest ) {
 			try {
@@ -1044,6 +1064,7 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 	state Future<Void> disabler = disableConnectionFailuresAfter(450, "Tester");
 
 	//Change the configuration (and/or create the database) if necessary
+	printf("startingConfiguration:%s start\n", startingConfiguration.toString().c_str());
 	if(useDB && startingConfiguration != StringRef()) {
 		try {
 			Void _ = wait(timeoutError(changeConfiguration(cx, testers, database, startingConfiguration), 2000.0));
@@ -1052,7 +1073,9 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 			TraceEvent(SevError, "TestFailure").error(e).detail("Reason", "Unable to set starting configuration");
 		}
 	}
+	printf("startingConfiguration:%s\n finish\n", startingConfiguration.toString().c_str());
 
+	printf("waitForQuiescenceBegin start\n");
 	if (useDB && waitForQuiescenceBegin) {
 		TraceEvent("TesterStartingPreTestChecks").detail("DatabasePingDelay", databasePingDelay).detail("StartDelay", startDelay);
 		try {
@@ -1063,9 +1086,11 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 			throw;
 		}
 	}
+	printf("waitForQuiescenceBegin finish\n");
 
 	TraceEvent("TestsExpectedToPass").detail("Count", tests.size());
 	state int idx = 0;
+	printf("TestsExpectedToPass, count:%d\n", tests.size());
 	for(; idx < tests.size(); idx++ ) {
 		bool ok = wait( runTest( cx, testers, database, tests[idx], dbInfo ) );
 		// do we handle a failure here?
@@ -1077,7 +1102,7 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 	if(tests.empty() || useDB) {
 		if(waitForQuiescenceEnd) {
 			try {
-				Void _ = wait( quietDatabase( cx, dbInfo, "End", 0, 2e6, 2e6 ) || 
+				Void _ = wait( quietDatabase( cx, dbInfo, "End", 0, 2e6, 2e6 ) ||
 					( databasePingDelay == 0.0 ? Never() : testDatabaseLiveness( cx, databasePingDelay, "QuietDatabaseEnd" ) ) );
 			} catch( Error& e ) {
 				TraceEvent("QuietDatabaseEndExternalError").error(e);

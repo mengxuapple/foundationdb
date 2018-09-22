@@ -631,14 +631,14 @@ struct ConsistencyCheckWorkload : TestWorkload
 			if(self->firstClient && self->performQuiescentChecks && sourceStorageServers.size() != configuration.usableRegions*configuration.storageTeamSize)
 			{
 				TraceEvent("ConsistencyCheck_InvalidTeamSize").detail("ShardBegin", printable(range.begin))
-					.detail("ShardEnd", printable(range.end)).detail("TeamSize", sourceStorageServers.size())
+					.detail("ShardEnd", printable(range.end)).detail("SourceTeamSize", sourceStorageServers.size())
 					.detail("DestServerSize", destStorageServers.size())
-					.detail("DesiredTeamSize", configuration.storageTeamSize)
+					.detail("ConfigStorageTeamSize", configuration.storageTeamSize)
 					.detail("UsableRegions", configuration.usableRegions);
 				//MX: record the server reponsible for the problematic shards
 				int i = 0;
 				for ( auto& id : sourceStorageServers ) {
-					TraceEvent("IncorrectSizeTeamInfo").detail("TeamUID", id).detail("TeamIndex", i++);
+					TraceEvent("IncorrectSizeTeamInfo").detail("ServerUID", id).detail("TeamIndex", i++);
 				}
 				//TraceEvent(SevError, "QuitCheck").detail("ErrorOnPurpose", *(int *) NULL);
 				self->testFailure("Invalid team size");
