@@ -947,7 +947,7 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 			for(int i = 0; i < bestTeams.size(); i++) {
 				auto& serverIds = bestTeams[i].first->getServerIDs();
 				destinationTeams.push_back(ShardsAffectedByTeamFailure::Team(serverIds, i == 0));
-				if(allHealthy && anyWithSource && !bestTeams[i].second) {
+				if(allHealthy && anyWithSource && !bestTeams[i].second) { //bestTeams[i] is not the source of the shard
 					int idx = g_random->randomInt(0, serverIds.size());
 					destIds.push_back(serverIds[idx]);
 					healthyIds.push_back(serverIds[idx]);
@@ -967,16 +967,18 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 			}
 
 			//MX: Sanity check
+			int totalIds = 0;
 			for (auto &destTeam : destinationTeams) {
+				totalIds += destTeam.servers.size();
 				if ( destTeam.servers.size() != self->teamSize ) {
-					TraceEvent(SevError, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
-						.detail("DestTeamSize", destTeam.servers.size()).detail("Debug", "CheckDestTeamUID");
+					TraceEvent(SevWarn, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
+						.detail("DestTeamSize", destTeam.servers.size()).detClusterControllerActualWorkersail("Debug", "CheckDestTeamUID");
 					for ( auto &id : destTeam.servers ) {
-						TraceEvent(SevError, "IncorrectDestTeamSize\t").detail("UID", id);
+						TraceEvent(SevWarn, "IncorrectDestTeamSize\t").detail("UID", id);
 					}
 				}
 			}
-
+			ASSERT(totalIds == destIds.size());
 
 			self->shardsAffectedByTeamFailure->moveShard(rd.keys, destinationTeams);
 

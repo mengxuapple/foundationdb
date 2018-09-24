@@ -787,6 +787,11 @@ ACTOR Future<Void> checkConsistency(Database cx, std::vector< TesterInterface > 
 			spec.options[0].push_back_deep(spec.options.arena(), KeyValueRef(LiteralStringRef("failureIsError"), LiteralStringRef("true")));
 			lastRun = true;
 		}
+		if ( !testResults.ok() ) { //MX: Debug why DB is at a corrupted state
+			//TODO: MX: print out the team info.
+
+		}
+
 		printf("checkConsistency repairDeadDatacenter start..\n");
 		Void _ = wait( repairDeadDatacenter(cx, dbInfo, "ConsistencyCheck") );
 	}
