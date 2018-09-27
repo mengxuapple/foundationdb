@@ -922,16 +922,24 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 					break;
 				}
 
-				TraceEvent(SevError, "BestTeamStuckOnce").detail("BestTeamsSize",bestTeams.size());
+				TraceEvent(SevWarn, "BestTeamStuckOnce").detail("BestTeamsSize",bestTeams.size())
+					.detail("FoundTeams", foundTeams).detail("AnyHealthy", anyHealthy).detail("WantsNewServers", rd.wantsNewServers)
+					.detail("StuckCount", stuckCount);
 				int i = 0;
 				for ( auto &team : bestTeams ) {
-					TraceEvent(SevWarn, "BestTeam").detail("IsSource", team.second).detail("ServerUID", "CheckBelow");
+					TraceEvent(SevWarn, "BestTeam").detail("IsSource", team.second)
+						.detail("IsHealty", team.first->isHealthy())
+						.detail("ServerUID", "CheckBelow");
 					for ( auto &uid : team.first->getServerIDs() ) {
 						TraceEvent("Server").detail("Index", i).detail("UID", uid);
 					}
 					i++;
 				}
-				TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+				if ( stuckCount > 100 ) {
+					printf("BestTeamStuck for %d times, Trigger error to exit early now!", stuckCount);
+					TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", 1);
+					TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+				}
 
 				TEST(true); //did not find a healthy destination team on the first attempt
 				stuckCount++;
@@ -967,18 +975,18 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 			}
 
 			//MX: Sanity check
-			int totalIds = 0;
+			state int totalIds = 0;
 			for (auto &destTeam : destinationTeams) {
 				totalIds += destTeam.servers.size();
 				if ( destTeam.servers.size() != self->teamSize ) {
 					TraceEvent(SevWarn, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
-						.detail("DestTeamSize", destTeam.servers.size()).detClusterControllerActualWorkersail("Debug", "CheckDestTeamUID");
+						.detail("DestTeamSize", destTeam.servers.size()).detail("Debug", "CheckDestTeamUID");
 					for ( auto &id : destTeam.servers ) {
 						TraceEvent(SevWarn, "IncorrectDestTeamSize\t").detail("UID", id);
 					}
 				}
 			}
-			ASSERT(totalIds == destIds.size());
+			//ASSERT(totalIds == destIds.size()); //MX: Added by Evan
 
 			self->shardsAffectedByTeamFailure->moveShard(rd.keys, destinationTeams);
 
@@ -1002,6 +1010,7 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 								destIds.insert(destIds.end(), extraIds.begin(), extraIds.end());
 								healthyIds.insert(healthyIds.end(), extraIds.begin(), extraIds.end());
 								extraIds.clear();
+								ASSERT(totalIds == destIds.size()); //MX: Sanity check the destIDs before we move keys
 								doMoveKeys = moveKeys(self->cx, rd.keys, destIds, healthyIds, self->lock, Promise<Void>(), &self->startMoveKeysParallelismLock, &self->finishMoveKeysParallelismLock, self->recoveryVersion, self->teamCollections.size() > 1, relocateShardInterval.pairID );
 							} else {
 								self->fetchKeysComplete.insert( rd );

@@ -844,6 +844,7 @@ struct DDTeamCollection {
 				for( int i = 0; i < req.sources.size(); i++ ) {
 					if( !self->server_info.count( req.sources[i] ) ) {
 						TEST( true ); // GetSimilarTeams source server now unknown
+						TraceEvent(SevWarn, "GetTeam").detail("ReqSourceUnknow", req.sources[i]);
 					}
 					else {
 						auto& teamList = self->server_info[ req.sources[i] ]->teams;
@@ -933,6 +934,7 @@ struct DDTeamCollection {
 				}
 			}
 
+			//TODO: MX: Ask Evan:  req.completeSources can be empty and all servers (and server teams) can be unhealthy. We will get stuck at this!
 			if(!bestOption.present() && self->zeroHealthyTeams->get()) {
 				//Attempt to find the unhealthy source server team and return it
 				std::set<UID> completeSources;
@@ -975,17 +977,40 @@ struct DDTeamCollection {
 				valid = false;
 			}
 
+			//TODO: MX: Change TraceEvent level from SevInfo to SevError for debug.
+			//NOTE: We may have invalid bestOption when the DB is initialized when req.completeSources is empty? TODO: Check with Evan about this hypothesis
 			if ( !valid ) {
-				TraceEvent("GetTeamInvalidTeam");
-				self->traceAllInfo();
+				TraceEvent(SevInfo, "MXGetTeamInvalidTeam").detail("WantsNewServer", req.wantsNewServers)
+					.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
+					.detail("InflightPenalty", req.inflightPenalty)
+					.detail("BestOptionPresent", bestOption.present());
+				TraceEvent(SevInfo, "MXReqCompleteSourceUID").detail("Debug", "CheckInfoBelow");
+				for( int i = 0; i < req.completeSources.size(); i++ )
+				{
+					TraceEvent(SevInfo, "MXComplementSourceUID").detail("Index", i).detail("UID", req.completeSources[i]);
+				}
+				self->traceAllInfo(true);
 			}
 
 			//TODO: Check the team size: be sure team size is correct
-			if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
-				TraceEvent(SevError, "IncorrectTeamSizeMX2").detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
-				TraceEvent(SevError, "ReturnedBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc());
+			//TODO: MX: Sanity check place. Change to SevError to debug tricky bugs
+			if ( bestOption.present() ) {
+				if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
+					TraceEvent(SevInfo, "IncorrectTeamSizeMX2").detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
+					TraceEvent(SevInfo, "ReturnedBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc())
+							.detail("WantsNewServer", req.wantsNewServers)
+							.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
+							.detail("InflightPenalty", req.inflightPenalty);;
+					self->traceAllInfo();
+				}
+			} else {
+				TraceEvent(SevInfo, "MXGetTeamBestOptionIsNOTPresent")
+						.detail("WantsNewServer", req.wantsNewServers)
+						.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
+						.detail("InflightPenalty", req.inflightPenalty);;
 				self->traceAllInfo();
 			}
+
 
 			req.reply.send( bestOption );
 			return Void();
@@ -1032,6 +1057,13 @@ struct DDTeamCollection {
 		}
 	}
 
+	void debug_init(vector<UID> const &team, int index) {
+		TraceEvent(SevWarn, "InitTeamInfo").detail("TeamIndex", index).detail("TeamSize", team.size());
+		for ( auto& id: team ) {
+			TraceEvent(SevWarn, "TeamMember").detail("UID", id);
+		}
+	}
+
 	void init( InitialDataDistribution const& initTeams ) {
 		// SOMEDAY: If some servers have teams and not others (or some servers have more data than others) and there is an address/locality collision, should
 		// we preferentially mark the least used server as undesirable?
@@ -1047,7 +1079,9 @@ struct DDTeamCollection {
 				addTeam(t->begin(), t->end(), 1);
 			}
 		} else {
+			int i = 0;
 			for(auto t = initTeams.remoteTeams.begin(); t != initTeams.remoteTeams.end(); ++t) {
+				debug_init(*t, i++);
 				addTeam(t->begin(), t->end(), 1);
 			}
 		}
@@ -1287,7 +1321,7 @@ struct DDTeamCollection {
 		}
 
 		if ( newTeamServers.empty() ) { //NOTE: We must allow creating empty teams because we create empty team when a remote DB is initialized. We then track the empty team to duplicate data
-			TraceEvent(SevWarn, "TeamCreation").detail("CreateEmptyTeam", 1).detail("Debug", "CallerCheckBeforeCall");
+			TraceEvent(SevWarn, "TeamCreation").detail("CreateEmptyTeam", 1).detail("Debug", "MayBeRight");
 		} else if ( newTeamServers.size() != configuration.storageTeamSize ) {
 			TraceEvent(SevWarn, "TeamCreation").detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
 		} else {
@@ -1333,38 +1367,41 @@ struct DDTeamCollection {
 		 */
 
 
-		if ( isInitialTeam && !machineTeamInfo.isValid() ) { // Create machine team and assign to the server team
+		if ( isInitialTeam && !machineTeamInfo.isValid() && !machineIDs.empty() ) { // Create machine team and assign to the server team
 			machineTeamInfo = addMachineTeam(machineIDs.begin(), machineIDs.end());
 			teamInfo->machineTeam = machineTeamInfo;
 		}
 
 		if ( !machineTeamInfo.isValid() ) {
-			TraceEvent("AddTeamFailure").detail("NotFoundMachineTeam", 1).detail("TeamInfo", teamInfo->getDesc());
-		} else { // foundMachineTeam == true
-			bool healthy = true;
-			for(auto s = teamInfo->serverIDs.begin(); s != teamInfo->serverIDs.end(); ++s) {
-				auto& status = server_status.get(*s);
-				if ( status.isFailed || status.isUndesired || status.isWrongConfiguration) {
-					healthy = false;
-				}
-			}
-			if ( healthy == false ) { //print out the unhealthy team info.
-				int i = 0;
-				for(auto s = teamInfo->serverIDs.begin(); s != teamInfo->serverIDs.end(); ++s) {
-					auto& status = server_status.get(*s);
-					TraceEvent(SevInfo, "AddTeamAddUnhealthyTeam").detail("Primary", primary).detail("Index", i++)
-						.detail("ServerUID", s->first()).detail("IsFailed", status.isFailed)
-						.detail("IsUndesired", status.isUndesired).detail("IsWrongConfig", status.isWrongConfiguration);
-				}
-			}
-			teamInfo->machineTeam = machineTeamInfo;
-			teamInfo->tracker = teamTracker( this, teamInfo );
-			assert( teamInfo->serverIDs.size() > 0 );
-			teams.push_back( teamInfo );
-			for ( int i=0;i<newTeamServers.size();i++ ) {
-				server_info[ newTeamServers[i]->id ]->teams.push_back( teamInfo );
+			TraceEvent(SevWarn, "AddTeamWarning").detail("NotFoundMachineTeam", "OKIfTeamIsEmpty").detail("TeamInfo", teamInfo->getDesc())
+				.detail("ServerTeamsMachineTeam", "NULL");
+		}
+
+		//
+		bool healthy = true;
+		for(auto s = teamInfo->serverIDs.begin(); s != teamInfo->serverIDs.end(); ++s) {
+			auto& status = server_status.get(*s);
+			if ( status.isFailed || status.isUndesired || status.isWrongConfiguration) {
+				healthy = false;
 			}
 		}
+		if ( healthy == false ) { //print out the unhealthy team info.
+			int i = 0;
+			for(auto s = teamInfo->serverIDs.begin(); s != teamInfo->serverIDs.end(); ++s) {
+				auto& status = server_status.get(*s);
+				TraceEvent(SevInfo, "AddTeamAddUnhealthyTeam").detail("Primary", primary).detail("Index", i++)
+					.detail("ServerUID", s->first()).detail("IsFailed", status.isFailed)
+					.detail("IsUndesired", status.isUndesired).detail("IsWrongConfig", status.isWrongConfiguration);
+			}
+		}
+		teamInfo->machineTeam = machineTeamInfo;
+		teamInfo->tracker = teamTracker( this, teamInfo );
+		//assert( teamInfo->serverIDs.size() > 0 ); //team can be empty at DB initialization
+		teams.push_back( teamInfo );
+		for ( int i=0;i<newTeamServers.size();i++ ) {
+			server_info[ newTeamServers[i]->id ]->teams.push_back( teamInfo );
+		}
+
 	}
 
 	template<class InputIt>
@@ -1598,18 +1635,36 @@ struct DDTeamCollection {
 		int i = 0;
 		for ( auto &uid: machineLocalityMap.getObjects() ) {
 			Reference<LocalityRecord> record = machineLocalityMap.getRecord(i);
-			TraceEvent("MachineLocalityMap").detail("LocalityIndex", i++)
-				.detail("UID", uid->toString()).detail("LocalityRecord", record->toString());
+			if ( record.isValid() ) {
+				TraceEvent("MachineLocalityMap").detail("LocalityIndex", i++)
+						.detail("UID", uid->toString()).detail("LocalityRecord", record->toString());
+			} else {
+				TraceEvent("MachineLocalityMap").detail("LocalityIndex", i++)
+						.detail("UID", uid->toString()).detail("LocalityRecord", "[NotFound]");
+			}
 		}
 	}
 
 	void traceAllInfo() {
+		return; //Mute debug info to avoid splitted xml file. TestHardness can only handle 1 xml file
 		TraceEvent("TraceAllInfo").detail("Primary", primary).detail("DesiredTeamSize", configuration.storageTeamSize);
 		traceServerInfo();
 		traceServerTeamInfo();
 		traceMachineInfo();
 		traceMachineTeamInfo();
-		traceMachineLocalityMap();
+		//traceMachineLocalityMap();
+	}
+
+	void traceAllInfo(bool shouldPrint) {
+		if ( !shouldPrint )
+			return;
+
+		TraceEvent("TraceAllInfo").detail("Primary", primary).detail("DesiredTeamSize", configuration.storageTeamSize);
+		traceServerInfo();
+		traceServerTeamInfo();
+		traceMachineInfo();
+		traceMachineTeamInfo();
+		//traceMachineLocalityMap();
 	}
 
 	void rebuildMachineLocalityMap() {
@@ -1664,9 +1719,10 @@ struct DDTeamCollection {
 				.detail("CurrentMachineTeamNumber", machineTeams.size())
 				.detail("CurrentTotalMachines", machine_info.size())
 				.detail("DesiredTeamPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
-		traceMachineInfo();
-		traceServerInfo();
-		traceMachineLocalityMap();
+		traceAllInfo();
+//		traceMachineInfo();
+//		traceServerInfo();
+//		traceMachineLocalityMap();
 		printf("addBestMachineTeams: machineTeamsToBuild:%d, CurrentTotalMachines:%d, currentTotalServers:%d, storageTeamSize:%d\n",
 			   machineTeamsToBuild, machine_info.size(), server_info.size(), configuration.storageTeamSize);
 
@@ -1761,10 +1817,11 @@ struct DDTeamCollection {
 								.detail("InvalidUID", (*pUID).toString())
 								.detail("ServerTeamNum", server_info[*pUID]->teams.size())
 								.detail("DesiredTeamsPerServer", SERVER_KNOBS->DESIRED_TEAMS_PER_SERVER);
-						traceMachineInfo();
-						traceMachineLocalityMap();
-						traceServerInfo();
-						traceServerTeamInfo();
+						traceAllInfo();
+//						traceMachineInfo();
+//						traceMachineLocalityMap();
+//						traceServerInfo();
+//						traceServerTeamInfo();
 						valid = false;
 						break;
 					}
@@ -1787,8 +1844,8 @@ struct DDTeamCollection {
 						.detail("ProcessIP", server_info.find(**process) != server_info.end()
 								? server_info[**process]->lastKnownInterface.address().toString() : "[unset]");
 					score += server_info[**process]->teams.size();
-					TraceEvent("AddMachineTeamsBestOf").detail("Primary", primary).detail("AddedTeams", addedMachineTeams)
-						.detail("Attempt", i).detail("CurrentScore", score);
+//					TraceEvent("AddMachineTeamsBestOf").detail("Primary", primary).detail("AddedTeams", addedMachineTeams)
+//						.detail("Attempt", i).detail("CurrentScore", score);
 					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
 					machineIDs.push_back(machine_id);
 				}
@@ -2314,12 +2371,12 @@ struct DDTeamCollection {
 			TraceEvent("AddTeamsBestOf").detail("Primary", primary).detail("TraceMachineServerLocalityInfo", 1).detail("TeamsToBuild", teamsToBuild);
 			traceAllInfo();
 
-			TraceEvent("AddTeamsBestOf").detail("Primary", primary)
-					.detail("TeamsToBuild", teamsToBuild)
-					.detail("ServerInfoSize", server_info.size())
-					.detail("MachineLocalityMapSize", machineLocalityMap.size())
-					.detail("MachineInfoSize", machine_info.size())
-					.detail("MachineTeamNumber", machineTeams.size());
+//			TraceEvent("AddTeamsBestOf").detail("Primary", primary)
+//					.detail("TeamsToBuild", teamsToBuild)
+//					.detail("ServerInfoSize", server_info.size())
+//					.detail("MachineLocalityMapSize", machineLocalityMap.size())
+//					.detail("MachineInfoSize", machine_info.size())
+//					.detail("MachineTeamNumber", machineTeams.size());
 
 			if ( machineTeams.size() >= machineTeamThreashold  ) {
 				TraceEvent(SevWarn, "AddTeamsBestOf").detail("Primary", primary).detail("ReachMaximumMachineTeamNumber", "Reason")
@@ -2390,12 +2447,14 @@ struct DDTeamCollection {
 				//Chose the least used machine team
 				Reference<TCMachineTeamInfo> chosenMachineTeam;
 				if ( findOneLeastUsedMachineTeam(machineTeamStats, machineTeamPenalties, chosenMachineTeam) ) {
-					TraceEvent(SevError, "MachineTeamNotFound").detail("Primary", primary).detail("MachineTeamNumber", machineTeams.size());
+					//TODO: MX: Debug: may change SevWarn to SevError to trigger early exit.
+					//TODO: We may face the situation that temporarily we have no healthy machine. What should we do? Ask Evan?
+					TraceEvent(SevWarn, "MachineTeamNotFound").detail("Primary", primary).detail("MachineTeamNumber", machineTeams.size());
 					traceAllInfo();
 					break;
 				}
-				TraceEvent("ChosenMachineTeam").detail("Primary", primary).detail("MachineIDs", chosenMachineTeam->getMachineIDsStr())
-						.detail("MachineTeamScore", chosenMachineTeam.isValid() ? machineTeamStats[chosenMachineTeam] : -1);
+//				TraceEvent("ChosenMachineTeam").detail("Primary", primary).detail("MachineIDs", chosenMachineTeam->getMachineIDsStr())
+//						.detail("MachineTeamScore", chosenMachineTeam.isValid() ? machineTeamStats[chosenMachineTeam] : -1);
 
 				//Step 4: Randomly pick 1 server from each machine in the machine team into the server team
 				vector<UID> serverTeam;
@@ -2403,7 +2462,7 @@ struct DDTeamCollection {
 				for ( auto &machine: chosenMachineTeam->machines ) {
 					UID chosenServer = findLeastUsedServerOnMachine(machine); //machine->findOneLeastUsedServer();
 					serverTeam.push_back(chosenServer);
-					TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
+//					TraceEvent("AddTeamsBestOf").detail("ChosenServer", tmpIndex++).detail("ChosenServerUID", chosenServer);
 				}
 
 				//Step 5: Add the server team
@@ -2465,7 +2524,7 @@ struct DDTeamCollection {
 			std::sort(bestServerTeam.begin(), bestServerTeam.end());
 
 			if( !teamExists( bestServerTeam ) ) {
-				addTeam(bestServerTeam.begin(), bestServerTeam.end(), true);//TODO: set initialTeam to false
+				addTeam(bestServerTeam.begin(), bestServerTeam.end(), false);//TODO: set initialTeam to false
 				addedTeams++;
 			} else {
 				//Decrease the priority the chosenMachineTeam will be chosen again by increasing its team score
@@ -2491,24 +2550,25 @@ struct DDTeamCollection {
 			if ( isMachineHealthy(machine.second) )
 				++machineNum;
 		}
-		int maxMachineTeams = 0;
+		int maxMachineTeams = 1;
 		for ( int i = 0; i < configuration.storageTeamSize; ++i ) {
-			maxMachineTeams += ( machineNum - i );
+			maxMachineTeams = maxMachineTeams * ( machineNum - i );
 		}
 		for ( int i = 1; i <= configuration.storageTeamSize; ++i ) {
 			maxMachineTeams = maxMachineTeams / i;
 		}
 		if (  addedTeams < teamsToBuild && teams.size() < maxMachineTeams ) {
-			TraceEvent(SevError, "MissValidTeams").detail("Debug","CheckSysInfoBelow")
+			TraceEvent(SevInfo, "MissValidTeams").detail("Debug","CheckSysInfoBelow")
 					.detail("AddedTeams", addedTeams).detail("TeamsToBuild", teamsToBuild)
 					.detail("TeamNum", teams.size()).detail("MaxMachineTeams", maxMachineTeams);
 			traceAllInfo();
-			printf("Error in my code. Exit early!");
-			TraceEvent(SevError, "ExitMX").detail("ErrorOnPurpose", * (int *) NULL);
+			//TODO: Aggressive debug
+			//printf("Error in my code in addTeamsBestOf. Exit early!\n");
+			//TraceEvent(SevError, "ExitMX").detail("ErrorOnPurpose", * (int *) NULL);
 		}
 
 		traceAllInfo();
-		sanityCheckCreatedTeams(old_teams);
+		//sanityCheckCreatedTeams(old_teams); //Uncomment in debugging
 
 		return addedTeams;
 	}
@@ -2764,11 +2824,13 @@ struct DDTeamCollection {
 		}
 		TraceEvent(healthy == healthyTeamCount ? SevInfo : SevWarnAlways, "HealthyTeamCheck", masterId)
 			.detail("ValidatedCount", healthy)
-			.detail("ProvidedCount", healthyTeamCount);
+			.detail("ProvidedCount", healthyTeamCount)
+			.detail("Primary", primary);
 	}
 
 	bool shouldHandleServer(const StorageServerInterface &newServer) {
-		return (includedDCs.empty() || std::find(includedDCs.begin(), includedDCs.end(), newServer.locality.dcId()) != includedDCs.end() || (otherTrackedDCs.present() && std::find(otherTrackedDCs.get().begin(), otherTrackedDCs.get().end(), newServer.locality.dcId()) == otherTrackedDCs.get().end()));
+		return (includedDCs.empty() || std::find(includedDCs.begin(), includedDCs.end(), newServer.locality.dcId()) != includedDCs.end() ||
+			(otherTrackedDCs.present() && std::find(otherTrackedDCs.get().begin(), otherTrackedDCs.get().end(), newServer.locality.dcId()) == otherTrackedDCs.get().end()));
 	}
 
 	void addServer( StorageServerInterface newServer, ProcessClass processClass, Promise<Void> errorOut, Version addedVersion ) {
@@ -2969,7 +3031,7 @@ ACTOR Future<Void> teamTracker( DDTeamCollection *self, Reference<IDataDistribut
 
 	try {
 		loop {
-			TraceEvent("TeamHealthChangeDetected", self->masterId).detail("IsReady", self->initialFailureReactionDelay.isReady() );
+			TraceEvent("TeamHealthChangeDetected", self->masterId).detail("Primary", self->primary).detail("IsReady", self->initialFailureReactionDelay.isReady() );
 			// Check if the number of degraded machines has changed
 			state vector<Future<Void>> change;
 			auto servers = team->getServerIDs();
@@ -3711,7 +3773,7 @@ ACTOR Future<Void> dataDistributionTeamCollection(
 					.detail("ServerNumber", self.server_info.size()).detail("StorageTeamSize", self.configuration.storageTeamSize)
 					.detail("HighestPriority", highestPriority).trackLatest( self.primary ? "TotalDataInFlight" : "TotalDataInFlightRemote" );
 				if (  self.unhealthyServers  > 0 ) { //#healthy server < config setting // self.configuration.storageTeamSize
-					TraceEvent(SevError, "HasUnhealthyServers").detail("Primary", self.primary).detail("Debug", "CheckInfoBelow");
+					TraceEvent(SevWarn, "HasUnhealthyServers").detail("Primary", self.primary).detail("Debug", "CheckInfoBelow");
 					self.traceAllInfo();
 				}
 				loggingTrigger = delay( SERVER_KNOBS->DATA_DISTRIBUTION_LOGGING_INTERVAL );

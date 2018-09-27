@@ -1081,7 +1081,7 @@ struct ConsistencyCheckWorkload : TestWorkload
 				}
 				if( !found ) {
 					TraceEvent("ConsistencyCheck_NoStorage").detail("Address", workers[i].first.address())
-						.detail("ProcessClass?=StorageClass", workers[i].second == ProcessClass::StorageClass);
+						.detail("ProcessClassEqualToStorageClass", (int) (workers[i].second == ProcessClass::StorageClass));
 					missingStorage.insert(workers[i].first.locality.dcId());
 				}
 			}
