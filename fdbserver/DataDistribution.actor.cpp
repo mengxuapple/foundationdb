@@ -198,6 +198,11 @@ public:
 			.detail("MachineIDs", getMachineIDsStr());
 	}
 
+	int size() {
+		assert( machines.size() == machineIDs.size() );
+		return machineIDs.size();
+	}
+
 	std::string getMachineIDsStr() {
 		std::string str;
 		if ( this == NULL )
@@ -799,13 +804,21 @@ struct DDTeamCollection {
 	}
 
 	// MX: print out team info for debug
-	ACTOR Future<Void> printTeamInfo( DDTeamCollection *self ) {
+	/*
+	ACTOR Future<Void> printTeamInfo( DDTeamCollection *self) {
 
-		Void _ = wait( self->printTeamInfoSignal );
+		//Void _ = wait( self->printTeamInfoSignal );
 		TraceEvent("DumpTeamInfoAsyn").detail("Debug", "CheckInfoBelow");
 		self->traceAllInfo();
+		if ( self->primary )
+			primary = 1;
+		else
+			primary = 0;
+
+		//primary.send();
 		return Void();
 	}
+	*/
 
 	// SOMEDAY: Make bestTeam better about deciding to leave a shard where it is (e.g. in PRIORITY_TEAM_HEALTHY case)
 	//		    use keys, src, dest, metrics, priority, system load, etc.. to decide...
@@ -880,7 +893,11 @@ struct DDTeamCollection {
 					//TODO: Check the team size: be sure team size is correct
 					if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
 						TraceEvent(SevError, "IncorrectTeamSizeMX").detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
-						TraceEvent(SevError, "ReturnedBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc());
+						TraceEvent(SevError, "ReturnedIncorrectBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc())
+							.detail("ReqSourcesSize", req.sources.size());
+						for( int i = 0; i < req.sources.size(); i++ ) {
+							TraceEvent(SevInfo,"Source\t").detail("Index", i).detail("UID", req.sources[i]);
+						}
 						self->traceAllInfo();
 					}
 					req.reply.send( bestOption );
@@ -983,7 +1000,8 @@ struct DDTeamCollection {
 				TraceEvent(SevInfo, "MXGetTeamInvalidTeam").detail("WantsNewServer", req.wantsNewServers)
 					.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
 					.detail("InflightPenalty", req.inflightPenalty)
-					.detail("BestOptionPresent", bestOption.present());
+					.detail("BestOptionPresent", bestOption.present())
+					.detail("ReqSourceSize", req.sources.size());
 				TraceEvent(SevInfo, "MXReqCompleteSourceUID").detail("Debug", "CheckInfoBelow");
 				for( int i = 0; i < req.completeSources.size(); i++ )
 				{
@@ -996,19 +1014,31 @@ struct DDTeamCollection {
 			//TODO: MX: Sanity check place. Change to SevError to debug tricky bugs
 			if ( bestOption.present() ) {
 				if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
-					TraceEvent(SevInfo, "IncorrectTeamSizeMX2").detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
-					TraceEvent(SevInfo, "ReturnedBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc())
+					TraceEvent(SevInfo, "IncorrectTeamSizeMX2").detail("Primary", self->primary)
+						.detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
+					TraceEvent(SevInfo, "ReturnedIncorrectBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc())
 							.detail("WantsNewServer", req.wantsNewServers)
 							.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
-							.detail("InflightPenalty", req.inflightPenalty);;
-					self->traceAllInfo();
+							.detail("InflightPenalty", req.inflightPenalty).detail("ReqSourceSize", req.sources.size())
+							.detail("ZeroHealthyTeams", self->zeroHealthyTeams->get());
+					TraceEvent(SevInfo, "MXReqCompleteSourceUID").detail("Debug", "CheckInfoBelow");
+					for( int i = 0; i < req.completeSources.size(); i++ )
+					{
+						TraceEvent(SevInfo, "MXComplementSourceUID").detail("Index", i).detail("UID", req.completeSources[i]);
+					}
+					self->traceAllInfo(true);
 				}
 			} else {
 				TraceEvent(SevInfo, "MXGetTeamBestOptionIsNOTPresent")
 						.detail("WantsNewServer", req.wantsNewServers)
 						.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
-						.detail("InflightPenalty", req.inflightPenalty);;
-				self->traceAllInfo();
+						.detail("InflightPenalty", req.inflightPenalty).detail("ReqSourceSize", req.sources.size());
+				TraceEvent(SevInfo, "MXReqCompleteSourceUID").detail("Debug", "CheckInfoBelow");
+				for( int i = 0; i < req.completeSources.size(); i++ )
+				{
+					TraceEvent(SevInfo, "MXComplementSourceUID").detail("Index", i).detail("UID", req.completeSources[i]);
+				}
+				self->traceAllInfo(true);
 			}
 
 
@@ -1058,7 +1088,8 @@ struct DDTeamCollection {
 	}
 
 	void debug_init(vector<UID> const &team, int index) {
-		TraceEvent(SevWarn, "InitTeamInfo").detail("TeamIndex", index).detail("TeamSize", team.size());
+		TraceEvent(SevWarn, "DataDistributionInit").detail("Primary", primary)
+			.detail("TeamIndex", index).detail("TeamSize", team.size());
 		for ( auto& id: team ) {
 			TraceEvent(SevWarn, "TeamMember").detail("UID", id);
 		}
@@ -1074,8 +1105,11 @@ struct DDTeamCollection {
 		}
 
 		//Add server team from inital data pulled from DB. Restore machine team from server team
+		TraceEvent("DataDistributionInit").detail("Primary", primary);
 		if(primary) {
+			int i = 0;
 			for(auto t = initTeams.primaryTeams.begin(); t != initTeams.primaryTeams.end(); ++t) {
+				debug_init(*t, i++);
 				addTeam(t->begin(), t->end(), 1);
 			}
 		} else {
@@ -1128,7 +1162,8 @@ struct DDTeamCollection {
 			.detail("MachineMinTeams", minMachineTeams)
 			.detail("MachineMaxTeams", maxMachineTeams);
 
-		traceTeamInfo();
+		traceAllInfo();
+		//traceTeamInfo();
 	}
 
 	//MX: Print out all teams' information: each server's info in each team
@@ -1321,11 +1356,14 @@ struct DDTeamCollection {
 		}
 
 		if ( newTeamServers.empty() ) { //NOTE: We must allow creating empty teams because we create empty team when a remote DB is initialized. We then track the empty team to duplicate data
-			TraceEvent(SevWarn, "TeamCreation").detail("CreateEmptyTeam", 1).detail("Debug", "MayBeRight");
+			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
+				.detail("CreateEmptyTeam", 1).detail("Debug", "MayBeRight");
 		} else if ( newTeamServers.size() != configuration.storageTeamSize ) {
-			TraceEvent(SevWarn, "TeamCreation").detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
+			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
+				.detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
 		} else {
-			TraceEvent("TeamCreation").detail("TeamSizeToCreate", newTeamServers.size());
+			TraceEvent("TeamCreation").detail("IsInitialTeam", isInitialTeam)
+				.detail("TeamSizeToCreate", newTeamServers.size());
 		}
 
 		Reference<TCTeamInfo> teamInfo( new TCTeamInfo( newTeamServers ) );
@@ -1379,7 +1417,11 @@ struct DDTeamCollection {
 
 		//
 		bool healthy = true;
-		for(auto s = teamInfo->serverIDs.begin(); s != teamInfo->serverIDs.end(); ++s) {
+		if ( teamInfo->serverIDs.size() != configuration.storageTeamSize ) { //A healthy team must have the disired number of servers. We may add an unhealthy team in initialization
+			healthy = false;
+		}
+
+		for(auto s = teamInfo->serverIDs.begin(); healthy && s != teamInfo->serverIDs.end(); ++s) {
 			auto& status = server_status.get(*s);
 			if ( status.isFailed || status.isUndesired || status.isWrongConfiguration) {
 				healthy = false;
@@ -1595,6 +1637,7 @@ struct DDTeamCollection {
 		int i = 0;
 		for ( auto &team : teams ) {
 			TraceEvent("ServerTeamInfo").detail("TeamIndex", i++)
+				.detail("Healthy", team->isHealthy())
 				.detail("ServerNumber", team->serverIDs.size())
 				.detail("MemberIDs", team->getServerIDsStr());
 		}
@@ -1950,6 +1993,11 @@ struct DDTeamCollection {
 
 	bool isMachineTeamHealthy( Reference<TCMachineTeamInfo> const &machineTeam ) {
 		int healthyNum = 0;
+
+		// A healthy machine team should have the desired number of machines
+		if ( machineTeam->size() != configuration.storageTeamSize )
+			return false;
+
 		for ( auto &machine : machineTeam->machines ) {
 			if ( isMachineHealthy(machine) ) {
 				healthyNum++;
@@ -2379,6 +2427,7 @@ struct DDTeamCollection {
 //					.detail("MachineTeamNumber", machineTeams.size());
 
 			if ( machineTeams.size() >= machineTeamThreashold  ) {
+				TEST(true);
 				TraceEvent(SevWarn, "AddTeamsBestOf").detail("Primary", primary).detail("ReachMaximumMachineTeamNumber", "Reason")
 						.detail("MachineTeamNum", machineTeams.size()).detail("MachineTeamThreshold", machineTeamThreashold)
 						.detail("MachineNumber", machine_info.size()).detail("MaxTeamsPerServer", SERVER_KNOBS->MAX_TEAMS_PER_SERVER);

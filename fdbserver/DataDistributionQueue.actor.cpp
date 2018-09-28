@@ -880,6 +880,7 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 		ASSERT( rd.src.size() );
 		loop {
 			state int stuckCount = 0;
+			state int bestTeamStuckThreshold = 50;
 			loop {
 				state int tciIndex = 0;
 				state bool foundTeams = true;
@@ -896,7 +897,7 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 					req.sources = rd.src;
 					req.completeSources = rd.completeSources;
 					Optional<Reference<IDataDistributionTeam>> bestTeam = wait(brokenPromiseToNever(self->teamCollections[tciIndex].getTeam.getReply(req)));
-					if(!bestTeam.present()) {
+					if(!bestTeam.present()) { //MX: If a DC has no healthy team, we stop checking the other DCs until the unhealthy DC is healthy again or is excluded.
 						foundTeams = false;
 						break;
 					}
@@ -935,10 +936,16 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 					}
 					i++;
 				}
-				if ( stuckCount > 100 ) {
-					printf("BestTeamStuck for %d times, Trigger error to exit early now!", stuckCount);
-					TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", 1);
-					TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+				if ( stuckCount > bestTeamStuckThreshold ) {
+					printf("[WARNING] BestTeamStuck for %d times!\n", stuckCount);
+					TraceEvent(SevInfo, "BestTeamStuckTooLong").detail("StuckCountEach50", stuckCount)
+							.detail("TeamCollectionIndex", tciIndex).detail("FoundTeams", foundTeams)
+							.detail("AnyWithSource", anyWithSource).detail("AllHealthy", allHealthy).detail("AnyHealthy", anyHealthy);
+					bestTeamStuckThreshold += 50; //Log each 50 bestTeamStuck
+
+					//printf("BestTeamStuck for %d times, Trigger error to exit early now!", stuckCount);
+					//TraceEvent(SevWarn, "EarlyExit").detail("ErrorOnPurpose", 1);
+					//TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
 				}
 
 				TEST(true); //did not find a healthy destination team on the first attempt
@@ -978,14 +985,19 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 			state int totalIds = 0;
 			for (auto &destTeam : destinationTeams) {
 				totalIds += destTeam.servers.size();
-				if ( destTeam.servers.size() != self->teamSize ) {
-					TraceEvent(SevWarn, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
-						.detail("DestTeamSize", destTeam.servers.size()).detail("Debug", "CheckDestTeamUID");
+			}
+			if ( totalIds != self->teamSize ) {
+				TraceEvent(SevWarn, "IncorrectDestTeamSize").detail("ExpectedTeamSize", self->teamSize)
+						.detail("DestTeamSize", totalIds).detail("Debug", "CheckDestTeamUID");
+				int i = 0;
+				for (auto &destTeam : destinationTeams) {
 					for ( auto &id : destTeam.servers ) {
-						TraceEvent(SevWarn, "IncorrectDestTeamSize\t").detail("UID", id);
+						TraceEvent(SevWarn, "IncorrectDestTeamSize\t").detail("TeamID", i).detail("UID", id);
 					}
+					++i;
 				}
 			}
+
 			//ASSERT(totalIds == destIds.size()); //MX: Added by Evan
 
 			self->shardsAffectedByTeamFailure->moveShard(rd.keys, destinationTeams);
