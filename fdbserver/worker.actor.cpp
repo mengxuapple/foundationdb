@@ -112,10 +112,11 @@ ACTOR Future<Void> forwardError( PromiseStream<ErrorInfo> errors,
 
 ACTOR Future<Void> handleIOErrors( Future<Void> actor, IClosable* store, UID id, Future<Void> onClosed = Void() ) {
 	state Future<ErrorOr<Void>> storeError = actor.isReady() ? Never() : errorOr( store->getError() );
+	TraceEvent("MXHandleIOErrorInfo").detail("StoreErrorIsError", storeError.isError()).detail("ActorIsReady", actor.isReady());
 	choose {
 		when (state ErrorOr<Void> e = wait( errorOr(actor) )) {
 			Void _ = wait(onClosed);
-			if(storeError.isReady()) throw storeError.getError();
+			if(storeError.isReady()) throw storeError.getError();//MX: storeError may not be an error.
 			if (e.isError()) throw e.getError(); else return e.get();
 		}
 		when (ErrorOr<Void> e = wait( storeError )) {
