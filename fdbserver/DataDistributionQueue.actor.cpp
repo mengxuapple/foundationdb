@@ -943,9 +943,11 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 							.detail("AnyWithSource", anyWithSource).detail("AllHealthy", allHealthy).detail("AnyHealthy", anyHealthy);
 					bestTeamStuckThreshold += 50; //Log each 50 bestTeamStuck
 
-					//printf("BestTeamStuck for %d times, Trigger error to exit early now!", stuckCount);
-					//TraceEvent(SevWarn, "EarlyExit").detail("ErrorOnPurpose", 1);
-					//TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+					if ( stuckCount > 200 ) {
+						printf("BestTeamStuck for %d times, Trigger error to exit early now!", stuckCount);
+						TraceEvent(SevWarn, "EarlyExit").detail("ErrorOnPurpose", 1);
+						TraceEvent(SevError, "EarlyExit").detail("ErrorOnPurpose", * ((int *) NULL));
+					}
 				}
 
 				TEST(true); //did not find a healthy destination team on the first attempt

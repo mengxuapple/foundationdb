@@ -34,8 +34,9 @@
 #include "flow/UnitTest.h"
 
 class TCTeamInfo;
-class TCMachineTeamInfo;
 struct TCMachineInfo;
+class TCMachineTeamInfo;
+
 
 struct TCServerInfo : public ReferenceCounted<TCServerInfo> {
 	UID id;
@@ -78,6 +79,7 @@ struct TCMachineInfo: public ReferenceCounted<TCMachineInfo> {
 			serversOnMachine.push_back(server);
 			machineID = server->lastKnownInterface.locality.machineId().get();
 	}
+
 
 	std::string getServersIDStr() {
 		std::string str;
@@ -1032,7 +1034,8 @@ struct DDTeamCollection {
 				TraceEvent(SevInfo, "MXGetTeamBestOptionIsNOTPresent")
 						.detail("WantsNewServer", req.wantsNewServers)
 						.detail("WantsTrueBest", req.wantsTrueBest).detail("PreferLowestUtilization", req.preferLowerUtilization)
-						.detail("InflightPenalty", req.inflightPenalty).detail("ReqSourceSize", req.sources.size());
+						.detail("InflightPenalty", req.inflightPenalty).detail("ReqSourceSize", req.sources.size())
+						.detail("ZeroHealthyTeams", self->zeroHealthyTeams->get());
 				TraceEvent(SevInfo, "MXReqCompleteSourceUID").detail("Debug", "CheckInfoBelow");
 				for( int i = 0; i < req.completeSources.size(); i++ )
 				{
@@ -1797,7 +1800,7 @@ struct DDTeamCollection {
 				if ( !isMachineHealthy(machine.second) )
 					continue;
 
-				int teamCount = machine.second->machineTeams.size();
+				int teamCount = countCorrectSizedMachineTeam(machine.second, configuration.storageTeamSize);
 				if(teamCount < minTeamCount) {
 					leastUsedMachines.clear();
 					minTeamCount = teamCount;
@@ -2063,7 +2066,7 @@ struct DDTeamCollection {
 
 			int score = calculateMachineTeamScore(machineTeam);
 			assert ( machineTeamPenalties.find(machineTeam) != machineTeamPenalties.end() );
-			score += machineTeamPenalties[machineTeam]; //Penalize the team if we chose an existing server team from the machine team
+			score += machineTeamPenalties[machineTeam]; //Penalize the team if we chose a/Tracen existing server team from the machine team
 			machineTeamStats.insert(std::make_pair(machineTeam, score));
 		}
 
@@ -2155,6 +2158,19 @@ struct DDTeamCollection {
 		return leastUsedMachineTeam;
 	}
 
+	/*
+	 * A server's team may have incorrect size. We do NOT want to count those teams because they will be deleted any way
+	 */
+	int countCorrectSizeTeam(Reference<TCServerInfo> &server, int expectedSize) {
+		int count = 0;
+		for ( auto &team : server->teams ) {
+			if ( team->size() == expectedSize ) {
+				++count;
+			}
+		}
+		return count;
+	}
+
 	UID findLeastUsedServerOnMachine(Reference<TCMachineInfo> machine) {
 		vector<UID> leastUsedServers;
 		int minTeamNumber = std::numeric_limits<int>::max();
@@ -2164,11 +2180,13 @@ struct DDTeamCollection {
 			if ( server_status.get(server->id).isUnhealthy() ) //Only pick healthy server, which is not failed or excluded.
 				continue;
 
-			if ( server->teams.size() < minTeamNumber ) {
-				minTeamNumber = server->teams.size();
+			//if ( server->teams.size() < minTeamNumber ) {
+			int numTeams = countCorrectSizeTeam(server, configuration.storageTeamSize); //server->teams.size();
+			if (  numTeams < minTeamNumber ) {
+				minTeamNumber = numTeams; //server->teams.size();
 				leastUsedServers.clear();
 			}
-			if ( minTeamNumber <= server->teams.size() ) {
+			if ( minTeamNumber <= numTeams ) { //server->teams.size();
 				leastUsedServers.push_back(server->id);
 			}
 		}
@@ -2371,6 +2389,19 @@ struct DDTeamCollection {
 		if ( error > 0 ) {
 			TraceEvent("BuildInvalidTeam").detail("InvalidTeamNumber", error).detail("Debug", "CheckInfoAbove");
 		}
+	}
+
+	/*
+	 * @param expectedSize is the expected team size
+	 * @return the number of machine teams that match the correct team size
+	 */
+	int countCorrectSizedMachineTeam(Reference<TCMachineInfo> &machine, const int expectedSize) {
+		int count = 0;
+		for ( auto &machineTeam : machine->machineTeams ) {
+			if ( machineTeam->size() == expectedSize )
+				++count;
+		}
+		return count;
 	}
 
 	/**
@@ -2917,7 +2948,7 @@ struct DDTeamCollection {
 		*/
 
 		r->tracker = storageServerTracker( this, cx, r.getPtr(), &server_status, lock, masterId, &server_info, serverChanges, errorOut, addedVersion );
-		//doBuildTeams = true;
+		doBuildTeams = true;
 		restartTeamBuilder.trigger();
 	}
 
@@ -3145,7 +3176,8 @@ ACTOR Future<Void> teamTracker( DDTeamCollection *self, Reference<IDataDistribut
 					self->zeroHealthyTeams->set(self->healthyTeamCount == 0);
 
 					if( self->healthyTeamCount == 0 ) {
-						TraceEvent(SevWarn, "ZeroTeamsHealthySignalling", self->masterId).detail("SignallingTeam", team->getDesc());
+						TraceEvent(SevWarn, "ZeroTeamsHealthySignalling", self->masterId).detail("SignallingTeam", team->getDesc())
+							.detail("Primary", self->primary);
 					}
 
 					TraceEvent("TeamHealthDifference", self->masterId)
