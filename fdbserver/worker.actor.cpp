@@ -140,8 +140,9 @@ ACTOR Future<Void> workerHandleErrors(FutureStream<ErrorInfo> errors) {
 				err.error.code() == error_code_actor_cancelled ||
 				err.error.code() == error_code_coordinators_changed;  // The worker server was cancelled
 
-			if(!ok)
+			if(!ok) {
 				err.error = checkIOTimeout(err.error);  // Possibly convert error to io_timeout
+			}
 
 			endRole(err.role, err.id, "Error", ok, err.error);
 
