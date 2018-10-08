@@ -231,7 +231,7 @@ bool PolicyAcross::selectReplicas(
 	_newResults.clear();
 	_addedResults.resize(_arena, 0);
 
-	if ((g_replicationdebug > 3) && (alsoServers.size())) {
+	if ((g_replicationdebug > 5) && (alsoServers.size())) {
 		printf("Across !also:%4lu key: %-7s policy: %-10s => %s\n", alsoServers.size(), _attribKey.c_str(), _policy->name().c_str(), _policy->info().c_str());
 	}
 	for (auto& alsoServer : alsoServers) {
@@ -242,9 +242,6 @@ bool PolicyAcross::selectReplicas(
 				_selected = fromServers->restrict(indexKey, value.get());
 				if (_selected->size()) {
 					// Pass only the also array item which are valid for the value
-					if (g_replicationdebug > 5) {
-						printf("Across !select    key: %-7s value: (%3d) %-10s entry: %s\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
-					}
 					resultsSize = _newResults.size();
 					if (_policy->selectReplicas(_selected, alsoServers, _newResults))
 					{
@@ -255,27 +252,17 @@ bool PolicyAcross::selectReplicas(
 						else {
 							_addedResults.push_back(_arena, std::pair<int, int>(resultsAdded, resultsSize));
 						}
-						if (g_replicationdebug > 5) {
-							printf("Across !added:%3d key: %-7s count:%3d of%3d value: (%3d) %-10s entry: %s\n", resultsAdded, _attribKey.c_str(), count, _count, value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
-						}
-						if (count >= _count) break;
+						if (count >= _count)
+							break;
 						_usedValues.insert(lowerBound, value.get());
 					}
-					else if (g_replicationdebug > 5) {
-						printf("Across !no answer key: %-7s value: (%3d) %-10s entry: %s\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
-					}
 				}
-				else if (g_replicationdebug > 5) {
-					printf("Across !empty set key: %-7s value: (%3d) %-10s entry: %s\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
-				}
-
-			}
-			else if (g_replicationdebug > 5) {
-				printf("Across !duplicate key: %-7s value: (%3d) %-10s entry: %s\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
 			}
 		}
-		else if (g_replicationdebug > 5) {
-			printf("Across !no value  key: %-7s  %21s entry: %s\n", _attribKey.c_str(), "", fromServers->getEntryInfo(alsoServer).c_str());
+		if ( g_replicationdebug > 5 ) {
+			printf("Across !duplicate key: %-7s value: (%3d) %-10s entry: %s\n",
+				   _attribKey.c_str(), value.present() ? value.get()._id : -1,
+				   fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(alsoServer).c_str());
 		}
 	}
 
@@ -284,11 +271,9 @@ bool PolicyAcross::selectReplicas(
 		// Sort the added results array
 		std::sort(_addedResults.begin(), _addedResults.end(), PolicyAcross::compareAddedResults);
 
-		if (g_replicationdebug > 2) {
+		if (g_replicationdebug > 5) {
 			printf("Across !add sets  key: %-7s sets:%3d results:%3lu count:%3d of%3d\n", _attribKey.c_str(), _addedResults.size(), _newResults.size(), count, _count);
-		}
 
-		if (g_replicationdebug > 6) {
 			LocalitySet::staticDisplayEntries(fromServers, alsoServers, "also");
 			LocalitySet::staticDisplayEntries(fromServers, results, "results");
 			LocalitySet::staticDisplayEntries(fromServers, _newResults, "add items");
@@ -296,21 +281,19 @@ bool PolicyAcross::selectReplicas(
 
 		for (auto& addedResult : _addedResults) {
 			count ++;
-			if (g_replicationdebug > 2) {
-				printf("Across !add set   key: %-7s count:%3d of%3d  results:%3d index:%3d\n", _attribKey.c_str(), count, _count, addedResult.first, addedResult.second);
-			}
 			results.reserve(results.size() + addedResult.first);
 			results.insert(results.end(), _newResults.begin()+addedResult.second, _newResults.begin()+addedResult.second+addedResult.first);
 			if (count >= _count) break;
 		}
-		if (g_replicationdebug > 7) {
+
+		if (g_replicationdebug > 5) {
 			LocalitySet::staticDisplayEntries(fromServers, results, "results");
 		}
 	}
 
 	// Process the remaining values
 	if (count < _count) {
-		if (g_replicationdebug > 3) {
+		if (g_replicationdebug > 5) {
 			printf("Across items:%4d key: %-7s policy: %-10s => %s  count:%3d of%3d\n", fromServers->size(), _attribKey.c_str(), _policy->name().c_str(), _policy->info().c_str(), count, _count);
 		}
 		int recordIndex;
@@ -328,49 +311,24 @@ bool PolicyAcross::selectReplicas(
 				if ((lowerBound == _usedValues.end()) || (*lowerBound != value.get())) {
 					_selected = fromServers->restrict(indexKey, value.get());
 					if (_selected->size()) {
-						if (g_replicationdebug > 5) {
-							printf("Across select:%3d key: %-7s value: (%3d) %-10s entry: %s  index:%4d\n", fromServers->size()-checksLeft+1, _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(entry).c_str(), recordIndex);
-						}
 						if (_policy->selectReplicas(_selected, emptyEntryArray, results))
 						{
-							if (g_replicationdebug > 5) {
-								printf("Across added:%4d key: %-7s value: (%3d) %-10s policy: %-10s => %s  needed:%3d\n", count+1, _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), _policy->name().c_str(), _policy->info().c_str(), _count);
-							}
 							count ++;
 							if (count >= _count) break;
 							_usedValues.insert(lowerBound, value.get());
 						}
-						else if (g_replicationdebug > 5) {
-							printf("Across no answer  key: %-7s value: (%3d) %-10s entry: %s\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(entry).c_str());
-						}
-					}
-					else if (g_replicationdebug > 5) {
-						printf("Across empty set:%3d    key: %-7s value: (%3d) %-10s  entry: %s  index:%4d\n", fromServers->size()-checksLeft+1, _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(entry).c_str(), recordIndex);
 					}
 				}
-				else if (g_replicationdebug > 5) {
-					printf("Across duplicate  key: %-7s value: (%3d) %-10s entry: %s  attempt:%3d  index:%4d\n", _attribKey.c_str(), value.get()._id, fromServers->valueText(value.get()).c_str(), fromServers->getEntryInfo(entry).c_str(), fromServers->size()-checksLeft+1, recordIndex);
-				}
-			}
-			else if (g_replicationdebug > 5) {
-				printf("Across no value   key: %-7s  %21s entry: %s  attempt:%3d  index:%4d\n", _attribKey.c_str(), "", fromServers->getEntryInfo(entry).c_str(), fromServers->size()-checksLeft+1, recordIndex);
 			}
 			if (recordIndex != checksLeft-1) {
-				if (g_replicationdebug > 5) {
-					printf("Across swap       key: %-7s index:%4d  last:%4d  entry: %s\n", _attribKey.c_str(), recordIndex, checksLeft-1, fromServers->getEntryInfo(entry).c_str());
-				}
 				fromServers->swapMutableRecords(recordIndex, checksLeft-1);
 			}
 		}
 	}
 	// Clear the return array, if not satified
 	if (count < _count) {
-		if (g_replicationdebug > 4) printf("Across result count: %d < %d requested\n", count, _count);
 		results.resize(resultsInit);
 		count = 0;
-	}
-	if (g_replicationdebug > 2) {
-		printf("Across used:%5lu results:%3d from %3d items  key: %-7s  policy: %-10s => %s\n", results.size()-resultsInit, count, fromServers->size(), _attribKey.c_str(), _policy->name().c_str(), _policy->info().c_str());
 	}
 	return (count >= _count);
 }
