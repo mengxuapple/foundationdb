@@ -30,6 +30,7 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 	interf.initEndpoints();
 	state Optional<RestoreInterface> leaderInterf;
 
+	printf("MX: restoreAgent starts. Try to be a leader. Locality:%s\n", locality.toString().c_str());
 	state Transaction tr(cx);
 	loop {
 		try {
@@ -46,8 +47,10 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 		}
 	}
 
+	//NOTE: leader may die, when that happens, all agents will block. We will have to clear the leader key and launch a new leader
 	//we are not the leader, so put our interface in the agent list
 	if(leaderInterf.present()) {
+		printf("MX: I am NOT the leader. Locality:%s\n", locality.toString().c_str());
 		loop {
 			try {
 				tr.set(restoreAgentKeyFor(interf.id()), restoreAgentValue(interf));
@@ -63,12 +66,15 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 				when(TestRequest req = waitNext(interf.test.getFuture())) {
 					printf("Got Request: %d\n", req.testData);
 					req.reply.send(TestReply(req.testData + 1));
+					printf("Send Reply: %d\n", req.testData);
 				}
 			}
 		}
 	}
 
 	//we are the leader
+	//NOTE: The leader may be blocked when one agent dies. It will keep waiting for reply from the agents
+	printf("MX: I am the leader. Locality:%s\n", locality.toString().c_str());
 	wait( delay(5.0) );
 
 	state vector<RestoreInterface> agents;
@@ -82,6 +88,7 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 				}
 				break;
 			}
+			printf("MX: agents number:%d\n", agentValues.size());
 			wait( delay(5.0) );
 		} catch( Error &e ) {
 			wait( tr.onError(e) );
@@ -98,7 +105,10 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 		for(auto& it : agents) {
 			replies.push_back( it.test.getReply(TestRequest(testData)) );
 		}
-		std::vector<TestReply> reps = wait( getAll(replies ));
+		printf("Wait on all %d requests for testData %d\n", agents.size(), testData);
+
+		std::vector<TestReply> reps = wait( getAny(replies ));
+		printf("getTestReply number:%d\n", reps.size());
 		testData = reps[0].replyData;
 	}
 }
