@@ -636,4 +636,6 @@ struct ClusterControllerPriorityInfo {
 	}
 };
 
+class Database;
+
 #endif

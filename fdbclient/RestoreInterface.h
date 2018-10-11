@@ -69,5 +69,6 @@ struct TestReply {
 };
 
 Future<Void> restoreAgent(Reference<struct ClusterConnectionFile> const& ccf, struct LocalityData const& locality);
+Future<Void> restoreAgentDB(Database const& cx, LocalityData const& locality);
 
 #endif

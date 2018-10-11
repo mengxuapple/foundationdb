@@ -57,7 +57,6 @@ struct NetworkOptions {
 	{ }
 };
 
-
 class Database {
 public:
 	Database() {}  // an uninitialized database can be destructed or reassigned safely; that's it
