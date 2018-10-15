@@ -59,16 +59,16 @@ struct TCServerInfo : public ReferenceCounted<TCServerInfo> {
 	}
 };
 
-struct TCMachineInfo: public ReferenceCounted<TCMachineInfo> {
+struct TCMachineInfo : public ReferenceCounted<TCMachineInfo> {
 	std::vector< Reference<TCServerInfo> > serversOnMachine; // SOMEDAY: change from vector to set
 	Standalone<StringRef> machineID;
 	std::vector< Reference<TCMachineTeamInfo> > machineTeams; // SOMEDAY: split good and bad machine teams.
 	LocalityEntry localityEntry;
 
-	TCMachineInfo(Reference<TCServerInfo> server, const LocalityEntry& entry): localityEntry(entry) {
-			assert ( serversOnMachine.empty() );
+	explicit TCMachineInfo(Reference<TCServerInfo> server, const LocalityEntry& entry): localityEntry(entry) {
+			ASSERT ( serversOnMachine.empty() );
 			serversOnMachine.push_back(server);
-			machineID = server->lastKnownInterface.locality.machineId().get();
+			machineID = server->lastKnownInterface.locality.zoneId().get();
 	}
 
 	std::string getServersIDStr() {
@@ -136,7 +136,7 @@ public:
 	vector< Reference<TCMachineInfo> > machines;
 	vector< Standalone<StringRef> > machineIDs;
 
-	TCMachineTeamInfo( vector< Reference<TCMachineInfo> > const& machines ) : machines(machines) {
+	explicit TCMachineTeamInfo( vector< Reference<TCMachineInfo> > const& machines ) : machines(machines) {
 		machineIDs.reserve(machines.size());
 		for ( int i=0; i<machines.size(); i++ ) {
 			machineIDs.push_back(machines[i]->machineID);
@@ -145,7 +145,7 @@ public:
 	}
 
 	int size() {
-		assert( machines.size() == machineIDs.size() );
+		ASSERT( machines.size() == machineIDs.size() );
 		return machineIDs.size();
 	}
 
@@ -167,7 +167,7 @@ public:
 		int count = 0;
 
 		for ( auto &machine: machines ) {
-			assert( machine->machineTeams.size() >= 0 );
+			ASSERT( machine->machineTeams.size() >= 0 );
 			count += machine->machineTeams.size();
 		}
 
@@ -189,7 +189,7 @@ public:
 	bool wrongConfiguration; //True if any of the servers in the team have the wrong configuration
 	int priority;
 
-	TCTeamInfo( vector< Reference<TCServerInfo> > const& servers )
+	explicit TCTeamInfo( vector< Reference<TCServerInfo> > const& servers )
 		: servers(servers), healthy(true), priority(PRIORITY_TEAM_HEALTHY), wrongConfiguration(false)
 	{
 		if ( servers.empty() ) {
@@ -471,7 +471,7 @@ ACTOR Future<Reference<InitialDataDistribution>> getInitialDataDistribution( Dat
 				BinaryReader rd( mode.get(), Unversioned() );
 				rd >> result->mode;
 			}
-			if(!result->mode) // MX:Q: when result->mode can be changed to 0?
+			if(!result->mode) // result->mode can be changed to 0 when we disable data distribution
 				return result;
 
 
@@ -693,6 +693,7 @@ struct DDTeamCollection {
 	}
 
 	// Used for map<Reference<TCMachineTeamInfo>, int>
+	// SOMEDAY: Change it to lamda function
 	struct CompareTCMachineTeamInfoRef {
 		bool operator() (const Reference<TCMachineTeamInfo> &lhs, const Reference<TCMachineTeamInfo> &rhs) const {
 			return lhs->machineIDs < rhs->machineIDs;
@@ -801,14 +802,20 @@ struct DDTeamCollection {
 			//   tracking is "edge triggered")
 			// SOMEDAY: Account for capacity, load (when shardMetrics load is high)
 
+			ASSERT( self->teams.size() );
+			//MXX: If assert is never triggered, we can remove the /**/
+			/*
 			if( !self->teams.size() ) {
-				TraceEvent(SevWarn, "NoTeamExist").detail("SourceUIDVectorSize", req.sources.size())
+				TEST(true);
+				//MX: Review: If this code is never triggered, change this to ASSERT!
+				TraceEvent(SevError, "NoTeamExist").detail("SourceUIDVectorSize", req.sources.size())
 					.detail("SourceUID[0]", req.sources.empty() ?  "[unset]" : req.sources[0].toString())
 					.detail("Debug", "CheckInfoBelow");
 				self->traceAllInfo(true);
 				req.reply.send( Optional<Reference<IDataDistributionTeam>>() );
 				return Void();
 			}
+			 */
 
 			int64_t bestLoadBytes = 0;
 			Optional<Reference<IDataDistributionTeam>> bestOption;
@@ -859,14 +866,7 @@ struct DDTeamCollection {
 				if( foundExact || (req.wantsTrueBest && bestOption.present() ) ) {
 					ASSERT( bestOption.present() );
 					// Check the team size: be sure team size is correct
-					if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
-						TraceEvent(SevError, "GetTeamReturnIncorrectSizedTeam").detail("TeamDesc", bestOption.get()->getDesc())
-							.detail("ReqSourcesSize", req.sources.size());
-						for( int i = 0; i < req.sources.size(); i++ ) {
-							TraceEvent(SevInfo, "ReqSource\t").detail("Index", i).detail("UID", req.sources[i]);
-						}
-						self->traceAllInfo(true);
-					}
+					ASSERT( bestOption.get()->size() == self->configuration.storageTeamSize );
 					req.reply.send( bestOption );
 					return Void();
 				}
@@ -917,7 +917,8 @@ struct DDTeamCollection {
 				}
 			}
 
-			// TODO: MX: Ask Evan:  req.completeSources can be empty and all servers (and server teams) can be unhealthy. We will get stuck at this!
+			// Note: req.completeSources can be empty and all servers (and server teams) can be unhealthy. We will get stuck at this!
+			// This only happens when a DC fails. No need to consider it right now.
 			if(!bestOption.present() && self->zeroHealthyTeams->get()) {
 				//Attempt to find the unhealthy source server team and return it
 				std::set<UID> completeSources;
@@ -947,7 +948,9 @@ struct DDTeamCollection {
 				}
 			}
 
-			int valid = true;
+			//MX: Review: Remove the commented code once we pass correctness test
+			/*
+			bool valid = true;
 			if ( bestOption.present() ) {
 				vector<UID> serverIDs = bestOption.get()->getServerIDs();
 				for ( int i = 0; i < serverIDs.size(); ++i ) {
@@ -984,12 +987,15 @@ struct DDTeamCollection {
 				}
 				self->traceAllInfo(true);
 			}
+			 */
 
+			//MX: Review: Remove the following commented code if we pass the correctness test
+			/*
 			// TODO: Check the team size: be sure team size is correct
 			// TODO: MX: Q: bestOption can be not present, should we record the information?
 			// TODO: MX: If we will record the info, the following trace code can be simplified
 			if ( bestOption.present() ) {
-				if (  bestOption.get()->size() == 0 || bestOption.get()->size() != self->configuration.storageTeamSize ) {
+				if (  bestOption.get()->size() != self->configuration.storageTeamSize ) {
 					TraceEvent(SevInfo, "IncorrectTeamSize").detail("Primary", self->primary)
 						.detail("GetTeamReturnIncorrectTeamSize", "CheckTeamInfoBelow");
 					TraceEvent(SevInfo, "ReturnedIncorrectBestTeamInfo").detail("TeamDesc", bestOption.get()->getDesc())
@@ -1017,6 +1023,7 @@ struct DDTeamCollection {
 				}
 				self->traceAllInfo(true);
 			}
+			 */
 
 			req.reply.send( bestOption );
 			return Void();
@@ -1123,7 +1130,7 @@ struct DDTeamCollection {
 		state std::set<std::vector<UID>>::iterator teamIter = self->primary ? initTeams->primaryTeams.begin() : initTeams->remoteTeams.begin();
 		state std::set<std::vector<UID>>::iterator teamIterEnd = self->primary ? initTeams->primaryTeams.end() : initTeams->remoteTeams.end();
 		for(; teamIter != teamIterEnd; ++teamIter) {
-			self->addTeam(teamIter->begin(), teamIter->end() );
+			self->addTeam(teamIter->begin(), teamIter->end(), true );
 			wait( yield() );
 		}
 
@@ -1147,7 +1154,7 @@ struct DDTeamCollection {
 				minTeams = std::min(minTeams, stc);
 				maxTeams = std::max(maxTeams, stc);
 				varTeams += (stc - teamsPerServer)*(stc - teamsPerServer);
-				machineTeams[s->second->lastKnownInterface.locality.zoneId()] += stc; // MX: Q: Should we use zoneId as server's machine id
+				machineTeams[s->second->lastKnownInterface.locality.zoneId()] += stc; // Use zoneId as server's machine id
 			}
 		}
 		varTeams /= teamsPerServer*teamsPerServer;
@@ -1173,74 +1180,48 @@ struct DDTeamCollection {
 	}
 
 	bool teamExists( vector<UID> &team ) {
-		bool exists = false;
-
 		for ( auto &serverID: team ) {
 			for ( auto &usedTeam: server_info[serverID]->teams ) {
 				if ( team == usedTeam->getServerIDs() ) {
-					exists = true;
+					return true;
 				}
 			}
 		}
 
-		return exists;
+		return false;
 	}
 
 	// SOMEDAY: when machineTeams is changed from vector to set, we may check the existance faster
 	bool machineTeamExists( vector< Standalone<StringRef> > &machineIDs ) {
-		if ( findMachineTeam(machineIDs).isValid() )
-			return true;
-		else
-			return false;
+		return findMachineTeam(machineIDs).isValid();
 	}
 
 	Reference<TCMachineTeamInfo> findMachineTeam(vector< Standalone<StringRef> > &machineIDs) {
-		Reference<TCMachineTeamInfo> machine_team;
-
 		for (int i = 0; i < machineTeams.size(); i++ ) {
 			if ( machineTeams[i]->machineIDs == machineIDs ) {
-				machine_team = machineTeams[i];
-				break;
+				return machineTeams[i];
 			}
 		}
 
-		return machine_team;
+		return Reference<TCMachineTeamInfo>();
 	}
 
 
 	int countMachineTeams() {
 		return machineTeams.size();
-
-		//Below is the sanity check to make sure no duplicate machineTeam in global machineTeams
-		//Remove the following commented code block later
-		/*
-		int i = 0;
-		std::map<Reference<TCMachineTeamInfo>, int, CompareTCMachineTeamInfoRef> usedMachineTeamMap;
-
-		for ( auto &machine : machine_info ) {
-			for ( auto &machineTeam : machine.second->machineTeams ) {
-				if ( usedMachineTeamMap.find(machineTeam) == usedMachineTeamMap.end() )
-					usedMachineTeamMap.insert(std::make_pair(machineTeam, 0));
-				else
-					usedMachineTeamMap[machineTeam]++;
-			}
-		}
-
-		assert( machineTeams.size() == usedMachineTeamMap.size() );
-
-		return usedMachineTeamMap.size();
-		*/
 	}
 
-	/**
+	/*
 	 * Assume begin to end is sorted by std::sort
 	 * Assume InputIt is iterator to UID
-	 * @param begin: start of the team member ID
-	 * @param end: end of the team member ID
-	 * @param isIntialTeam: Is the team added at init() when we recreate teams by looking up DB
+	 * Note: We must allow creating empty teams because empty team is created when a remote DB is initialized.
+	 * The empty team is used as the starting point to move data to the remote DB
+	 * begin: start of the team member ID
+	 * end: end of the team member ID
+	 * isIntialTeam: Is the team added at init() when we recreate teams by looking up DB
 	 */
 	template<class InputIt>
-	void addTeam( InputIt begin, InputIt end, bool isInitialTeam ) {
+	void addTeam( InputIt begin, InputIt end, bool isInitialTeam) {
 		vector< Reference<TCServerInfo> > newTeamServers;
 
 		for ( auto i = begin; i != end; ++i ) {
@@ -1251,28 +1232,32 @@ struct DDTeamCollection {
 			}
 		}
 
-		// We must allow creating empty teams because empty team is created when a remote DB is initialized.
-		// The empty team is used as the starting point to move data to the remote DB
-		if ( newTeamServers.empty() ) {
-			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
-				.detail("CreateEmptyTeam", 1).detail("Debug", "MayBeRight");
-		} else if ( newTeamServers.size() != configuration.storageTeamSize ) {
-			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
-				.detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
-		}
+		// MX: Review: Remove the commented code once we pass the correctness test
+		// Trace event that can be useful in debug but can be spammy when changing configuration
+//		if ( newTeamServers.empty() ) {
+//			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
+//				.detail("CreateEmptyTeam", 1).detail("Debug", "MayBeRight");
+//		} else if ( newTeamServers.size() != configuration.storageTeamSize ) {
+//			TraceEvent(SevWarn, "TeamCreation").detail("IsInitialTeam", isInitialTeam)
+//				.detail("IncorrectTeamSize", newTeamServers.size()).detail("ExpectedTeamSize", configuration.storageTeamSize);
+//		}
 
 		Reference<TCTeamInfo> teamInfo( new TCTeamInfo(newTeamServers) );
 		//TraceEvent(SevInfo, "TeamCreation", masterId).detail("IsInitialTeam", isInitialTeam)
 		//	.detail("Team", teamInfo->getDesc()).detail("ServerSize", newTeamServers.size());
 
-		if ( isInitialTeam == true ) {
+		// MX: Review: May remove the if ( isInitialTeam ) statement if we pass correctness!
+		/*
+		if ( isInitialTeam ) {
 			//Initialize machine in case servers for initial team havenot set their machine
 			for ( auto i = begin; i != end; ++i ) {
 				if ( !server_info[*i]->machine.isValid() ) {
+					TraceEvent(SevError, "AddTeamError").detail("Reason", "AddTeam  adds a server that has no valid machine. This should not happen.").detail("UID", *i);
 					constructMachineFor1Server(*i);
 				}
 			}
 		}
+		*/
 
 		//Add the reference of machineTeam (with machineIDs) into process team
 		vector< Standalone<StringRef> > machineIDs;
@@ -1282,7 +1267,20 @@ struct DDTeamCollection {
 		sort(machineIDs.begin(), machineIDs.end());
 		Reference<TCMachineTeamInfo> machineTeamInfo = findMachineTeam(machineIDs);
 
-		if ( isInitialTeam && !machineTeamInfo.isValid() && !machineIDs.empty() ) { // Create machine team and assign to the server team
+		// A team is not initial team if it is added by addTeamsBestOf() which always create a team with correct size
+		// A non-initial team must have its machine team created and its size must be correct
+		ASSERT( isInitialTeam ||
+			    (machineTeamInfo.isValid() && teamInfo->serverIDs.size() == configuration.storageTeamSize) );
+		// Create a machine team if it does not exist
+		// Note an initial team may be added at init() even though the team size is not storageTeamSize
+		if ( !machineTeamInfo.isValid() && !machineIDs.empty() ) {
+			//MXX: To be deleted /**/
+			/*
+			if (  teamInfo->serverIDs.size() != configuration.storageTeamSize && !isInitialTeam ) {
+				TraceEvent(SevError, "AddTeamDebugError").detail("TeamSize", teamInfo->serverIDs.size()).detail("ExpectedTeamSize", configuration.storageTeamSize)
+					.detail("IsInitialTeam", isInitialTeam);
+			}
+			 */
 			machineTeamInfo = addMachineTeam(machineIDs.begin(), machineIDs.end());
 			teamInfo->machineTeam = machineTeamInfo;
 		}
@@ -1292,6 +1290,7 @@ struct DDTeamCollection {
 				.detail("TeamInfo", teamInfo->getDesc());
 		}
 
+		/*
 		bool healthy = true;
 		if ( teamInfo->serverIDs.size() != configuration.storageTeamSize ) { //A healthy team must have the desired number of servers. We may add an unhealthy team in initialization
 			healthy = false;
@@ -1312,10 +1311,12 @@ struct DDTeamCollection {
 					.detail("IsUndesired", status.isUndesired).detail("IsWrongConfig", status.isWrongConfiguration);
 			}
 		}
+		*/
+
 		teamInfo->machineTeam = machineTeamInfo;
 		teamInfo->tracker = teamTracker( this, teamInfo );
-		//assert( teamInfo->serverIDs.size() > 0 ); //team can be empty at DB initialization
-		if( teamInfo->servers.size() > configuration.storageTeamSize ) {
+		//ASSERT( teamInfo->serverIDs.size() > 0 ); //team can be empty at DB initialization
+		if( teamInfo->servers.size() > configuration.storageTeamSize ) { // Q: Why do not check smaller than storageTeamSize?
 			badTeams.push_back( teamInfo );
 		} else {
 			teams.push_back( teamInfo );
@@ -1335,17 +1336,36 @@ struct DDTeamCollection {
 		addTeam(servers.begin(), servers.end(), isInitialTeam);
 	}
 
+	/*
 	template<class InputIt>
 	void addTeam( InputIt begin, InputIt end ) {
 		addTeam( begin, end, false);
 	}
+	 */
 
+	/*
 	void addTeam( std::set<UID> const& team ) {
 		addTeam(team.begin(), team.end(), false);
 	}
+	 */
 
 	void addTeam( std::set<UID> const& team, bool isInitialTeam ) {
-		addTeam(team.begin(), team.end(), true);
+		addTeam(team.begin(), team.end(), isInitialTeam);
+	}
+
+	/*
+	 * Add a machine team specified by input machines
+	 */
+	Reference<TCMachineTeamInfo> addMachineTeam( vector< Reference<TCMachineInfo> > machines) {
+		Reference<TCMachineTeamInfo> machineTeamInfo( new TCMachineTeamInfo( machines ) );
+		machineTeams.push_back(machineTeamInfo);
+
+		// Assign machine teams to machine
+		for ( auto machine: machines ) {
+			machine->machineTeams.push_back(machineTeamInfo);
+		}
+
+		return machineTeamInfo;
 	}
 
 	/*
@@ -1362,15 +1382,7 @@ struct DDTeamCollection {
 			}
 		}
 
-		Reference<TCMachineTeamInfo> machineTeamInfo( new TCMachineTeamInfo( machines ) );
-		machineTeams.push_back(machineTeamInfo);
-
-		// Assign machine teams to machine
-		for ( auto machine: machines ) {
-			machine->machineTeams.push_back(machineTeamInfo);
-		}
-
-		return machineTeamInfo;
+		return addMachineTeam(machines);
 	}
 
 
@@ -1438,11 +1450,11 @@ struct DDTeamCollection {
 	 */
 
 	int constructMachineFor1Server(UID const &uid) {
-		assert( server_info.find(uid) != server_info.end() );
+		ASSERT( server_info.find(uid) != server_info.end() );
 		auto &server = server_info[uid];
 		auto &ssi = server->lastKnownInterface;
 		auto &locality = server->lastKnownInterface.locality;
-		Standalone<StringRef> machine_id = locality.machineId().get(); //locality to machine_id with std::string type
+		Standalone<StringRef> machine_id = locality.zoneId().get(); //locality to machine_id with std::string type
 
 		if ( machine_info.find(machine_id) == machine_info.end() ) { //uid is the first storage server process on the machine
 			LocalityEntry localityEntry = machineLocalityMap.add(locality, &uid); //for each machine, store the first localityEntry into machineInfo for later use.
@@ -1597,7 +1609,7 @@ struct DDTeamCollection {
 		int totalServerIndex = 0;
 		int machineTeamsToBuild = 0;
 
-		assert( targetMachineTeamsToBuild >= 0 );
+		ASSERT( targetMachineTeamsToBuild >= 0 );
 		// Not build any machine team if asked to build none
 		if ( targetMachineTeamsToBuild == 0 )
 			return 0;
@@ -1715,7 +1727,7 @@ struct DDTeamCollection {
 //						.detail("ProcessIP", server_info.find(**process) != server_info.end()
 //								? server_info[**process]->lastKnownInterface.address().toString() : "[unset]");
 					score += server_info[**process]->teams.size();
-					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
+					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.zoneId().get();
 					machineIDs.push_back(machine_id);
 				}
 				if ( !isMachineIDValid(machineIDs) ) {
@@ -1743,17 +1755,21 @@ struct DDTeamCollection {
 			}
 
 			//Step 5: Restore machine from its representative process team and get the machine team
+			//MXX: TODO: Remove // comment at the beginning of a line
 			if ( bestTeam.size() == configuration.storageTeamSize ) {
-				vector<Standalone<StringRef>> machineIDs;
+				vector<Standalone<StringRef>> machineIDs; // Used to quickly check if the machineIDs belong to an existed team
+				vector<Reference<TCMachineInfo>> machines; // Keep machines reference for performance benefit by avoiding looking up machine by machineID
 				for ( auto process = bestTeam.begin(); process < bestTeam.end(); process++ ) {
-					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.machineId().get();
-					assert( machine_info.find(machine_id) != machine_info.end() );
+					Reference<TCMachineInfo> machine = server_info[**process]->machine;
+					Standalone<StringRef> machine_id  = server_info[**process]->lastKnownInterface.locality.zoneId().get();
+					//ASSERT( machine_info.find(machine_id) != machine_info.end() );
 					machineIDs.push_back(machine_id);
+					machines.push_back(machine);
 				}
 
 				std::sort(machineIDs.begin(), machineIDs.end());
 				if( !machineTeamExists(machineIDs) ) {
-					addMachineTeam(machineIDs.begin(), machineIDs.end());
+					addMachineTeam(machines);
 					addedMachineTeams++;
 				}
 			} else {
@@ -1861,7 +1877,7 @@ struct DDTeamCollection {
 			}
 
 			int score = calculateMachineTeamScore(machineTeam);
-			assert ( machineTeamPenalties.find(machineTeam) != machineTeamPenalties.end() );
+			ASSERT ( machineTeamPenalties.find(machineTeam) != machineTeamPenalties.end() );
 			score += machineTeamPenalties[machineTeam]; //Penalize the team if we chose a/Tracen existing server team from the machine team
 			machineTeamStats.insert(std::make_pair(machineTeam, score));
 		}
@@ -2016,7 +2032,7 @@ struct DDTeamCollection {
 	 * build an extra machine team and record the event in trace
 	 */
 	int addTeamsBestOf( int teamsToBuild ) {
-		assert(teamsToBuild > 0);
+		ASSERT(teamsToBuild > 0);
 		if ( machine_info.size() == 0 && server_info.size() != 0 ) {
 			constructMachinesFromServers();
 			TraceEvent("AddTeamsBestOfBuildMachineInfo").detail("ServerInfoSize", server_info.size()).detail("MachineInfoSize", machine_info.size());
@@ -2414,7 +2430,7 @@ struct DDTeamCollection {
 		} else { // Update machine's locality if machine uses removed server's locality and machine still has servers
 			auto &representativeServer = removedMachineInfo->serversOnMachine[0];
 			auto &locality = representativeServer->lastKnownInterface.locality;
-			assert( server_info.find(representativeServer->id) != server_info.end() );
+			ASSERT( server_info.find(representativeServer->id) != server_info.end() );
 			LocalityEntry localityEntry = machineLocalityMap.add(locality, &representativeServer->id);
 			removedMachineInfo->localityEntry = localityEntry;
 			TraceEvent("MachineLocalityMapUpdate").detail("ServerIDOld", removedServerInfo->id.toString())

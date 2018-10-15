@@ -798,7 +798,6 @@ ACTOR Future<bool> runTest( Database cx, std::vector< TesterInterface > testers,
 
 	state bool ok = testResults.ok();
 
-	printf("Spec info: useDB:%d, dumpAfterTest:%d, runConsistencyCheck:%d\n", spec.useDB, spec.dumpAfterTest, spec.runConsistencyCheck);
 	if( spec.useDB ) {
 		if( spec.dumpAfterTest ) {
 			try {
@@ -1051,7 +1050,6 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 		}
 	}
 
-	printf("waitForQuiescenceBegin start\n");
 	if (useDB && waitForQuiescenceBegin) {
 		TraceEvent("TesterStartingPreTestChecks").detail("DatabasePingDelay", databasePingDelay).detail("StartDelay", startDelay);
 		try {
@@ -1065,7 +1063,6 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 
 	TraceEvent("TestsExpectedToPass").detail("Count", tests.size());
 	state int idx = 0;
-	printf("TestsExpectedToPass, count:%d\n", tests.size());
 	for(; idx < tests.size(); idx++ ) {
 		bool ok = wait( runTest( cx, testers, tests[idx], dbInfo ) );
 		// do we handle a failure here?
