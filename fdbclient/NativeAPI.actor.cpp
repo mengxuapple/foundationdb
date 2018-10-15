@@ -727,6 +727,7 @@ Reference<Cluster> Cluster::createCluster( Reference<ClusterConnectionFile> conn
 	return Reference<Cluster>( new Cluster( connFile, apiVersion ) );
 }
 
+//NOTE: In simulator, this function may not find the cluster file which exists
 Reference<Cluster> Cluster::createCluster(std::string connFileName, int apiVersion) {
 	Reference<ClusterConnectionFile> rccf = Reference<ClusterConnectionFile>(new ClusterConnectionFile(ClusterConnectionFile::lookupClusterFileName(connFileName).first));
 	return Reference<Cluster>(new Cluster( rccf, apiVersion));
@@ -1192,10 +1193,10 @@ ACTOR Future<Optional<Value>> getValue( Future<Version> version, Key key, Databa
 
 				g_traceBatch.addAttach("GetValueAttachID", info.debugID.get().first(), getValueID.get().first());
 				g_traceBatch.addEvent("GetValueDebug", getValueID.get().first(), "NativeAPI.getValue.Before"); //.detail("TaskID", g_network->getCurrentTask());
-				/*TraceEvent("TransactionDebugGetValueInfo", getValueID.get())
+				TraceEvent("TransactionDebugGetValueInfo", getValueID.get())
 					.detail("Key", printable(key))
-					.detail("ReqVersion", ver)
-					.detail("Servers", describe(ssi.second->get()));*/
+					.detail("ReqVersion", ver);
+					//.detail("Servers", describe(ssi.second->get()));
 			}
 
 			++cx->getValueSubmitted;
@@ -1214,10 +1215,10 @@ ACTOR Future<Optional<Value>> getValue( Future<Version> version, Key key, Databa
 
 			if( info.debugID.present() ) {
 				g_traceBatch.addEvent("GetValueDebug", getValueID.get().first(), "NativeAPI.getValue.After"); //.detail("TaskID", g_network->getCurrentTask());
-				/*TraceEvent("TransactionDebugGetValueDone", getValueID.get())
+				TraceEvent("TransactionDebugGetValueDone", getValueID.get())
 					.detail("Key", printable(key))
 					.detail("ReqVersion", ver)
-					.detail("ReplySize", reply.value.present() ? reply.value.get().size() : -1);*/
+					.detail("ReplySize", reply.value.present() ? reply.value.get().size() : -1);
 			}
 			return reply.value;
 		} catch (Error& e) {
@@ -1225,10 +1226,10 @@ ACTOR Future<Optional<Value>> getValue( Future<Version> version, Key key, Databa
 			cx->getValueCompleted->log();
 			if( info.debugID.present() ) {
 				g_traceBatch.addEvent("GetValueDebug", getValueID.get().first(), "NativeAPI.getValue.Error"); //.detail("TaskID", g_network->getCurrentTask());
-				/*TraceEvent("TransactionDebugGetValueDone", getValueID.get())
+				TraceEvent("TransactionDebugGetValueDone", getValueID.get())
 					.detail("Key", printable(key))
 					.detail("ReqVersion", ver)
-					.detail("ReplySize", reply.value.present() ? reply.value.get().size() : -1);*/
+					.detail("ReplySize", reply.value.present() ? reply.value.get().size() : -1);
 			}
 			if (e.code() == error_code_wrong_shard_server || e.code() == error_code_all_alternatives_failed ||
 				(e.code() == error_code_transaction_too_old && ver == latestVersion) ) {

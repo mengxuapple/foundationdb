@@ -405,6 +405,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 					auto range = self->backupRanges[restoreIndex];
 					Standalone<StringRef> restoreTag(self->backupTag.toString() + "_" + std::to_string(restoreIndex));
 					restoreTags.push_back(restoreTag);
+					//MX: restore the key range
 					restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
 				}
 				

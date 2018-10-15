@@ -3500,6 +3500,7 @@ public:
 		return Void();
 	}
 
+	//MX: All restore code; BackupContainer: format of backup file.
 	ACTOR static Future<Void> submitRestore(FileBackupAgent* backupAgent, Reference<ReadYourWritesTransaction> tr, Key tagName, Key backupURL, Version restoreVersion, Key addPrefix, Key removePrefix, KeyRange restoreRange, bool lockDB, UID uid) {
 		ASSERT(restoreRange.contains(removePrefix) || removePrefix.size() == 0);
 
@@ -3890,6 +3891,12 @@ public:
 				tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 				wait(submitRestore(backupAgent, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid));
 				wait(tr->commit());
+				//MX: restore agent example
+				//TODO: MX: add restore master
+				printf("MX:Perform FileBackupAgent restore...\n");
+				Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+
 				break;
 			} catch(Error &e) {
 				if(e.code() != error_code_restore_duplicate_tag) {

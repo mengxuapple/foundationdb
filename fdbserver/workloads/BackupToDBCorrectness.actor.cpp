@@ -491,8 +491,16 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 
 			if (self->performRestore) {
 				// restore database
-				TraceEvent("BARW_Restore", randomID).detail("RestoreAfter", self->restoreAfter).detail("BackupTag", printable(self->restoreTag));
+				TraceEvent("BARW_Restore", randomID).detail("RestoreAfter", self->restoreAfter).detail("BackupTag", printable(self->restoreTag))
+					.detail("MX", "MXPerformRestore");
 				//wait(diffRanges(self->backupRanges, self->backupPrefix, cx, self->extraDB));
+
+				//TODO: MX: add restore master
+				printf("MX:Perform BackupToDBCorrectness restore...\n");
+				Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+
+				wait(ra1 || ra2);
 
 				state Transaction tr3(cx);
 				loop {
@@ -509,6 +517,8 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 						wait( tr3.onError(e) );
 					}
 				}
+
+				//TODO: MX: add restore agent
 
 				Standalone<VectorRef<KeyRangeRef>> restoreRange;
 

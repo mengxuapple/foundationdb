@@ -260,12 +260,13 @@ ACTOR Future<ISimulator::KillType> simulatedFDBDRebooter(
 				Future<Void> backup = runBackupAgents ? runBackup(connFile) : Future<Void>(Never());
 				Future<Void> dr = runBackupAgents ? runDr(connFile) : Future<Void>(Never());
 				//MX: minic backup
-				TraceEvent("RestoreAgent").detail("CreatedInSimluatedClusterActor", "MX");
-				printf("ClusterFile: %s\n", connFile->getFilename().c_str());
-				Future<Void> restore1 = runBackupAgents ? restoreAgent(connFile, localities) : Future<Void>(Never());
-				//Future<Void> restore2 = runBackupAgents ? restoreAgent(connFile, localities) : Future<Void>(Never()); //MX: Cannot always call restoreAgent because under some context,
+//
+//				TraceEvent("RestoreAgent").detail("CreatedInSimluatedClusterActor", "MX");
+//				printf("ClusterFile: %s\n", connFile->getFilename().c_str());
+//				Future<Void> restore1 = runBackupAgents ? restoreAgent(connFile, localities) : Future<Void>(Never());
 
-				wait(listen || fd || success(onShutdown) || backup || dr || restore1);
+				//wait(listen || fd || success(onShutdown) || backup || dr || restore1);
+				wait(listen || fd || success(onShutdown) || backup || dr);
 			} catch (Error& e) {
 				// If in simulation, if we make it here with an error other than io_timeout but enASIOTimedOut is set then somewhere an io_timeout was converted to a different error.
 				if(g_network->isSimulated() && e.code() != error_code_io_timeout && (bool)g_network->global(INetwork::enASIOTimedOut))

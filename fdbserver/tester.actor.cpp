@@ -1038,20 +1038,20 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 	}
 
 	//MX: invoke our restore simple example
-	Future<Optional<Void>> f;
-	if ( useDB ) {
+//	Future<Optional<Void>> f;
+//	if ( useDB ) {
 		//f = stopAfter( restoreAgent(cx, locality) );
-		TraceEvent("RestoreAgentTesterStart").detail("AgentsNumber", "2");
-		printf("RestoreAgentTesterStart, AgentNum:%d\n", 2);
-		restoreAgentDB(cx, locality);
-		restoreAgentDB(cx, locality);
-		TraceEvent("RestoreAgentTesterEnd").detail("AgentsNumber", "2");
-		printf("RestoreAgentTesterEnd, AgentNum:%d\n", 2);
+//		TraceEvent("RestoreAgentTesterStart").detail("AgentsNumber", "2");
+//		printf("RestoreAgentTesterStart, AgentNum:%d\n", 2);
+//		restoreAgentDB(cx, locality);
+//		restoreAgentDB(cx, locality);
+//		TraceEvent("RestoreAgentTesterEnd").detail("AgentsNumber", "2");
+//		printf("RestoreAgentTesterEnd, AgentNum:%d\n", 2);
 //		if(f.isValid() && f.isReady() && !f.isError() && !f.get().present()) {
 //			//rc = FDB_EXIT_ERROR;
 //			TraceEvent(SevError, "RestoreAgentError").detail("ReturnValue", "Following").detail("IsValid", f.isValid());
 //		}
-	}
+//	}
 
 	state Future<Void> disabler = disableConnectionFailuresAfter(450, "Tester");
 

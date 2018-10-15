@@ -27,6 +27,7 @@
 
 struct RestoreInterface {
 	RequestStream< struct TestRequest > test;
+	RequestStream< struct RestoreRequest > request;
 
 	bool operator == (RestoreInterface const& r) const { return id() == r.id(); }
 	bool operator != (RestoreInterface const& r) const { return id() != r.id(); }
@@ -39,7 +40,7 @@ struct RestoreInterface {
 
 	template <class Ar>
 	void serialize( Ar& ar ) {
-		ar & test;
+		ar & test & request;
 	}
 };
 
@@ -68,7 +69,40 @@ struct TestReply {
 	}
 };
 
+
+struct RestoreRequest {
+	int testData;
+	std::vector<int> restoreRequests;
+	//Key restoreTag;
+
+	ReplyPromise< struct RestoreReply > reply;
+
+	RestoreRequest() : testData(0) {}
+	explicit RestoreRequest(int testData) : testData(testData) {}
+	explicit RestoreRequest(int testData, std::vector<int> &restoreRequests) : testData(testData), restoreRequests(restoreRequests) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		ar & testData & restoreRequests & reply;
+	}
+};
+
+struct RestoreReply {
+	int replyData;
+	std::vector<int> restoreReplies;
+
+	RestoreReply() : replyData(0) {}
+	explicit RestoreReply(int replyData) : replyData(replyData) {}
+	explicit RestoreReply(int replyData, std::vector<int> restoreReplies) : replyData(replyData), restoreReplies(restoreReplies) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		ar & replyData & restoreReplies;
+	}
+};
+
 Future<Void> restoreAgent(Reference<struct ClusterConnectionFile> const& ccf, struct LocalityData const& locality);
 Future<Void> restoreAgentDB(Database const& cx, LocalityData const& locality);
-
+//Future<Void> restoreAgent_run(Database const &db);
+Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> const& ccf, LocalityData const& locality);
 #endif

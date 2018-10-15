@@ -23,10 +23,11 @@
 #include "SystemData.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
+#define MX_DEBUG 1
+
 //Future<Void> restoreAgentDB(Database cx, LocalityData const& locality)
 ACTOR Future<Void>  restoreAgentDB(Database cx_input, LocalityData locality) {
-	//Reference<Cluster> cluster = Cluster::createCluster(ccf->getFilename(), -1);
-	//state Database cx = wait(cluster->createDatabase(locality));
+
 	state Database cx = cx_input;
 	state RestoreInterface interf;
 	interf.initEndpoints();
@@ -125,10 +126,13 @@ ACTOR Future<Void>  restoreAgentDB(Database cx_input, LocalityData locality) {
 		TraceEvent("RestoreAgentLeader").detail("GetTestReplySize",  reps.size());
 		testData = reps[0].replyData;
 	}
+
 }
 
 //MX: Hack: directly copy the function above with minor change
 ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityData locality) {
+
+
 	TraceEvent("RestoreAgent").detail("ClusterFile", ccf->getFilename());
 	//Reference<Cluster> cluster = Cluster::createCluster(ccf->getFilename(), -1); //Cannot use filename to create cluster because the filename may not be found in the simulator when the function is invoked.
 	Reference<Cluster> cluster = Cluster::createCluster(ccf, -1);
@@ -231,22 +235,149 @@ ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityDa
 		testData = reps[0].replyData;
 	}
 }
-//
-//
-//ACTOR Future<Void> restoreAgent(Reference<ClusterConnectionFile> ccf, LocalityData locality) {
-//	Reference<Cluster> cluster = Cluster::createCluster(ccf->getFilename(), -1);
-//	Database cx = wait(cluster->createDatabase(locality));
-//
-//	printf("RestoreAgentUseClusterFileInput");
-//	restoreAgent_impl(cx, locality);
-//
-//	return Future<Void>;
-//}
-//
-//
-//ACTOR Future<Void> restoreAgent(Database &cx_input, LocalityData locality) {
-//	printf("RestoreAgentUseDatabaseInput");
-//	restoreAgent_impl(cx_input, locality);
-//
-//	return Future<Void>;
-//}
+
+
+
+//MX: Hack: directly copy the function above with minor change
+//ACTOR Future<Void> restoreAgent_run(Database db) {
+ACTOR Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> ccf, LocalityData locality) {
+
+	//TraceEvent("RestoreAgentRun");
+	TraceEvent("RestoreAgentRun").detail("ClusterFile", ccf->getFilename());
+	//Reference<Cluster> cluster = Cluster::createCluster(ccf->getFilename(), -1); //Cannot use filename to create cluster because the filename may not be found in the simulator when the function is invoked.
+	Reference<Cluster> cluster = Cluster::createCluster(ccf, -1);
+	state Database cx = wait(cluster->createDatabase(locality));
+
+	state RestoreInterface interf;
+	interf.initEndpoints();
+	state Optional<RestoreInterface> leaderInterf;
+
+	printf("MX: RestoreAgentRun starts. Try to be a leader.\n");
+	TraceEvent("RestoreAgentStartTryBeLeader");
+	state Transaction tr(cx);
+	TraceEvent("RestoreAgentStartCreateTransaction").detail("NumErrors", tr.numErrors);
+	loop {
+		try {
+			TraceEvent("RestoreAgentStartReadLeaderKeyStart").detail("NumErrors", tr.numErrors).detail("ReadLeaderKey", restoreLeaderKey.printable());
+			Optional<Value> leader = wait(tr.get(restoreLeaderKey));
+			TraceEvent("RestoreAgentStartReadLeaderKeyEnd").detail("NumErrors", tr.numErrors)
+					.detail("LeaderValuePresent", leader.present());
+			if(leader.present()) {
+				leaderInterf = decodeRestoreAgentValue(leader.get());
+				break;
+			}
+			tr.set(restoreLeaderKey, restoreAgentValue(interf));
+			wait(tr.commit());
+			break;
+		} catch( Error &e ) {
+			wait( tr.onError(e) );
+		}
+	}
+
+	//NOTE: leader may die, when that happens, all agents will block. We will have to clear the leader key and launch a new leader
+	//we are not the leader, so put our interface in the agent list
+	if(leaderInterf.present()) {
+		printf("MX: I am NOT the leader.\n");
+		TraceEvent("RestoreAgentNotLeader");
+		loop {
+			try {
+				tr.set(restoreAgentKeyFor(interf.id()), restoreAgentValue(interf));
+				wait(tr.commit());
+				break;
+			} catch( Error &e ) {
+				wait( tr.onError(e) );
+			}
+		}
+
+		loop {
+			choose {
+				//Actual restore code
+				when(RestoreRequest req = waitNext(interf.request.getFuture())) {
+					printf("Got Restore Request: Index %d. RequestData:%d\n", req.testData, req.restoreRequests[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRestoreRequestID", req.testData)
+						.detail("GotRestoreRequestValue", req.restoreRequests[req.testData]);
+					//TODO: MX: actual restore
+					std::vector<int> values(req.restoreRequests);
+					values[req.testData]++;
+					req.reply.send(RestoreReply(req.testData * -1, values));
+					printf("Send Reply: %d, Value:%d\n", req.testData, values[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData).detail("Value", req.restoreRequests[req.testData]);
+					if ( values[req.testData] > 10 ) { //MX: only calculate up to 10
+						return Void();
+					}
+				}
+				//Example code
+				when(TestRequest req = waitNext(interf.test.getFuture())) {
+					printf("Got Request: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRequest", req.testData);
+					req.reply.send(TestReply(req.testData + 1));
+					printf("Send Reply: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData);
+				}
+			}
+		}
+
+	}
+
+	//I am the leader
+	//NOTE: The leader may be blocked when one agent dies. It will keep waiting for reply from the agents
+	printf("MX: I am the leader.\n");
+	TraceEvent("RestoreAgentIsLeader");
+	wait( delay(5.0) );
+
+	state vector<RestoreInterface> agents;
+	loop {
+		try {
+			Standalone<RangeResultRef> agentValues = wait(tr.getRange(restoreAgentsKeys, CLIENT_KNOBS->TOO_MANY));
+			ASSERT(!agentValues.more);
+			if(agentValues.size()) {
+				for(auto& it : agentValues) {
+					agents.push_back(decodeRestoreAgentValue(it.value));
+				}
+				break;
+			}
+			printf("MX: agents number:%d\n", agentValues.size());
+			TraceEvent("RestoreAgentLeader").detail("AgentSize", agentValues.size());
+			wait( delay(5.0) );
+		} catch( Error &e ) {
+			wait( tr.onError(e) );
+		}
+	}
+
+	ASSERT(agents.size() > 0);
+
+	//create initial point, The initial request value for agent i is i.
+	state std::vector<int> restoreRequests;
+	for ( int i = 0; i < agents.size(); ++i ) {
+		restoreRequests.push_back(i);
+	}
+
+	loop {
+		wait(delay(1.0));
+
+		printf("---Sending Requests\n");
+		TraceEvent("RestoreAgentLeader").detail("SendingRequests", "CheckBelow");
+		for (int i = 0; i < restoreRequests.size(); ++i ) {
+			printf("RestoreRequests[%d]=%d\n", i, restoreRequests[i]);
+			TraceEvent("RestoreRequests").detail("Index", i).detail("Value", restoreRequests[i]);
+		}
+		std::vector<Future<RestoreReply>> replies;
+		for ( int i = 0; i < agents.size(); ++i) {
+			auto &it = agents[i];
+			replies.push_back( it.request.getReply(RestoreRequest(i, restoreRequests)) );
+		}
+		printf("Wait on all %d requests\n", agents.size());
+
+		std::vector<RestoreReply> reps = wait( getAll(replies ));
+		printf("GetRestoreReply values\n", reps.size());
+		for ( int i = 0; i < reps.size(); ++i ) {
+			printf("RestoreReply[%d]=%d\n [checksum=%d]", i, reps[i].restoreReplies[i], reps[i].replyData);
+			//prepare to send the next request batch
+			restoreRequests[i] = reps[i].restoreReplies[i];
+			if ( restoreRequests[i] > 10 ) { //MX: only calculate up to 10
+				return Void();
+			}
+		}
+		TraceEvent("RestoreAgentLeader").detail("GetTestReplySize",  reps.size());
+	}
+}
