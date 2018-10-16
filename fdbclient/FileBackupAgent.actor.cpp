@@ -3867,10 +3867,14 @@ public:
 		wait(desc.resolveVersionTimes(cx));
 
 		printf("Backup Description\n%s", desc.toString().c_str());
+		printf("MX: Restore code comes here\n");
 		if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
 			targetVersion = desc.maxRestorableVersion.get();
 
 		Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+
+		//Above is the restore master code
+		//Below is the agent code
 
 		if(!restoreSet.present()) {
 			TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
