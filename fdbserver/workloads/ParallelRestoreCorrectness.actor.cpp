@@ -406,7 +406,7 @@ struct ParallelBackupAndRestoreCorrectnessWorkload : TestWorkload {
 					Standalone<StringRef> restoreTag(self->backupTag.toString() + "_" + std::to_string(restoreIndex));
 					restoreTags.push_back(restoreTag);
 					restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
-					printf("---MX: ParallelRestoreCorrectness is call---\n");
+					printf("---MX: ParallelRestoreCorrectness is called---\n");
 				}
 				
 				// Sometimes kill and restart the restore

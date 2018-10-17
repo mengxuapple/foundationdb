@@ -35,7 +35,10 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <algorithm>
 
+#include "RestoreInterface.h"
+
 #include "flow/actorcompiler.h"  // This must be the last #include.
+
 
 static std::string boolToYesOrNo(bool val) { return val ? std::string("Yes") : std::string("No"); }
 
@@ -3861,9 +3864,17 @@ public:
 		return r;
 	}
 
-	ACTOR static Future<Version> restore(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+	ACTOR static Future<Version> restore_old(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+
+		Future<Void> restoreAgentFuture1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		Future<Void> restoreAgentFuture2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("URL", url.contents().printable());
+		wait(restoreAgentFuture1 || restoreAgentFuture2);
+		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("URL", url.contents().printable());
+
 		state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
 		state BackupDescription desc = wait(bc->describeBackup());
+
 		wait(desc.resolveVersionTimes(cx));
 
 		printf("Backup Description\n%s", desc.toString().c_str());
@@ -3897,9 +3908,9 @@ public:
 				wait(tr->commit());
 				//MX: restore agent example
 				//TODO: MX: add restore master
-				printf("MX:Perform FileBackupAgent restore...\n");
-				Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
-				Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				//printf("MX:Perform FileBackupAgent restore...\n");
+				//Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				//Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
 
 				break;
 			} catch(Error &e) {
@@ -4016,6 +4027,25 @@ public:
 		Version ver = wait( restore(backupAgent, cx, tagName, KeyRef(bc->getURL()), true, -1, true, range, addPrefix, removePrefix, true, randomUid) );
 		return ver;
 	}
+
+
+	ACTOR static Future<Version> restore(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+
+		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("Actor", "RestoreAgentRestore")
+				.detail("URL", url.contents().printable());
+
+		Future<Void> v1 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+		Future<Void> v2 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+
+		wait(v1 || v2);
+
+		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("Actor", "RestoreAgentRestore")
+				.detail("URL", url.contents().printable());
+
+		return targetVersion;
+
+	}
+
 };
 
 const std::string BackupAgentBase::defaultTagName = "default";
@@ -4076,3 +4106,202 @@ Future<int> FileBackupAgent::waitBackup(Database cx, std::string tagName, bool s
 	return FileBackupAgentImpl::waitBackup(this, cx, tagName, stopWhenDone);
 }
 
+
+
+//-------
+
+ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db, Standalone<StringRef>  tagName, Standalone<StringRef>  url, bool waitForComplete,
+										  Version targetVersion, bool verbose, Standalone<KeyRangeRef> range, Standalone<StringRef>  addPrefix, Standalone<StringRef>  removePrefix, bool lockDB, UID randomUid) {
+
+	TraceEvent("RestoreAgentRestoreRun").detail("URL", url.contents().printable());
+	state Database cx = db;
+
+	state RestoreInterface interf;
+	interf.initEndpoints();
+	state Optional<RestoreInterface> leaderInterf;
+
+	TraceEvent("RestoreAgentStartTryBeLeader");
+	state Transaction tr1(cx);
+	TraceEvent("RestoreAgentStartCreateTransaction").detail("NumErrors", tr1.numErrors);
+	loop {
+		try {
+			TraceEvent("RestoreAgentStartReadLeaderKeyStart").detail("NumErrors", tr1.numErrors).detail("ReadLeaderKey", restoreLeaderKey.printable());
+			Optional<Value> leader = wait(tr1.get(restoreLeaderKey));
+			TraceEvent("RestoreAgentStartReadLeaderKeyEnd").detail("NumErrors", tr1.numErrors)
+					.detail("LeaderValuePresent", leader.present());
+			if(leader.present()) {
+				leaderInterf = decodeRestoreAgentValue(leader.get());
+				break;
+			}
+			tr1.set(restoreLeaderKey, restoreAgentValue(interf));
+			wait(tr1.commit());
+			break;
+		} catch( Error &e ) {
+			wait( tr1.onError(e) );
+		}
+	}
+
+
+	//NOTE: leader may die, when that happens, all agents will block. We will have to clear the leader key and launch a new leader
+	//we are not the leader, so put our interface in the agent list
+	if(leaderInterf.present()) {
+		printf("MX: I am NOT the leader.\n");
+		TraceEvent("RestoreAgentNotLeader");
+		loop {
+			try {
+				tr1.set(restoreAgentKeyFor(interf.id()), restoreAgentValue(interf));
+				wait(tr1.commit());
+				break;
+			} catch( Error &e ) {
+				wait( tr1.onError(e) );
+			}
+		}
+
+		loop {
+			choose {
+				//Actual restore code
+				when(RestoreRequest req = waitNext(interf.request.getFuture())) {
+					printf("Got Restore Request: Index %d. RequestData:%d\n", req.testData, req.restoreRequests[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRestoreRequestID", req.testData)
+							.detail("GotRestoreRequestValue", req.restoreRequests[req.testData]);
+					//TODO: MX: actual restore
+					std::vector<int> values(req.restoreRequests);
+					values[req.testData]++;
+					req.reply.send(RestoreReply(req.testData * -1, values));
+					printf("Send Reply: %d, Value:%d\n", req.testData, values[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData).detail("Value", req.restoreRequests[req.testData]);
+					if ( values[req.testData] > 10 ) { //MX: only calculate up to 10
+						return Void();
+					}
+
+					if ( values[req.testData] > 2 ) { // set > 0 to skip restore; set > 2 to enable restore
+						TraceEvent("DoNotRunRestoreTwice");
+						continue;
+					}
+
+					//TODO: MX: actual restore
+					state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+					loop {
+						try {
+							tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+							tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+							wait(FileBackupAgentImpl::submitRestore(backupAgent, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid));
+							wait(tr->commit());
+
+							break;
+						} catch(Error &e) {
+							if(e.code() != error_code_restore_duplicate_tag) {
+								wait(tr->onError(e));
+							}
+						}
+					}
+
+					if(waitForComplete) {
+						ERestoreState finalState = wait(FileBackupAgentImpl::waitRestore(cx, tagName, verbose));
+						if(finalState != ERestoreState::COMPLETED)
+							throw restore_error();
+					}
+
+					return Void();
+				}
+				//Example code
+				when(TestRequest req = waitNext(interf.test.getFuture())) {
+					printf("Got Request: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRequest", req.testData);
+					req.reply.send(TestReply(req.testData + 1));
+					printf("Send Reply: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData);
+				}
+			}
+		}
+
+	}
+
+	//I am the leader
+	//NOTE: The leader may be blocked when one agent dies. It will keep waiting for reply from the agents
+	printf("MX: I am the leader.\n");
+	TraceEvent("RestoreAgentIsLeader");
+	wait( delay(5.0) );
+
+	state vector<RestoreInterface> agents;
+	loop {
+		try {
+			Standalone<RangeResultRef> agentValues = wait(tr1.getRange(restoreAgentsKeys, CLIENT_KNOBS->TOO_MANY));
+			ASSERT(!agentValues.more);
+			if(agentValues.size()) {
+				for(auto& it : agentValues) {
+					agents.push_back(decodeRestoreAgentValue(it.value));
+				}
+				break;
+			}
+			printf("MX: agents number:%d\n", agentValues.size());
+			TraceEvent("RestoreAgentLeader").detail("AgentSize", agentValues.size());
+			wait( delay(5.0) );
+		} catch( Error &e ) {
+			wait( tr1.onError(e) );
+		}
+	}
+
+	ASSERT(agents.size() > 0);
+
+	//create initial point, The initial request value for agent i is i.
+	state std::vector<int> restoreRequests;
+	for ( int i = 0; i < agents.size(); ++i ) {
+		restoreRequests.push_back(i);
+	}
+
+	loop {
+		wait(delay(1.0));
+
+		printf("---Sending Requests\n");
+		TraceEvent("RestoreAgentLeader").detail("SendingRequests", "CheckBelow");
+		for (int i = 0; i < restoreRequests.size(); ++i ) {
+			printf("RestoreRequests[%d]=%d\n", i, restoreRequests[i]);
+			TraceEvent("RestoreRequests").detail("Index", i).detail("Value", restoreRequests[i]);
+		}
+		std::vector<Future<RestoreReply>> replies;
+		for ( int i = 0; i < agents.size(); ++i) {
+			auto &it = agents[i];
+			replies.push_back( it.request.getReply(RestoreRequest(i, restoreRequests)) );
+		}
+		printf("Wait on all %d requests\n", agents.size());
+
+		std::vector<RestoreReply> reps = wait( getAll(replies ));
+		printf("GetRestoreReply values\n", reps.size());
+		for ( int i = 0; i < reps.size(); ++i ) {
+			printf("RestoreReply[%d]=%d\n [checksum=%d]", i, reps[i].restoreReplies[i], reps[i].replyData);
+			//prepare to send the next request batch
+			restoreRequests[i] = reps[i].restoreReplies[i];
+			if ( restoreRequests[i] > 10 ) { //MX: only calculate up to 10
+				return Void();
+			}
+		}
+		TraceEvent("RestoreAgentLeader").detail("GetTestReplySize",  reps.size());
+
+		//-------- Restore Code start -----------------
+
+		state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
+		state BackupDescription desc = wait(bc->describeBackup());
+
+		wait(desc.resolveVersionTimes(cx));
+
+		printf("Backup Description\n%s", desc.toString().c_str());
+		printf("MX: Restore master code comes here\n");
+		if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
+			targetVersion = desc.maxRestorableVersion.get();
+
+		Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+
+		if(!restoreSet.present()) {
+			TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
+					.detail("BackupContainer", bc->getURL())
+					.detail("TargetVersion", targetVersion);
+			fprintf(stderr, "ERROR: Restore version %lld is not possible from %s\n", targetVersion, bc->getURL().c_str());
+			throw restore_invalid_version();
+		}
+
+		if (verbose) {
+			printf("Restoring backup to version: %lld\n", (long long) targetVersion);
+		}
+	}
+}

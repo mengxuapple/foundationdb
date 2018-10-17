@@ -101,8 +101,18 @@ struct RestoreReply {
 	}
 };
 
+
+class FileBackupAgent; //declare ahead
+class RestoreConfig;
+
 Future<Void> restoreAgent(Reference<struct ClusterConnectionFile> const& ccf, struct LocalityData const& locality);
 Future<Void> restoreAgentDB(Database const& cx, LocalityData const& locality);
 //Future<Void> restoreAgent_run(Database const &db);
 Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> const& ccf, LocalityData const& locality);
+//Future<Version> restoreAgentRestore(FileBackupAgent const* backupAgent, Database const& cx, Key const& tagName, Key const& url,
+//		bool waitForComplete, Version const& targetVersion, bool verbose, KeyRange const& range, Key const& addPrefix, Key const& removePrefix, bool const lockDB, UID const &randomUid);
+Future<Void> restoreAgentRestore(FileBackupAgent* const& backupAgent, Database const& db, Standalone<StringRef> const& tagName,
+        Standalone<StringRef> const& url, bool const& waitForComplete, Version const& targetVersion, bool const& verbose,
+        Standalone<KeyRangeRef> const& range, Standalone<StringRef> const& addPrefix, Standalone<StringRef> const& removePrefix, bool const& lockDB, UID const& randomUid);
+
 #endif

@@ -21,9 +21,35 @@
 #include "RestoreInterface.h"
 #include "NativeAPI.h"
 #include "SystemData.h"
+
+//Backup agent header
+#include "BackupAgent.h"
+/*
+#include "BackupContainer.h"
+#include "DatabaseContext.h"
+#include "ManagementAPI.h"
+#include "Status.h"
+#include "KeyBackedTypes.h"
+*/
+
+
+#include <ctime>
+#include <climits>
+#include "fdbrpc/IAsyncFile.h"
+#include "flow/genericactors.actor.h"
+#include "flow/Hash3.h"
+#include <numeric>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/classification.hpp>
+#include <algorithm>
+//Backup agent header end
+
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
 #define MX_DEBUG 1
+
+//for convenience
+typedef FileBackupAgent::ERestoreState ERestoreState;
 
 //Future<Void> restoreAgentDB(Database cx, LocalityData const& locality)
 ACTOR Future<Void>  restoreAgentDB(Database cx_input, LocalityData locality) {
@@ -381,3 +407,54 @@ ACTOR Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> ccf, Locali
 		TraceEvent("RestoreAgentLeader").detail("GetTestReplySize",  reps.size());
 	}
 }
+
+/*
+
+// This method will return the final status of the backup
+ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagName, bool verbose) {
+	loop {
+		try {
+			state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+			tr->setOption(FDBTransactionOptions::PRIORITY_SYSTEM_IMMEDIATE);
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+
+			state KeyBackedTag tag = makeRestoreTag(tagName.toString());
+			Optional<UidAndAbortedFlagT> current = wait(tag.get(tr));
+			if(!current.present()) {
+				if(verbose)
+					printf("Tag: %s  State: %s\n", tagName.toString().c_str(), FileBackupAgent::restoreStateText(ERestoreState::UNITIALIZED).toString().c_str());
+				return ERestoreState::UNITIALIZED;
+			}
+
+			state RestoreConfig restore(current.get().first);
+
+			if(verbose) {
+				state std::string details = wait(restore.getProgress(tr));
+				printf("%s\n", details.c_str());
+			}
+
+			state ERestoreState status = wait(restore.stateEnum().getD(tr));
+			state bool runnable = wait(restore.isRunnable(tr));
+
+			// State won't change from here
+			if (!runnable)
+				break;
+
+			// Wait for a change
+			state Future<Void> watchFuture = tr->watch(restore.stateEnum().key);
+			wait(tr->commit());
+			if(verbose)
+				wait(watchFuture || delay(1));
+			else
+				wait(watchFuture);
+		}
+		catch (Error &e) {
+			wait(tr->onError(e));
+		}
+	}
+
+	return status;
+}
+
+*/
