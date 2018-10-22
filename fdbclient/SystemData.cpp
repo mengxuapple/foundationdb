@@ -571,6 +571,7 @@ const KeyRangeRef restoreAgentsKeys(
 	LiteralStringRef("\xff\x02/restoreAgents0")
 );
 
+// Encode restore agent key for agentID
 const Key restoreAgentKeyFor( UID const& agentID ) {
 	BinaryWriter wr(Unversioned());
 	wr.serializeBytes( restoreAgentsKeys.begin );
@@ -578,6 +579,7 @@ const Key restoreAgentKeyFor( UID const& agentID ) {
 	return wr.toStringRef();
 }
 
+// Encode restore agent value
 const Value restoreAgentValue( RestoreInterface const& server ) {
 	BinaryWriter wr(IncludeVersion());
 	wr << server;

@@ -467,6 +467,11 @@ struct RangeResultRef : VectorRef<KeyValueRef> {
 	void serialize( Ar& ar ) {
 		ar & ((VectorRef<KeyValueRef>&)*this) & more & readThrough & readToBegin & readThroughEnd;
 	}
+
+	std::string toString() {
+		return "more:" + std::to_string(more) + " readThrough:" + (readThrough.present() ? readThrough.get().toString() : "[unset]")
+			+ " readToBegin:" + std::to_string(readToBegin) + " readThroughEnd:" + std::to_string(readThroughEnd);
+	}
 };
 
 struct KeyValueStoreType {

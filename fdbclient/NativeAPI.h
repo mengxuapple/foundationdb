@@ -169,7 +169,8 @@ struct TransactionInfo {
 	Optional<UID> debugID; //MX: debug transaction
 	int taskID;
 
-	explicit TransactionInfo( int taskID ) : taskID( taskID ) {debugID = UID();}
+	explicit TransactionInfo( int taskID ) : taskID( taskID ) {}
+	//explicit TransactionInfo( int taskID ) : taskID( taskID ) {debugID = UID();}
 };
 
 struct TransactionLogInfo : public ReferenceCounted<TransactionLogInfo>, NonCopyable {

@@ -201,6 +201,12 @@ public:
 			r.endVersion = t.getInt(i++);
 			return r;
 		}
+
+		std::string toString() {
+			return "version:" + std::to_string(version) + " fileName:" + fileName +" isRange:" + std::to_string(isRange)
+					+ " blockSize:" + std::to_string(blockSize) + " fileSize:" + std::to_string(fileSize)
+					+ " endVersion:" + std::to_string(endVersion);
+		}
 	};
 
 	typedef KeyBackedSet<RestoreFile> FileSetT;
@@ -2800,6 +2806,7 @@ namespace fileBackup {
 			static TaskParam<int64_t> remainingInBatch() { return LiteralStringRef(__FUNCTION__); }
 		} Params;
 
+		//MX: This is the function that see the restore task is done. it traces "restore_complete"
 		ACTOR static Future<Void> _finish(Reference<ReadYourWritesTransaction> tr, Reference<TaskBucket> taskBucket, Reference<FutureBucket> futureBucket, Reference<Task> task) {
 			state RestoreConfig restore(task);
 
@@ -2845,6 +2852,13 @@ namespace fileBackup {
 			// Get a batch of files.  We're targeting batchSize blocks being dispatched so query for batchSize files (each of which is 0 or more blocks).
 			state int taskBatchSize = BUGGIFY ? 1 : CLIENT_KNOBS->RESTORE_DISPATCH_ADDTASK_SIZE;
 			state RestoreConfig::FileSetT::Values files = wait(restore.fileSet().getRange(tr, {beginVersion, beginFile}, {}, taskBatchSize));
+
+			if ( files.size() )
+				TraceEvent("FileBackupAgentFinishMX").detail("MX", 1).detail("RestoureConfigFiles", files.size());
+			for(; i < files.size(); ++i) {
+				RestoreConfig::RestoreFile &f = files[i];
+				TraceEvent("RestoureConfigFiles").detail("Index", i).detail("FileInfo", f.toString());
+			}
 
 			// allPartsDone will be set once all block tasks in the current batch are finished.
 			state Reference<TaskFuture> allPartsDone;
@@ -2959,6 +2973,7 @@ namespace fileBackup {
 					if(blocksDispatched == taskBatchSize)
 						break;
 
+					//MX: Add a task for each block in the file.
 					if(f.isRange) {
 						addTaskFutures.push_back(RestoreRangeTaskFunc::addTask(tr, taskBucket, task,
 							f, j, std::min<int64_t>(f.blockSize, f.fileSize - j),
@@ -2985,11 +3000,19 @@ namespace fileBackup {
 				beginFile = beginFile + '\x00';
 				beginBlock = 0;
 
+
 				TraceEvent("FileRestoreDispatchedFile")
-					.suppressFor(60)
-					.detail("RestoreUID", restore.getUid())
-					.detail("FileName", f.fileName)
-					.detail("TaskInstance", (uint64_t)this);
+						.detail("MX", 1)
+						.detail("RestoreUID", restore.getUid())
+						.detail("FileName", f.fileName)
+						.detail("TaskInstance", (uint64_t)this)
+						.detail("FileInfo", f.toString());
+
+//				TraceEvent("FileRestoreDispatchedFile")
+//					.suppressFor(60)
+//					.detail("RestoreUID", restore.getUid())
+//					.detail("FileName", f.fileName)
+//					.detail("TaskInstance", (uint64_t)this);
 			}
 
 			// If no blocks were dispatched then the next dispatch task should run now and be joined with the allPartsDone future
@@ -3326,10 +3349,12 @@ namespace fileBackup {
 
 			Key doneKey = wait(completionKey.get(tr, taskBucket));
 			state Reference<Task> task(new Task(StartFullRestoreTaskFunc::name, StartFullRestoreTaskFunc::version, doneKey));
+			TraceEvent("ParalleRestore").detail("AddRestoreTask", task->toString());
 
 			state RestoreConfig restore(uid);
 			// Bind the restore config to the new task
 			wait(restore.toTask(tr, task));
+			TraceEvent("ParalleRestore").detail("AddRestoreConfigToRestoreTask", task->toString());
 
 			if (!waitFor) {
 				return taskBucket->addTask(tr, task);
@@ -4108,7 +4133,25 @@ Future<int> FileBackupAgent::waitBackup(Database cx, std::string tagName, bool s
 
 
 
-//-------
+//-------MX: Parallel restore code
+
+void traceRestorableFileSet(Optional<RestorableFileSet> restoreSetOpt) {
+	if ( restoreSetOpt.present() ) {
+		return;
+	}
+	RestorableFileSet &restoreSet = restoreSetOpt.get();
+	TraceEvent("RestorableFileSet").detail("Version", restoreSet.targetVersion);
+	int i = 0;
+	for ( auto &log : restoreSet.logs ) {
+		TraceEvent("LogFile\t").detail("Index", i++).detail("Info", log.toString());
+	}
+	i = 0;
+	for ( auto &range : restoreSet.ranges ) {
+		TraceEvent("RangeFile\t").detail("Index", i++).detail("Info", range.toString());
+	}
+
+	TraceEvent("Snapshot\t").detail("Info", restoreSet.snapshot.toString());
+}
 
 ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db, Standalone<StringRef>  tagName, Standalone<StringRef>  url, bool waitForComplete,
 										  Version targetVersion, bool verbose, Standalone<KeyRangeRef> range, Standalone<StringRef>  addPrefix, Standalone<StringRef>  removePrefix, bool lockDB, UID randomUid) {
@@ -4159,7 +4202,7 @@ ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db
 
 		loop {
 			choose {
-				//Actual restore code
+				//Dumpy code from skeleton code
 				when(RestoreRequest req = waitNext(interf.request.getFuture())) {
 					printf("Got Restore Request: Index %d. RequestData:%d\n", req.testData, req.restoreRequests[req.testData]);
 					TraceEvent("RestoreAgentNotLeader").detail("GotRestoreRequestID", req.testData)
@@ -4179,7 +4222,7 @@ ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db
 						continue;
 					}
 
-					//TODO: MX: actual restore
+					//MX: actual restore from old restore code
 					state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
 					loop {
 						try {
@@ -4291,6 +4334,8 @@ ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db
 			targetVersion = desc.maxRestorableVersion.get();
 
 		Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+		TraceEvent("ParallelRestore").detail("MX", "Info").detail("RestoreSet", "Below");
+		traceRestorableFileSet(restoreSet);
 
 		if(!restoreSet.present()) {
 			TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
@@ -4305,3 +4350,4 @@ ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db
 		}
 	}
 }
+
