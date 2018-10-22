@@ -2806,7 +2806,7 @@ namespace fileBackup {
 			static TaskParam<int64_t> remainingInBatch() { return LiteralStringRef(__FUNCTION__); }
 		} Params;
 
-		//MX: This is the function that see the restore task is done. it traces "restore_complete"
+		//MX: This is the function that see the restore task is done. it traces "restore_complete". This part of code should go into restore agents
 		ACTOR static Future<Void> _finish(Reference<ReadYourWritesTransaction> tr, Reference<TaskBucket> taskBucket, Reference<FutureBucket> futureBucket, Reference<Task> task) {
 			state RestoreConfig restore(task);
 

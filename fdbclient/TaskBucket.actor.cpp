@@ -391,6 +391,7 @@ public:
 				TraceEvent("ParallelRestore").detail("TaskExecuteDone", task->toString());
 
 				if (BUGGIFY) wait(delay(10.0));
+				//MX: make sure the task is finished. wait on the task to finish.
 				wait(runRYWTransaction(cx, [=](Reference<ReadYourWritesTransaction> tr) {
 					return finishTaskRun(tr, taskBucket, futureBucket, task, taskFunc, verifyTask);
 				}));
