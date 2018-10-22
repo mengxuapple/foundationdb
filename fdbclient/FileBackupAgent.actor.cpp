@@ -557,6 +557,7 @@ namespace fileBackup {
 		Error failure_error;
 	};
 
+	//MX: This is where the range file is decoded, broken into smaller pieces and applied to DB
 	ACTOR Future<Standalone<VectorRef<KeyValueRef>>> decodeRangeFileBlock(Reference<IAsyncFile> file, int64_t offset, int len) {
 		state Standalone<StringRef> buf = makeString(len);
 		int rLen = wait(file->read(mutateString(buf), len, offset));
@@ -2504,6 +2505,7 @@ namespace fileBackup {
 			while(rangeEnd > rangeStart && !restoreRange.get().contains(blockData[rangeEnd - 1].key))
 				--rangeEnd;
 
+			//MX: This is where the range file is splitted into smaller pieces
 			state VectorRef<KeyValueRef> data = blockData.slice(rangeStart, rangeEnd);
 
 			// Shrink file range to be entirely within restoreRange and translate it to the new prefix
@@ -2525,6 +2527,7 @@ namespace fileBackup {
 			state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
 
 			tr->reset();
+			//MX: This is where the key-value pair in range file is applied into DB
 			loop {
 				try {
 					tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);

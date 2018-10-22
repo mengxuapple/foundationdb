@@ -200,6 +200,7 @@ Standalone<VectorRef<MutationRef>> decodeBackupLogValue(StringRef value) {
 	}
 }
 
+//MX: This is where the mutation log is applied to DB
 void decodeBackupLogValue(Arena& arena, VectorRef<MutationRef>& result, int& mutationSize, StringRef value, StringRef addPrefix, StringRef removePrefix, Version version, Reference<KeyRangeMap<Version>> key_version) {
 	try {
 		uint64_t offset(0);
@@ -383,6 +384,7 @@ ACTOR Future<Void> readCommitted(Database cx, PromiseStream<RangeResultWithVersi
 	}
 }
 
+//MX: Where the mutation log is read
 ACTOR Future<Void> readCommitted(Database cx, PromiseStream<RCGroup> results, Future<Void> active, Reference<FlowLock> lock,
 	KeyRangeRef range, std::function< std::pair<uint64_t, uint32_t>(Key key) > groupBy,
 	bool terminator, bool systemAccess, bool lockAware)
