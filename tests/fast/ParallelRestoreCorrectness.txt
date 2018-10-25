@@ -6,7 +6,9 @@ testTitle=BackupAndRestore
     expectedRate=0
     clearAfterTest=false
  
-    testName=ParallelBackupAndRestoreCorrectness
+    testName=RunRestoreWorkerWorkload
+
+    testName=BackupAndRestoreCorrectness
     backupAfter=10.0
     restoreAfter=60.0
     clearAfterTest=false

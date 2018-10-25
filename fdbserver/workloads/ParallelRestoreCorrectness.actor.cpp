@@ -23,6 +23,7 @@
 #include "fdbclient/BackupContainer.h"
 #include "workloads.h"
 #include "BulkSetup.actor.h"
+#include "RestoreInterface.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
 
@@ -31,7 +32,7 @@ struct RunRestoreWorkerWorkload : TestWorkload {
 	Future<Void> worker;
 	RunRestoreWorkerWorkload(WorkloadContext const& wcx)
 		: TestWorkload(wcx) {
-		worker = restoreAgent()
+		TraceEvent("RunRestoreWorkerWorkloadMX");
 	}
 
 	virtual std::string description() {
@@ -43,6 +44,8 @@ struct RunRestoreWorkerWorkload : TestWorkload {
 	}
 
 	virtual Future<Void> start(Database const& cx) {
+		TraceEvent("RunRestoreWorkerWorkloadMX").detail("Start", "RestoreAgentDB");
+		worker = restoreAgent_runDB(cx, LocalityData());
 		return Void();
 	}
 

@@ -36,6 +36,7 @@
 #include <algorithm>
 
 #include "RestoreInterface.h"
+#include "FileBackupAgent.h"
 
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
@@ -85,8 +86,7 @@ std::string secondsToTimeFormat(int64_t seconds) {
 
 const Key FileBackupAgent::keyLastRestorable = LiteralStringRef("last_restorable");
 
-// For convenience
-typedef FileBackupAgent::ERestoreState ERestoreState;
+
 
 StringRef FileBackupAgent::restoreStateText(ERestoreState id) {
 	switch(id) {
@@ -100,8 +100,6 @@ StringRef FileBackupAgent::restoreStateText(ERestoreState id) {
 	}
 }
 
-template<> Tuple Codec<ERestoreState>::pack(ERestoreState const &val) { return Tuple().append(val); }
-template<> ERestoreState Codec<ERestoreState>::unpack(Tuple const &val) { return (ERestoreState)val.getInt(0); }
 
 ACTOR Future<std::vector<KeyBackedTag>> TagUidMap::getAll_impl(TagUidMap *tagsMap, Reference<ReadYourWritesTransaction> tr) {
 	state Key prefix = tagsMap->prefix; // Copying it here as tagsMap lifetime is not tied to this actor
@@ -115,213 +113,30 @@ ACTOR Future<std::vector<KeyBackedTag>> TagUidMap::getAll_impl(TagUidMap *tagsMa
 KeyBackedTag::KeyBackedTag(std::string tagName, StringRef tagMapPrefix)
 		: KeyBackedProperty<UidAndAbortedFlagT>(TagUidMap(tagMapPrefix).getProperty(tagName)), tagName(tagName), tagMapPrefix(tagMapPrefix) {}
 
-class RestoreConfig : public KeyBackedConfig {
-public:
-	RestoreConfig(UID uid = UID()) : KeyBackedConfig(fileRestorePrefixRange.begin, uid) {}
-	RestoreConfig(Reference<Task> task) : KeyBackedConfig(fileRestorePrefixRange.begin, task) {}
 
-	KeyBackedProperty<ERestoreState> stateEnum() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	Future<StringRef> stateText(Reference<ReadYourWritesTransaction> tr) {
-		return map(stateEnum().getD(tr), [](ERestoreState s) -> StringRef { return FileBackupAgent::restoreStateText(s); });
-	}
-	KeyBackedProperty<Key> addPrefix() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Key> removePrefix() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<KeyRange> restoreRange() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Key> batchFuture() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Version> restoreVersion() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+Future<StringRef> RestoreConfig::stateText(Reference<ReadYourWritesTransaction> tr) {
+	return map(stateEnum().getD(tr), [](ERestoreState s) -> StringRef { return FileBackupAgent::restoreStateText(s); });
+}
 
-	KeyBackedProperty<Reference<IBackupContainer>> sourceContainer() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Get the source container as a bare URL, without creating a container instance
-	KeyBackedProperty<Value> sourceContainerURL() {
-		return configSpace.pack(LiteralStringRef("sourceContainer"));
-	}
 
-	// Total bytes written by all log and range restore tasks.
-	KeyBackedBinaryValue<int64_t> bytesWritten() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// File blocks that have had tasks created for them by the Dispatch task
-	KeyBackedBinaryValue<int64_t> filesBlocksDispatched() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// File blocks whose tasks have finished
-	KeyBackedBinaryValue<int64_t> fileBlocksFinished() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Total number of files in the fileMap
-	KeyBackedBinaryValue<int64_t> fileCount() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Total number of file blocks in the fileMap
-	KeyBackedBinaryValue<int64_t> fileBlockCount() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+template<> Tuple Codec<ERestoreState>::pack(ERestoreState const &val) { return Tuple().append(val); }
+template<> ERestoreState Codec<ERestoreState>::unpack(Tuple const &val) { return (ERestoreState)val.getInt(0); }
 
-	// Describes a file to load blocks from during restore.  Ordered by version and then fileName to enable
-	// incrementally advancing through the map, saving the version and path of the next starting point.
-	struct RestoreFile {
-		Version version;
-		std::string fileName;
-		bool isRange;  // false for log file
-		int64_t blockSize;
-		int64_t fileSize;
-		Version endVersion;  // not meaningful for range files
 
-		Tuple pack() const {
-			return Tuple()
-				.append(version)
-				.append(StringRef(fileName))
-				.append(isRange)
-				.append(fileSize)
-				.append(blockSize)
-				.append(endVersion);
-		}
-		static RestoreFile unpack(Tuple const &t) {
-			RestoreFile r;
-			int i = 0;
-			r.version = t.getInt(i++);
-			r.fileName = t.getString(i++).toString();
-			r.isRange = t.getInt(i++) != 0;
-			r.fileSize = t.getInt(i++);
-			r.blockSize = t.getInt(i++);
-			r.endVersion = t.getInt(i++);
-			return r;
-		}
+ACTOR Future<int64_t> RestoreConfig::getApplyVersionLag_impl(Reference<ReadYourWritesTransaction> tr, UID uid) {
+	// Both of these are snapshot reads
+	state Future<Optional<Value>> beginVal = tr->get(uidPrefixKey(applyMutationsBeginRange.begin, uid), true);
+	state Future<Optional<Value>> endVal = tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid), true);
+	wait(success(beginVal) && success(endVal));
 
-		std::string toString() {
-			return "version:" + std::to_string(version) + " fileName:" + fileName +" isRange:" + std::to_string(isRange)
-					+ " blockSize:" + std::to_string(blockSize) + " fileSize:" + std::to_string(fileSize)
-					+ " endVersion:" + std::to_string(endVersion);
-		}
-	};
+	if(!beginVal.get().present() || !endVal.get().present())
+		return 0;
 
-	typedef KeyBackedSet<RestoreFile> FileSetT;
-	FileSetT fileSet() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+	Version beginVersion = BinaryReader::fromStringRef<Version>(beginVal.get().get(), Unversioned());
+	Version endVersion = BinaryReader::fromStringRef<Version>(endVal.get().get(), Unversioned());
+	return endVersion - beginVersion;
+}
 
-	Future<bool> isRunnable(Reference<ReadYourWritesTransaction> tr) {
-		return map(stateEnum().getD(tr), [](ERestoreState s) -> bool { return   s != ERestoreState::ABORTED
-																			&& s != ERestoreState::COMPLETED
-																			&& s != ERestoreState::UNITIALIZED;
-		});
-	}
-
-	Future<Void> logError(Database cx, Error e, std::string const &details, void *taskInstance = nullptr) {
-		if(!uid.isValid()) {
-			TraceEvent(SevError, "FileRestoreErrorNoUID").error(e).detail("Description", details);
-			return Void();
-		}
-		TraceEvent t(SevWarn, "FileRestoreError");
-		t.error(e).detail("RestoreUID", uid).detail("Description", details).detail("TaskInstance", (uint64_t)taskInstance);
-		// These should not happen
-		if(e.code() == error_code_key_not_found)
-			t.backtrace();
-
-		return updateErrorInfo(cx, e, details);
-	}
-
-	Key mutationLogPrefix() {
-		return uidPrefixKey(applyLogKeys.begin, uid);
-	}
-
-	Key applyMutationsMapPrefix() {
-		 return uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-	}
-
-	ACTOR static Future<int64_t> getApplyVersionLag_impl(Reference<ReadYourWritesTransaction> tr, UID uid) {
-		// Both of these are snapshot reads
-		state Future<Optional<Value>> beginVal = tr->get(uidPrefixKey(applyMutationsBeginRange.begin, uid), true);
-		state Future<Optional<Value>> endVal = tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid), true);
-		wait(success(beginVal) && success(endVal));
-
-		if(!beginVal.get().present() || !endVal.get().present())
-			return 0;
-
-		Version beginVersion = BinaryReader::fromStringRef<Version>(beginVal.get().get(), Unversioned());
-		Version endVersion = BinaryReader::fromStringRef<Version>(endVal.get().get(), Unversioned());
-		return endVersion - beginVersion;
-	}
-
-	Future<int64_t> getApplyVersionLag(Reference<ReadYourWritesTransaction> tr) {
-		return getApplyVersionLag_impl(tr, uid);
-	}
-
-	void initApplyMutations(Reference<ReadYourWritesTransaction> tr, Key addPrefix, Key removePrefix) {
-		// Set these because they have to match the applyMutations values.
-		this->addPrefix().set(tr, addPrefix);
-		this->removePrefix().set(tr, removePrefix);
-
-		clearApplyMutationsKeys(tr);
-
-		// Initialize add/remove prefix, range version map count and set the map's start key to InvalidVersion
-		tr->set(uidPrefixKey(applyMutationsAddPrefixRange.begin, uid), addPrefix);
-		tr->set(uidPrefixKey(applyMutationsRemovePrefixRange.begin, uid), removePrefix);
-		int64_t startCount = 0;
-		tr->set(uidPrefixKey(applyMutationsKeyVersionCountRange.begin, uid), StringRef((uint8_t*)&startCount, 8));
-		Key mapStart = uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-		tr->set(mapStart, BinaryWriter::toValue<Version>(invalidVersion, Unversioned()));
-	}
-
-	void clearApplyMutationsKeys(Reference<ReadYourWritesTransaction> tr) {
-		tr->setOption(FDBTransactionOptions::COMMIT_ON_FIRST_PROXY);
-		
-		// Clear add/remove prefix keys
-		tr->clear(uidPrefixKey(applyMutationsAddPrefixRange.begin, uid));
-		tr->clear(uidPrefixKey(applyMutationsRemovePrefixRange.begin, uid));
-
-		// Clear range version map and count key
-		tr->clear(uidPrefixKey(applyMutationsKeyVersionCountRange.begin, uid));
-		Key mapStart = uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-		tr->clear(KeyRangeRef(mapStart, strinc(mapStart)));
-
-		// Clear any loaded mutations that have not yet been applied
-		Key mutationPrefix = mutationLogPrefix();
-		tr->clear(KeyRangeRef(mutationPrefix, strinc(mutationPrefix)));
-
-		// Clear end and begin versions (intentionally in this order)
-		tr->clear(uidPrefixKey(applyMutationsEndRange.begin, uid));
-		tr->clear(uidPrefixKey(applyMutationsBeginRange.begin, uid));
-	}
-
-	void setApplyBeginVersion(Reference<ReadYourWritesTransaction> tr, Version ver) {
-		tr->set(uidPrefixKey(applyMutationsBeginRange.begin, uid), BinaryWriter::toValue(ver, Unversioned()));
-	}
-
-	void setApplyEndVersion(Reference<ReadYourWritesTransaction> tr, Version ver) {
-		tr->set(uidPrefixKey(applyMutationsEndRange.begin, uid), BinaryWriter::toValue(ver, Unversioned()));
-	}
-
-	Future<Version> getApplyEndVersion(Reference<ReadYourWritesTransaction> tr) {
-		return map(tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid)), [=](Optional<Value> const &value) -> Version {
-			return value.present() ? BinaryReader::fromStringRef<Version>(value.get(), Unversioned()) : 0;
-		});
-	}
-
-	static Future<std::string> getProgress_impl(RestoreConfig const &restore, Reference<ReadYourWritesTransaction> const &tr);
-	Future<std::string> getProgress(Reference<ReadYourWritesTransaction> tr) {
-		return getProgress_impl(*this, tr);
-	}
-
-	static Future<std::string> getFullStatus_impl(RestoreConfig const &restore, Reference<ReadYourWritesTransaction> const &tr);
-	Future<std::string> getFullStatus(Reference<ReadYourWritesTransaction> tr) {
-		return getFullStatus_impl(*this, tr);
-	}
-};
 
 typedef RestoreConfig::RestoreFile RestoreFile;
 
@@ -2976,7 +2791,7 @@ namespace fileBackup {
 					if(blocksDispatched == taskBatchSize)
 						break;
 
-					//MX: Add a task for each block in the file.
+					//MX:Important: Add a task for each block in the file.
 					if(f.isRange) {
 						addTaskFutures.push_back(RestoreRangeTaskFunc::addTask(tr, taskBucket, task,
 							f, j, std::min<int64_t>(f.blockSize, f.fileSize - j),
@@ -3894,11 +3709,11 @@ public:
 
 	ACTOR static Future<Version> restore_old(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
 
-		Future<Void> restoreAgentFuture1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
-		Future<Void> restoreAgentFuture2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
-		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("URL", url.contents().printable());
-		wait(restoreAgentFuture1 || restoreAgentFuture2);
-		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("URL", url.contents().printable());
+		//Future<Void> restoreAgentFuture1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		//Future<Void> restoreAgentFuture2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		//TraceEvent("WaitOnRestoreAgentFutureBegin").detail("URL", url.contents().printable());
+		//wait(restoreAgentFuture1 || restoreAgentFuture2);
+		//TraceEvent("WaitOnRestoreAgentFutureEnd").detail("URL", url.contents().printable());
 
 		state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
 		state BackupDescription desc = wait(bc->describeBackup());
@@ -4059,18 +3874,21 @@ public:
 
 	ACTOR static Future<Version> restore(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
 
-		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("Actor", "RestoreAgentRestore")
-				.detail("URL", url.contents().printable());
-
-		Future<Void> v1 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
-		Future<Void> v2 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
-
-		wait(v1 || v2);
-
-		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("Actor", "RestoreAgentRestore")
-				.detail("URL", url.contents().printable());
-
-		return targetVersion;
+		Version ver = wait( restore_old(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid) );
+		return ver;
+//
+//		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("Actor", "RestoreAgentRestore")
+//				.detail("URL", url.contents().printable());
+//
+//		Future<Void> v1 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+//		Future<Void> v2 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+//
+//		wait(v1 || v2);
+//
+//		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("Actor", "RestoreAgentRestore")
+//				.detail("URL", url.contents().printable());
+//
+//		return targetVersion;
 
 	}
 

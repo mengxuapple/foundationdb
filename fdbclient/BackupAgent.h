@@ -760,4 +760,5 @@ public:
 		return updateErrorInfo(cx, e, details);
 	}
 };
+
 #endif

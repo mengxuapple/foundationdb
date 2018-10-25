@@ -570,6 +570,13 @@ const KeyRangeRef restoreAgentsKeys(
 	LiteralStringRef("\xff\x02/restoreAgents/"),
 	LiteralStringRef("\xff\x02/restoreAgents0")
 );
+const KeyRef restoreRequestTriggerKey = LiteralStringRef("\xff\x02/restoreRequestTrigger");
+const KeyRef restoreRequestDoneKey = LiteralStringRef("\xff\x02/restoreRequestDone");
+const KeyRangeRef restoreRequestKeys(
+	LiteralStringRef("\xff\x02/restoreRequests/"),
+	LiteralStringRef("\xff\x02/restoreRequests0")
+);
+
 
 // Encode restore agent key for agentID
 const Key restoreAgentKeyFor( UID const& agentID ) {
@@ -588,6 +595,53 @@ const Value restoreAgentValue( RestoreInterface const& server ) {
 
 RestoreInterface decodeRestoreAgentValue( ValueRef const& value ) {
 	RestoreInterface s;
+	BinaryReader reader( value, IncludeVersion() );
+	reader >> s;
+	return s;
+}
+
+// Encode and decode restore request value
+// restoreRequestTrigger key
+const Value restoreRequestTriggerValue (int const numRequests) {
+	BinaryWriter wr(IncludeVersion());
+	wr << numRequests;
+	return wr.toStringRef();
+}
+const int decodeRestoreRequestTriggerValue( ValueRef const& value ) {
+	int s;
+	BinaryReader reader( value, IncludeVersion() );
+	reader >> s;
+	return s;
+}
+
+// restoreRequestDone key
+const Value restoreRequestDoneValue (int const numRequests) {
+	BinaryWriter wr(IncludeVersion());
+	wr << numRequests;
+	return wr.toStringRef();
+}
+const int decodeRestoreRequestDoneValue( ValueRef const& value ) {
+	int s;
+	BinaryReader reader( value, IncludeVersion() );
+	reader >> s;
+	return s;
+}
+
+const Key restoreRequestKeyFor( int const& index ) {
+	BinaryWriter wr(Unversioned());
+	wr.serializeBytes( restoreRequestKeys.begin );
+	wr << index;
+	return wr.toStringRef();
+}
+
+const Value restoreRequestValue( RestoreRequest const& request ) {
+	BinaryWriter wr(IncludeVersion());
+	wr << request;
+	return wr.toStringRef();
+}
+
+RestoreRequest decodeRestoreRequestValue( ValueRef const& value ) {
+	RestoreRequest s;
 	BinaryReader reader( value, IncludeVersion() );
 	reader >> s;
 	return s;

@@ -25,6 +25,9 @@
 #include "FDBTypes.h"
 #include "fdbrpc/fdbrpc.h"
 
+class FileBackupAgent; //declare ahead
+class RestoreConfig;
+
 struct RestoreInterface {
 	RequestStream< struct TestRequest > test;
 	RequestStream< struct RestoreRequest > request;
@@ -71,6 +74,19 @@ struct TestReply {
 
 
 struct RestoreRequest {
+	//Database cx;
+	int index;
+	Key tagName;
+	Key url;
+	bool waitForComplete;
+	Version targetVersion;
+	bool verbose;
+	KeyRange range;
+	Key addPrefix;
+	Key removePrefix;
+	bool lockDB;
+	UID randomUid;
+
 	int testData;
 	std::vector<int> restoreRequests;
 	//Key restoreTag;
@@ -81,9 +97,24 @@ struct RestoreRequest {
 	explicit RestoreRequest(int testData) : testData(testData) {}
 	explicit RestoreRequest(int testData, std::vector<int> &restoreRequests) : testData(testData), restoreRequests(restoreRequests) {}
 
+	explicit RestoreRequest(const int index, const Key &tagName, const Key &url, bool waitForComplete, Version targetVersion, bool verbose,
+				   const KeyRange &range, const Key &addPrefix, const Key &removePrefix, bool lockDB,
+				   const UID &randomUid) : index(index), tagName(tagName), url(url), waitForComplete(waitForComplete),
+										   targetVersion(targetVersion), verbose(verbose), range(range),
+										   addPrefix(addPrefix), removePrefix(removePrefix), lockDB(lockDB),
+										   randomUid(randomUid) {}
+
 	template <class Ar>
 	void serialize(Ar& ar) {
-		ar & testData & restoreRequests & reply;
+		ar & index & tagName & url &  waitForComplete & targetVersion & verbose & range & addPrefix & removePrefix & lockDB & randomUid &
+		testData & restoreRequests & reply;
+	}
+
+	std::string toString() const {
+		return "index:" + std::to_string(index) + " tagName:" + tagName.contents().toString() + " url:" + url.contents().toString()
+			+ " waitForComplete:" + std::to_string(waitForComplete) + " targetVersion:" + std::to_string(targetVersion)
+			+ " verbose:" + std::to_string(verbose) + " range:" + range.toString() + " addPrefix:" + addPrefix.contents().toString()
+			+ " removePrefix:" + removePrefix.contents().toString() + " lockDB:" + std::to_string(lockDB) + " randomUid:" + randomUid.toString();
 	}
 };
 
@@ -102,13 +133,12 @@ struct RestoreReply {
 };
 
 
-class FileBackupAgent; //declare ahead
-class RestoreConfig;
 
 Future<Void> restoreAgent(Reference<struct ClusterConnectionFile> const& ccf, struct LocalityData const& locality);
 Future<Void> restoreAgentDB(Database const& cx, LocalityData const& locality);
 //Future<Void> restoreAgent_run(Database const &db);
-Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> const& ccf, LocalityData const& locality);
+//Future<Void> restoreAgent_run(Reference<ClusterConnectionFile> const& ccf, LocalityData const& locality);
+Future<Void> restoreAgent_runDB(Database const& cx, LocalityData const& locality);
 //Future<Version> restoreAgentRestore(FileBackupAgent const* backupAgent, Database const& cx, Key const& tagName, Key const& url,
 //		bool waitForComplete, Version const& targetVersion, bool verbose, KeyRange const& range, Key const& addPrefix, Key const& removePrefix, bool const lockDB, UID const &randomUid);
 Future<Void> restoreAgentRestore(FileBackupAgent* const& backupAgent, Database const& db, Standalone<StringRef> const& tagName,

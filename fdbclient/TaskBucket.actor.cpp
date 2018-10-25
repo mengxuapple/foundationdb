@@ -37,7 +37,7 @@ struct UnblockFutureTaskFunc : TaskFuncBase {
 
 		futureBucket->setOptions(tr);
 
-		TraceEvent("UnblockFutureTaskMX").detail("KeyBlockID_ToClear", task->params[Task::reservedTaskParamKeyBlockID]);
+		TraceEvent("UnblockFutureTaskMX").detail("KeyBlockIDToClear", task->params[Task::reservedTaskParamKeyBlockID].contents().printable());
 		tr->clear(future->blocks.pack(task->params[Task::reservedTaskParamKeyBlockID]));
 
 		bool is_set = wait(future->isSet(tr));
@@ -356,7 +356,7 @@ public:
 		TraceEvent("ParallelRestore").detail("DoTask", task->toString());
 
 		try {
-			TraceEvent("CreateTaskMX").detail("KeyType", task->params[Task::reservedTaskParamKeyType]);
+			TraceEvent("CreateTaskMX").detail("KeyType", task->params[Task::reservedTaskParamKeyType].contents().printable());
 			taskFunc = TaskFuncBase::create(task->params[Task::reservedTaskParamKeyType]);
 			if (taskFunc) {
 				state bool verifyTask = (task->params.find(Task::reservedTaskParamValidKey) != task->params.end());

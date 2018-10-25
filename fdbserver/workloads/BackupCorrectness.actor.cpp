@@ -23,6 +23,7 @@
 #include "fdbclient/BackupContainer.h"
 #include "workloads.h"
 #include "BulkSetup.actor.h"
+#include "RestoreInterface.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
 
@@ -401,13 +402,20 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 				state std::vector<Standalone<StringRef>> restoreTags;
 				state int restoreIndex;
 
+				state Transaction tr1(cx);
 				for (restoreIndex = 0; restoreIndex < self->backupRanges.size(); restoreIndex++) {
 					auto range = self->backupRanges[restoreIndex];
 					Standalone<StringRef> restoreTag(self->backupTag.toString() + "_" + std::to_string(restoreIndex));
 					restoreTags.push_back(restoreTag);
 					//MX: restore the key range
-					restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
+					struct RestoreRequest restoreRequest(restoreIndex, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked, g_random->randomUniqueID());
+					tr1.set(restoreRequestKeyFor(restoreRequest.index), restoreRequestValue(restoreRequest));
+
+					//restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
 				}
+				tr1.set(restoreRequestTriggerKey, restoreRequestTriggerValue(self->backupRanges.size()));
+				wait(tr1.commit());
+				//assert( 0 ); // Error on purpose
 				
 				// Sometimes kill and restart the restore
 				if(BUGGIFY) {
@@ -424,6 +432,30 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 							restores[restoreIndex] = backupAgent.restore(cx, restoreTags[restoreIndex], KeyRef(lastBackupContainer->getURL()), true, -1, true, self->backupRanges[restoreIndex], Key(), Key(), self->locked);
 						}
 					}
+				}
+
+				//MX: Should wait on all restore before proceeds
+				//TODO:
+				loop {
+					state Transaction tr2(cx);
+					try {
+						TraceEvent("CheckRestoreRequestDoneMX");
+						state Optional<Value> numFinished = wait(tr2.get(restoreRequestDoneKey));
+						if ( !numFinished.present() ) { // restore has not been finished yet
+							TraceEvent("CheckRestoreRequestDone").detail("SecondsOfWait", 5);
+							wait( delay(5.0) );
+							continue;
+						}
+						int num = decodeRestoreRequestDoneValue(numFinished.get());
+						TraceEvent("RestoreRequestKeyDone").detail("NumFinished", num);
+						tr2.clear(restoreRequestDoneKey);
+						wait( tr2.commit() );
+						break;
+					} catch( Error &e ) {
+						TraceEvent("CheckRestoreRequestDoneErrorMX");
+						wait( tr2.onError(e) );
+					}
+
 				}
 
 				wait(waitForAll(restores));
@@ -470,8 +502,6 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 
 				try {
 					tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-
-
 
 					// Check the left over tasks
 					// We have to wait for the list to empty since an abort and get status

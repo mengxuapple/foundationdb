@@ -496,11 +496,11 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 				//wait(diffRanges(self->backupRanges, self->backupPrefix, cx, self->extraDB));
 
 				//TODO: MX: add restore master
-				printf("MX:Perform BackupToDBCorrectness restore...\n");
-				Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
-				Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				//printf("MX:Perform BackupToDBCorrectness restore...\n");
+				//Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				//Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
 
-				wait(ra1 || ra2);
+				//wait(ra1 || ra2);
 
 				state Transaction tr3(cx);
 				loop {
