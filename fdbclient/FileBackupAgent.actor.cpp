@@ -138,7 +138,7 @@ ACTOR Future<int64_t> RestoreConfig::getApplyVersionLag_impl(Reference<ReadYourW
 }
 
 
-typedef RestoreConfig::RestoreFile RestoreFile;
+//typedef RestoreConfig::RestoreFile RestoreFile;
 
 ACTOR Future<std::string> RestoreConfig::getProgress_impl(RestoreConfig restore, Reference<ReadYourWritesTransaction> tr) {
 	tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
@@ -2240,12 +2240,12 @@ namespace fileBackup {
 
 		std::string toString(Reference<Task> task) {
 			return format("fileName '%s' readLen %lld readOffset %lld",
-				Params.inputFile().get(task).fileName.c_str(), 
+				Params.inputFile().get(task).fileName.c_str(),
 				Params.readLen().get(task),
 				Params.readOffset().get(task));
 		}
 	};
-	
+
 	struct RestoreRangeTaskFunc : RestoreFileTaskFuncBase {
 		static struct : InputParams {
 			// The range of data that the (possibly empty) data represented, which is set if it intersects the target restore range
@@ -2439,7 +2439,7 @@ namespace fileBackup {
 
 			// Create a restore config from the current task and bind it to the new task.
 			wait(RestoreConfig(parentTask).toTask(tr, task));
-			
+
 			Params.inputFile().set(task, rf);
 			Params.readOffset().set(task, offset);
 			Params.readLen().set(task, len);
@@ -2759,7 +2759,7 @@ namespace fileBackup {
 			}
 
 			// Start moving through the file list and queuing up blocks.  Only queue up to RESTORE_DISPATCH_ADDTASK_SIZE blocks per Dispatch task
-			// and target batchSize total per batch but a batch must end on a complete version boundary so exceed the limit if necessary 
+			// and target batchSize total per batch but a batch must end on a complete version boundary so exceed the limit if necessary
 			// to reach the end of a version of files.
 			state std::vector<Future<Key>> addTaskFutures;
 			state Version endVersion = files[0].version;
@@ -2808,12 +2808,12 @@ namespace fileBackup {
 					++blocksDispatched;
 					--remainingInBatch;
 				}
-				
+
 				// Stop if we've reached the addtask limit
 				if(blocksDispatched == taskBatchSize)
 					break;
 
-				// We just completed an entire file so the next task should start at the file after this one within endVersion (or later) 
+				// We just completed an entire file so the next task should start at the file after this one within endVersion (or later)
 				// if this iteration ends up being the last for this task
 				beginFile = beginFile + '\x00';
 				beginBlock = 0;
@@ -2859,7 +2859,7 @@ namespace fileBackup {
 					.detail("RemainingInBatch", remainingInBatch);
 
 				wait(success(RestoreDispatchTaskFunc::addTask(tr, taskBucket, task, endVersion, beginFile, beginBlock, batchSize, remainingInBatch, TaskCompletionKey::joinWith((allPartsDone)))));
-				
+
 				// If adding to existing batch then task is joined with a batch future so set done future.
 				// Note that this must be done after joining at least one task with the batch future in case all other blockers already finished.
 				Future<Void> setDone = addingToExistingBatch ? onDone->set(tr, taskBucket) : Void();
@@ -2872,7 +2872,7 @@ namespace fileBackup {
 			// Increment the number of blocks dispatched in the restore config
 			restore.filesBlocksDispatched().atomicOp(tr, blocksDispatched, MutationRef::Type::AddValue);
 
-			// If beginFile is not empty then we had to stop in the middle of a version (possibly within a file) so we cannot end 
+			// If beginFile is not empty then we had to stop in the middle of a version (possibly within a file) so we cannot end
 			// the batch here because we do not know if we got all of the files and blocks from the last version queued, so
 			// make sure remainingInBatch is at least 1.
 			if(!beginFile.empty())

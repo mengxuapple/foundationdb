@@ -246,4 +246,12 @@ public:
 	}
 };
 
+typedef RestoreConfig::RestoreFile RestoreFile;
+
+
+namespace fileBackup {
+	Future<Standalone<VectorRef<KeyValueRef>>> decodeRangeFileBlock(Reference<IAsyncFile> const &file, int64_t const &offset, int const &len);
+	Future<Standalone<VectorRef<KeyValueRef>>> decodeLogFileBlock(Reference<IAsyncFile> const &file, int64_t const &offset, int const &len);
+}
+
 #endif

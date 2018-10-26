@@ -812,149 +812,281 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 	return targetVersion;
 }
 
-/*
-ACTOR static Future<Version> atomicRestoreMX(Database cx, Key tagName, KeyRange range, Key addPrefix, Key removePrefix) {
-	state Reference<ReadYourWritesTransaction> ryw_tr = Reference<ReadYourWritesTransaction>(new ReadYourWritesTransaction(cx));
-	state BackupConfig backupConfig;
+ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task> task,
+		RestoreFile rangeFile_input, int64_t readOffset_input, int64_t readLen_input) {
+
+	state RestoreConfig restore(task);
+
+	state RestoreFile rangeFile = rangeFile_input;
+	state int64_t readOffset = readOffset_input;
+	state int64_t readLen = readLen_input;
+
+
+//	state RestoreFile rangeFile = Params.inputFile().get(task);
+//	state int64_t readOffset = Params.readOffset().get(task);
+//	state int64_t readLen = Params.readLen().get(task);
+
+	TraceEvent("FileRestoreRangeStart")
+			.suppressFor(60)
+			.detail("RestoreUID", restore.getUid())
+			.detail("FileName", rangeFile.fileName)
+			.detail("FileVersion", rangeFile.version)
+			.detail("FileSize", rangeFile.fileSize)
+			.detail("ReadOffset", readOffset)
+			.detail("ReadLen", readLen)
+			.detail("TaskInstance", (uint64_t)this);
+
+	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
+	state Future<Reference<IBackupContainer>> bc;
+	state Future<KeyRange> restoreRange;
+	state Future<Key> addPrefix;
+	state Future<Key> removePrefix;
+
 	loop {
 		try {
-			ryw_tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			ryw_tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			state KeyBackedTag tag = makeBackupTag(tagName.toString());
-			UidAndAbortedFlagT uidFlag = wait(tag.getOrThrow(ryw_tr));
-			backupConfig = BackupConfig(uidFlag.first);
-			state EBackupState status = wait(backupConfig.stateEnum().getOrThrow(ryw_tr));
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			if (status != BackupAgentBase::STATE_DIFFERENTIAL ) {
-				throw backup_duplicate();
+			bc = restore.sourceContainer().getOrThrow(tr);
+			restoreRange = restore.restoreRange().getD(tr);
+			addPrefix = restore.addPrefix().getD(tr);
+			removePrefix = restore.removePrefix().getD(tr);
+
+			//wait(taskBucket->keepRunning(tr, task));
+
+			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix) && checkTaskVersion(tr->getDatabase(), task, name, version));
+			wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix));
+			break;
+
+		} catch(Error &e) {
+			wait(tr->onError(e));
+		}
+	}
+
+	state Reference<IAsyncFile> inFile = wait(bc.get()->readFile(rangeFile.fileName));
+	state Standalone<VectorRef<KeyValueRef>> blockData = wait(fileBackup::decodeRangeFileBlock(inFile, readOffset, readLen));
+	TraceEvent("ApplyRangeFileToDB_MX").detail("BlockDataVectorSize", blockData.contents().size())
+		.detail("RangeFirstKey", blockData.front().key.printable()).detail("RangeLastKey", blockData.back().key.printable());
+
+	// First and last key are the range for this file
+	state KeyRange fileRange = KeyRangeRef(blockData.front().key, blockData.back().key);
+
+	// If fileRange doesn't intersect restore range then we're done.
+	if(!fileRange.intersects(restoreRange.get())) {
+		TraceEvent("ApplyRangeFileToDB_MX").detail("NoIntersectRestoreRange", "FinishAndReturn");
+		return Void();
+	}
+
+	// We know the file range intersects the restore range but there could still be keys outside the restore range.
+	// Find the subvector of kv pairs that intersect the restore range.  Note that the first and last keys are just the range endpoints for this file
+	int rangeStart = 1;
+	int rangeEnd = blockData.size() - 1;
+	// Slide start forward, stop if something in range is found
+	while(rangeStart < rangeEnd && !restoreRange.get().contains(blockData[rangeStart].key))
+		++rangeStart;
+	// Side end backward, stop if something in range is found
+	while(rangeEnd > rangeStart && !restoreRange.get().contains(blockData[rangeEnd - 1].key))
+		--rangeEnd;
+
+	//MX: This is where the range file is splitted into smaller pieces
+	state VectorRef<KeyValueRef> data = blockData.slice(rangeStart, rangeEnd);
+
+	// Shrink file range to be entirely within restoreRange and translate it to the new prefix
+	// First, use the untranslated file range to create the shrunk original file range which must be used in the kv range version map for applying mutations
+	state KeyRange originalFileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.get().begin), std::min(fileRange.end,   restoreRange.get().end));
+//	Params.originalFileRange().set(task, originalFileRange);
+
+	// Now shrink and translate fileRange
+	Key fileEnd = std::min(fileRange.end,   restoreRange.get().end);
+	if(fileEnd == (removePrefix.get() == StringRef() ? normalKeys.end : strinc(removePrefix.get())) ) {
+		fileEnd = addPrefix.get() == StringRef() ? normalKeys.end : strinc(addPrefix.get());
+	} else {
+		fileEnd = fileEnd.removePrefix(removePrefix.get()).withPrefix(addPrefix.get());
+	}
+	fileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.get().begin).removePrefix(removePrefix.get()).withPrefix(addPrefix.get()),fileEnd);
+
+	state int start = 0;
+	state int end = data.size();
+	state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
+
+	tr->reset();
+	//MX: This is where the key-value pair in range file is applied into DB
+	TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "StartApplyKVToDB").detail("DataSize", data.size()).detail("DataSizeLimit", dataSizeLimit);
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+
+			state int i = start;
+			state int txBytes = 0;
+			state int iend = start;
+
+			// find iend that results in the desired transaction size
+			for(; iend < end && txBytes < dataSizeLimit; ++iend) {
+				txBytes += data[iend].key.expectedSize();
+				txBytes += data[iend].value.expectedSize();
 			}
 
-			break;
-		} catch( Error &e ) {
-			wait( ryw_tr->onError(e) );
-		}
-	}
+			// Clear the range we are about to set.
+			// If start == 0 then use fileBegin for the start of the range, else data[start]
+			// If iend == end then use fileEnd for the end of the range, else data[iend]
+			state KeyRange trRange = KeyRangeRef((start == 0 ) ? fileRange.begin : data[start].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get())
+					, (iend == end) ? fileRange.end   : data[iend ].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get()));
 
-	//Lock src, record commit version
-	state Transaction tr(cx);
-	state Version commitVersion;
-	state UID randomUid = g_random->randomUniqueID();
-	loop {
-		try {
-			// We must get a commit version so add a conflict range that won't likely cause conflicts
-			// but will ensure that the transaction is actually submitted.
-			tr.addWriteConflictRange(backupConfig.snapshotRangeDispatchMap().space.range());
-			wait( lockDatabase(&tr, randomUid) );
-			wait(tr.commit());
-			commitVersion = tr.getCommittedVersion();
-			TraceEvent("AS_Locked").detail("CommitVer", commitVersion);
-			break;
-		} catch( Error &e ) {
-			wait(tr.onError(e));
-		}
-	}
+			tr->clear(trRange);
 
-	ryw_tr->reset();
-	loop {
-		try {
-			Optional<Version> restoreVersion = wait( backupConfig.getLatestRestorableVersion(ryw_tr) );
-			if(restoreVersion.present() && restoreVersion.get() >= commitVersion) {
-				TraceEvent("AS_RestoreVersion").detail("RestoreVer", restoreVersion.get());
-				break;
-			} else {
-				ryw_tr->reset();
-				wait(delay(0.2));
+			for(; i < iend; ++i) {
+				tr->setOption(FDBTransactionOptions::NEXT_WRITE_NO_WRITE_CONFLICT_RANGE);
+				tr->set(data[i].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get()), data[i].value);
 			}
-		} catch( Error &e ) {
-			wait( ryw_tr->onError(e) );
-		}
-	}
 
-	ryw_tr->reset();
-	loop {
-		try {
-			wait( discontinueBackup(backupAgent, ryw_tr, tagName) );
-			wait( ryw_tr->commit() );
-			TraceEvent("AS_DiscontinuedBackup");
-			break;
-		} catch( Error &e ) {
-			if(e.code() == error_code_backup_unneeded || e.code() == error_code_backup_duplicate){
-				break;
+			// Add to bytes written count
+			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
+
+			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
+
+//			wait(taskBucket->keepRunning(tr, task));
+
+			wait( checkLock );
+
+			wait(tr->commit());
+
+			TraceEvent("FileRestoreCommittedRange_MX")
+					.suppressFor(60)
+					.detail("RestoreUID", restore.getUid())
+					.detail("FileName", rangeFile.fileName)
+					.detail("FileVersion", rangeFile.version)
+					.detail("FileSize", rangeFile.fileSize)
+					.detail("ReadOffset", readOffset)
+					.detail("ReadLen", readLen)
+					.detail("CommitVersion", tr->getCommittedVersion())
+					.detail("BeginRange", printable(trRange.begin))
+					.detail("EndRange", printable(trRange.end))
+					.detail("StartIndex", start)
+					.detail("EndIndex", i)
+					.detail("DataSize", data.size())
+					.detail("Bytes", txBytes)
+					.detail("OriginalFileRange", printable(originalFileRange))
+					.detail("TaskInstance", (uint64_t)this);
+
+			// Commit succeeded, so advance starting point
+			start = i;
+
+			if(start == end) {
+				TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "DoneApplyKVToDB");
+				return Void();
 			}
-			wait( ryw_tr->onError(e) );
+			tr->reset();
+		} catch(Error &e) {
+			if(e.code() == error_code_transaction_too_large)
+				dataSizeLimit /= 2;
+			else
+				wait(tr->onError(e));
 		}
 	}
-
-	int _ = wait( waitBackup(backupAgent, cx, tagName.toString(), true) );
-	TraceEvent("AS_BackupStopped");
-
-	ryw_tr->reset();
-	loop {
-		try {
-			ryw_tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			ryw_tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			ryw_tr->addReadConflictRange(range);
-			ryw_tr->clear(range);
-			wait( ryw_tr->commit() );
-			TraceEvent("AS_ClearedRange");
-			break;
-		} catch( Error &e ) {
-			wait( ryw_tr->onError(e) );
-		}
-	}
-
-	Reference<IBackupContainer> bc = wait(backupConfig.backupContainer().getOrThrow(cx));
-
-	TraceEvent("AS_StartRestore");
-	Version ver = wait( restoreMX(backupAgent, cx, tagName, KeyRef(bc->getURL()), true, -1, true, range, addPrefix, removePrefix, true, randomUid) );
-	return ver;
 }
 
-ACTOR static Future<Void> _startMX(Database cx, AtomicRestoreWorkload* self) {
-	state FileBackupAgent backupAgent;
+ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
+		RestoreFile logFile_input, int64_t readOffset_input, int64_t readLen_input) {
+	state RestoreConfig restore(task);
 
-	wait( delay(self->startAfter * g_random->random01()) );
-	TraceEvent("AtomicRestore_Start");
+	state RestoreFile logFile = logFile_input;
+	state int64_t readOffset = readOffset_input;
+	state int64_t readLen = readLen_input;
 
-	state std::string backupContainer = "file://simfdb/backups/";
-	try {
-		wait(backupAgent.submitBackup(cx, StringRef(backupContainer), g_random->randomInt(0, 100), BackupAgentBase::getDefaultTagName(), self->backupRanges, false));
-	}
-	catch (Error& e) {
-		if (e.code() != error_code_backup_unneeded && e.code() != error_code_backup_duplicate)
-			throw;
-	}
+	TraceEvent("FileRestoreLogStart")
+			.suppressFor(60)
+			.detail("RestoreUID", restore.getUid())
+			.detail("FileName", logFile.fileName)
+			.detail("FileBeginVersion", logFile.version)
+			.detail("FileEndVersion", logFile.endVersion)
+			.detail("FileSize", logFile.fileSize)
+			.detail("ReadOffset", readOffset)
+			.detail("ReadLen", readLen)
+			.detail("TaskInstance", (uint64_t)this);
 
-	TraceEvent("AtomicRestore_Wait");
-	int _ = wait( backupAgent.waitBackup(cx, BackupAgentBase::getDefaultTagName(), false) );
-	TraceEvent("AtomicRestore_BackupStart");
-	wait( delay(self->restoreAfter * g_random->random01()) );
-	TraceEvent("AtomicRestore_RestoreStart");
+	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
+	state Reference<IBackupContainer> bc;
 
 	loop {
-		std::vector<Future<Version>> restores;
-
-		for (auto &range : self->backupRanges) {
-			restores.push_back(backupAgent.atomicRestore(cx, BackupAgentBase::getDefaultTag(), range, StringRef(), StringRef()));
-		}
 		try {
-			wait(waitForAll(restores));
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+
+			Reference<IBackupContainer> _bc = wait(restore.sourceContainer().getOrThrow(tr));
+			bc = _bc;
+
+//			wait(checkTaskVersion(tr->getDatabase(), task, name, version));
+//			wait(taskBucket->keepRunning(tr, task));
+
 			break;
+		} catch(Error &e) {
+			wait(tr->onError(e));
 		}
-		catch (Error& e) {
-			if (e.code() != error_code_backup_unneeded && e.code() != error_code_backup_duplicate)
-				throw;
-		}
-		wait( delay(FLOW_KNOBS->PREVENT_FAST_SPIN_DELAY) );
 	}
 
-	// SOMEDAY: Remove after backup agents can exist quiescently
-	if (g_simulator.backupAgents == ISimulator::BackupToFile) {
-		g_simulator.backupAgents = ISimulator::NoBackupAgents;
-	}
+	state Key mutationLogPrefix = restore.mutationLogPrefix();
+	state Reference<IAsyncFile> inFile = wait(bc->readFile(logFile.fileName));
+	state Standalone<VectorRef<KeyValueRef>> data = wait(fileBackup::decodeLogFileBlock(inFile, readOffset, readLen));
 
-	TraceEvent("AtomicRestore_Done");
-	return Void();
+	state int start = 0;
+	state int end = data.size();
+	state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
+
+	tr->reset();
+	loop {
+		try {
+			if(start == end)
+				return Void();
+
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+
+			state int i = start;
+			state int txBytes = 0;
+			for(; i < end && txBytes < dataSizeLimit; ++i) {
+				Key k = data[i].key.withPrefix(mutationLogPrefix);
+				ValueRef v = data[i].value;
+				tr->set(k, v);
+				txBytes += k.expectedSize();
+				txBytes += v.expectedSize();
+			}
+
+			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
+
+//			wait(taskBucket->keepRunning(tr, task));
+			wait( checkLock );
+
+			// Add to bytes written count
+			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
+
+			wait(tr->commit());
+
+			TraceEvent("FileRestoreCommittedLog")
+					.suppressFor(60)
+					.detail("RestoreUID", restore.getUid())
+					.detail("FileName", logFile.fileName)
+					.detail("FileBeginVersion", logFile.version)
+					.detail("FileEndVersion", logFile.endVersion)
+					.detail("FileSize", logFile.fileSize)
+					.detail("ReadOffset", readOffset)
+					.detail("ReadLen", readLen)
+					.detail("CommitVersion", tr->getCommittedVersion())
+					.detail("StartIndex", start)
+					.detail("EndIndex", i)
+					.detail("DataSize", data.size())
+					.detail("Bytes", txBytes)
+					.detail("TaskInstance", (uint64_t)this);
+
+			// Commit succeeded, so advance starting point
+			start = i;
+			tr->reset();
+		} catch(Error &e) {
+			if(e.code() == error_code_transaction_too_large)
+				dataSizeLimit /= 2;
+			else
+				wait(tr->onError(e));
+		}
+	}
 }
 
-*/
