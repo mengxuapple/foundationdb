@@ -498,6 +498,7 @@ Key uidPrefixKey(KeyRef keyPrefix, UID logUid) {
 
 // Apply mutations constant variables
 // \xff/applyMutationsEnd/[16-byte UID] := serialize( endVersion, Unversioned() )
+// MX: This indicates what is the highest version the mutation log can be applied
 const KeyRangeRef applyMutationsEndRange(LiteralStringRef("\xff/applyMutationsEnd/"), LiteralStringRef("\xff/applyMutationsEnd0"));
 
 // \xff/applyMutationsBegin/[16-byte UID] := serialize( beginVersion, Unversioned() )

@@ -137,7 +137,7 @@ public:
 			return r;
 		}
 
-		std::string toString() {
+		std::string toString() const {
 			return "version:" + std::to_string(version) + " fileName:" + fileName +" isRange:" + std::to_string(isRange)
 				   + " blockSize:" + std::to_string(blockSize) + " fileSize:" + std::to_string(fileSize)
 				   + " endVersion:" + std::to_string(endVersion);
@@ -197,7 +197,8 @@ public:
 		int64_t startCount = 0;
 		tr->set(uidPrefixKey(applyMutationsKeyVersionCountRange.begin, uid), StringRef((uint8_t*)&startCount, 8));
 		Key mapStart = uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-		tr->set(mapStart, BinaryWriter::toValue<Version>(invalidVersion, Unversioned()));
+		tr->set(mapStart, BinaryWriter::toValue<Version>(invalidVersion, Unversioned())); //MX: This key triggers the operation of apply mutation!
+		TraceEvent("InitApplyMutations_MX").detail("MapStartKey", mapStart.contents().printable());
 	}
 
 	void clearApplyMutationsKeys(Reference<ReadYourWritesTransaction> tr) {
@@ -226,6 +227,8 @@ public:
 	}
 
 	void setApplyEndVersion(Reference<ReadYourWritesTransaction> tr, Version ver) {
+		TraceEvent("SetApplyEndVersion_XM").detail("ApplyMutationsEndRangeKey", uidPrefixKey(applyMutationsEndRange.begin, uid).contents().printable())
+			.detail("TargetVersion", ver);
 		tr->set(uidPrefixKey(applyMutationsEndRange.begin, uid), BinaryWriter::toValue(ver, Unversioned()));
 	}
 
