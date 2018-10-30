@@ -540,11 +540,15 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 //-------------------------CODE FOR RESTORE----------------------------
 
 //--- Apply backup file to DB system space
-ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task> task,
-													 RestoreFile rangeFile_input, int64_t readOffset_input, int64_t readLen_input) {
+// NOTE: 10/29: This function is stalled. We may need to write our own function to parse the range file
+ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_input, Reference<Task> task,
+													 RestoreFile rangeFile_input, int64_t readOffset_input, int64_t readLen_input,
+													 Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix) {
+	TraceEvent("ExecuteApplyRangeFileToDB_MX").detail("RestoreRange", restoreRange.contents().toString()).detail("AddPrefix", addPrefix.printable()).detail("RemovePrefix", removePrefix.printable());
 
-	state RestoreConfig restore(task);
 
+	//state RestoreConfig restore(task);
+	state RestoreConfig restore = restore_input;
 	state RestoreFile rangeFile = rangeFile_input;
 	state int64_t readOffset = readOffset_input;
 	state int64_t readLen = readLen_input;
@@ -554,7 +558,7 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 //	state int64_t readOffset = Params.readOffset().get(task);
 //	state int64_t readLen = Params.readLen().get(task);
 
-	TraceEvent("FileRestoreRangeStart")
+	TraceEvent("FileRestoreRangeStart_MX")
 			.suppressFor(60)
 			.detail("RestoreUID", restore.getUid())
 			.detail("FileName", rangeFile.fileName)
@@ -563,28 +567,43 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 			.detail("ReadOffset", readOffset)
 			.detail("ReadLen", readLen)
 			.detail("TaskInstance", (uint64_t)this);
-	//Key value version is rangeFile.version.
+	//MXX: the set of key value version is rangeFile.version. the key-value set in the same range file has the same version
 
 	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
-	state Future<Reference<IBackupContainer>> bc;
-	state Future<KeyRange> restoreRange;
-	state Future<Key> addPrefix;
-	state Future<Key> removePrefix;
+//	state Future<Reference<IBackupContainer>> bc;
+//	state Future<KeyRange> restoreRange;
+//	state Future<Key> addPrefix;
+//	state Future<Key> removePrefix;
 
 	loop {
 		try {
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			bc = restore.sourceContainer().getOrThrow(tr);
-			restoreRange = restore.restoreRange().getD(tr);
-			addPrefix = restore.addPrefix().getD(tr);
-			removePrefix = restore.removePrefix().getD(tr);
-
-			//wait(taskBucket->keepRunning(tr, task));
-
-			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix) && checkTaskVersion(tr->getDatabase(), task, name, version));
-			wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix));
+//
+//			TraceEvent("Getbc");
+//			bc = restore.sourceContainer().getOrThrow(tr);
+//			TraceEvent("GetRestoreRange");
+//			restoreRange = restore.restoreRange().getD(tr);
+//			TraceEvent("GetAddPrefix");
+//			addPrefix = restore.addPrefix().getD(tr);
+//			TraceEvent("GetRemovePrefix");
+//			removePrefix = restore.removePrefix().getD(tr);
+//			TraceEvent("WaitOnSuccess");
+//
+//			//wait(taskBucket->keepRunning(tr, task));
+//
+//			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix) && checkTaskVersion(tr->getDatabase(), task, name, version));
+//			wait(success(bc));
+//			// MX: Maybe because you didn't call addTask() to set the task, the task is not correctly constructed and that's why it stalls at getting bc.
+//			TraceEvent("WaitOnSuccessBC");
+//			wait(success(restoreRange));
+//			TraceEvent("WaitOnSuccessRestoreRange");
+//			wait(success(addPrefix));
+//			TraceEvent("WaitOnSuccessAddPrefix");
+//			wait(success(removePrefix));
+//			TraceEvent("WaitOnSuccessRemovePrefix");
+			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix));
 			break;
 
 		} catch(Error &e) {
@@ -592,7 +611,10 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 		}
 	}
 
-	state Reference<IAsyncFile> inFile = wait(bc.get()->readFile(rangeFile.fileName));
+	TraceEvent("ReadFileStart").detail("Filename", rangeFile.fileName);
+	state Reference<IAsyncFile> inFile = wait(bc->readFile(rangeFile.fileName));
+	TraceEvent("ReadFileFinish").detail("Filename", rangeFile.fileName).detail("FileRefValid", inFile.isValid());
+
 	state Standalone<VectorRef<KeyValueRef>> blockData = wait(fileBackup::decodeRangeFileBlock(inFile, readOffset, readLen));
 	TraceEvent("ApplyRangeFileToDB_MX").detail("BlockDataVectorSize", blockData.contents().size())
 			.detail("RangeFirstKey", blockData.front().key.printable()).detail("RangeLastKey", blockData.back().key.printable());
@@ -601,9 +623,9 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 	state KeyRange fileRange = KeyRangeRef(blockData.front().key, blockData.back().key);
 
 	// If fileRange doesn't intersect restore range then we're done.
-	if(!fileRange.intersects(restoreRange.get())) {
+	if(!fileRange.intersects(restoreRange)) {
 		TraceEvent("ApplyRangeFileToDB_MX").detail("NoIntersectRestoreRange", "FinishAndReturn");
-		return Void();
+		return;
 	}
 
 	// We know the file range intersects the restore range but there could still be keys outside the restore range.
@@ -611,10 +633,10 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 	int rangeStart = 1;
 	int rangeEnd = blockData.size() - 1;
 	// Slide start forward, stop if something in range is found
-	while(rangeStart < rangeEnd && !restoreRange.get().contains(blockData[rangeStart].key))
+	while(rangeStart < rangeEnd && !restoreRange.contains(blockData[rangeStart].key))
 		++rangeStart;
 	// Side end backward, stop if something in range is found
-	while(rangeEnd > rangeStart && !restoreRange.get().contains(blockData[rangeEnd - 1].key))
+	while(rangeEnd > rangeStart && !restoreRange.contains(blockData[rangeEnd - 1].key))
 		--rangeEnd;
 
 	//MX: This is where the range file is splitted into smaller pieces
@@ -622,17 +644,17 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 
 	// Shrink file range to be entirely within restoreRange and translate it to the new prefix
 	// First, use the untranslated file range to create the shrunk original file range which must be used in the kv range version map for applying mutations
-	state KeyRange originalFileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.get().begin), std::min(fileRange.end,   restoreRange.get().end));
+	state KeyRange originalFileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.begin), std::min(fileRange.end,   restoreRange.end));
 //	Params.originalFileRange().set(task, originalFileRange);
 
 	// Now shrink and translate fileRange
-	Key fileEnd = std::min(fileRange.end,   restoreRange.get().end);
-	if(fileEnd == (removePrefix.get() == StringRef() ? normalKeys.end : strinc(removePrefix.get())) ) {
-		fileEnd = addPrefix.get() == StringRef() ? normalKeys.end : strinc(addPrefix.get());
+	Key fileEnd = std::min(fileRange.end,   restoreRange.end);
+	if(fileEnd == (removePrefix == StringRef() ? normalKeys.end : strinc(removePrefix)) ) {
+		fileEnd = addPrefix == StringRef() ? normalKeys.end : strinc(addPrefix);
 	} else {
-		fileEnd = fileEnd.removePrefix(removePrefix.get()).withPrefix(addPrefix.get());
+		fileEnd = fileEnd.removePrefix(removePrefix).withPrefix(addPrefix);
 	}
-	fileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.get().begin).removePrefix(removePrefix.get()).withPrefix(addPrefix.get()),fileEnd);
+	fileRange = KeyRangeRef(std::max(fileRange.begin, restoreRange.begin).removePrefix(removePrefix).withPrefix(addPrefix),fileEnd);
 
 	state int start = 0;
 	state int end = data.size();
@@ -659,15 +681,18 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 			// Clear the range we are about to set.
 			// If start == 0 then use fileBegin for the start of the range, else data[start]
 			// If iend == end then use fileEnd for the end of the range, else data[iend]
-			state KeyRange trRange = KeyRangeRef((start == 0 ) ? fileRange.begin : data[start].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get())
-					, (iend == end) ? fileRange.end   : data[iend ].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get()));
+			state KeyRange trRange = KeyRangeRef((start == 0 ) ? fileRange.begin : data[start].key.removePrefix(removePrefix).withPrefix(addPrefix)
+					, (iend == end) ? fileRange.end   : data[iend ].key.removePrefix(removePrefix).withPrefix(addPrefix));
 
 			tr->clear(trRange);
 
 			for(; i < iend; ++i) {
 				tr->setOption(FDBTransactionOptions::NEXT_WRITE_NO_WRITE_CONFLICT_RANGE);
-				tr->set(data[i].key.removePrefix(removePrefix.get()).withPrefix(addPrefix.get()), data[i].value);
+				tr->set(data[i].key.removePrefix(removePrefix).withPrefix(addPrefix), data[i].value);
 				//MXX: print out the key value version, and operations.
+				printf("RangeFile [key:%s, value:%s, version:%ld, op:set]\n", data[i].key.printable().c_str(), data[i].value.printable().c_str(), rangeFile.version);
+				TraceEvent("PrintRangeFile_MX").detail("Key", data[i].key.printable()).detail("Value", data[i].value.printable())
+					.detail("Version", rangeFile.version).detail("Op", "set");
 			}
 
 			// Add to bytes written count
@@ -679,7 +704,7 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 
 			wait( checkLock );
 
-			wait(tr->commit());
+//			wait(tr->commit());
 
 			TraceEvent("FileRestoreCommittedRange_MX")
 					.suppressFor(60)
@@ -704,7 +729,7 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 
 			if(start == end) {
 				TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "DoneApplyKVToDB");
-				return Void();
+				return;
 			}
 			tr->reset();
 		} catch(Error &e) {
@@ -716,8 +741,9 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, Reference<Task
 	}
 }
 
-ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
-														   RestoreFile logFile_input, int64_t readOffset_input, int64_t readLen_input) {
+ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
+														   RestoreFile logFile_input, int64_t readOffset_input, int64_t readLen_input,
+														   Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix) {
 	state RestoreConfig restore(task);
 
 	state RestoreFile logFile = logFile_input;
@@ -736,28 +762,31 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 			.detail("TaskInstance", (uint64_t)this);
 
 	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
-	state Reference<IBackupContainer> bc;
+//	state Reference<IBackupContainer> bc;
 
-	loop {
+//	loop {
 		try {
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			Reference<IBackupContainer> _bc = wait(restore.sourceContainer().getOrThrow(tr));
-			bc = _bc;
+//			Reference<IBackupContainer> _bc = wait(restore.sourceContainer().getOrThrow(tr));
+//			bc = _bc;
 
 //			wait(checkTaskVersion(tr->getDatabase(), task, name, version));
 //			wait(taskBucket->keepRunning(tr, task));
 
-			break;
+//			break;
 		} catch(Error &e) {
 			wait(tr->onError(e));
 		}
-	}
+//	}
 
 	state Key mutationLogPrefix = restore.mutationLogPrefix();
+	TraceEvent("ReadLogFileStart").detail("LogFileName", logFile.fileName);
 	state Reference<IAsyncFile> inFile = wait(bc->readFile(logFile.fileName));
+	TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName);
 	state Standalone<VectorRef<KeyValueRef>> data = wait(fileBackup::decodeLogFileBlock(inFile, readOffset, readLen));
+	TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName).detail("DecodedDataSize", data.contents().size());
 
 	state int start = 0;
 	state int end = data.size();
@@ -767,7 +796,7 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 	loop {
 		try {
 			if(start == end)
-				return Void();
+				return;
 
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
@@ -780,6 +809,10 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 				tr->set(k, v);
 				txBytes += k.expectedSize();
 				txBytes += v.expectedSize();
+				//MXX: print out the key value version, and operations.
+				printf("LogFile [key:%s, value:%s, version:%ld, op:set]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
+				TraceEvent("PrintMutationLogFile_MX").detail("Key",  k.printable()).detail("Value", v.printable())
+						.detail("Version", logFile.version).detail("Op", "set");
 			}
 
 			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
@@ -853,11 +886,15 @@ ACTOR static Future<Void> _finishApplyMutationLogFileToDB(Reference<ReadYourWrit
 }
 
 //--- Prepare and get the backup file content
-ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task) {
+ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid, RestoreRequest request) {
 	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
-	state RestoreConfig restore(task);
+//	state RestoreConfig restore(task);
+	state RestoreConfig restore(uid);
 	state Version restoreVersion;
 	state Reference<IBackupContainer> bc;
+	state Key addPrefix = request.addPrefix;
+	state Key removePrefix = request.removePrefix;
+	state KeyRange restoreRange = request.range;
 
 	TraceEvent("ExecuteMX");
 
@@ -968,15 +1005,18 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task) {
 	}
 
 	//Apply range and log files to DB
+
 	TraceEvent("ApplyBackupFileToDB").detail("FileSize", files.size());
 	for ( const RestoreConfig::RestoreFile f : files ) {
 		if ( f.isRange ) {
 			TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString());
-			_executeApplyRangeFileToDB(cx, task, f, 0, f.fileSize);
+			// Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
+			//Reference<IBackupContainer> bcmx = bc;
+			_executeApplyRangeFileToDB(cx, restore, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
 			//_finishApplyRangeFileToDB(cx, task);
 		} else {
 			TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString());
-			_executeApplyMutationLogFileToDB(cx, task, f, 0, f.fileSize);
+			_executeApplyMutationLogFileToDB(cx, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
 			//_finishApplyMutationLogFileToDB(cx, task);
 		}
 	}
@@ -1142,6 +1182,160 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 
 			wait(tr->commit());
 			// MX: Now execute the restore: Step 1 get the restore files (range and mutation log) name
+			wait( _executeMX(cx, task, randomUid, request) );
+			break;
+		} catch(Error &e) {
+			if(e.code() != error_code_restore_duplicate_tag) {
+				wait(tr->onError(e));
+			}
+		}
+	}
+//
+//	state RestoreConfig restore(task);
+//	state Reference<ReadYourWritesTransaction> tr1(new ReadYourWritesTransaction(cx));
+//	tr1->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+//	tr1->setOption(FDBTransactionOptions::LOCK_AWARE);
+//
+//	TraceEvent("Restore_MX").detail("SetApplyEndVersion", "ApplyMutationsEnd").detail("TargetVersion", targetVersion);
+//	restore.setApplyEndVersion(tr1, targetVersion); //MX: TODO: This may need to be set at correct position and may be set multiple times?
+//	wait(tr1->commit());
+
+	TraceEvent("RestoreMX").detail("UnlockDB", "Start");
+	//state RestoreConfig restore(task);
+
+	// MX: Unlock DB after restore
+	wait( _finishMX(tr, task) );
+
+	//TODO: _finish() task: Make sure the restore is finished.
+
+	//TODO: Uncomment the following code later
+//	if(waitForComplete) {
+//		ERestoreState finalState = wait(waitRestore(cx, tagName, verbose));
+//		if(finalState != ERestoreState::COMPLETED)
+//			throw restore_error();
+//	}
+
+	return targetVersion;
+}
+
+/*
+ACTOR static Future<Version> restoreSequentialMX(Database cx, RestoreRequest request) {
+	state Key tagName = request.tagName;
+	state Key url = request.url;
+	state bool waitForComplete = request.waitForComplete;
+	state Version targetVersion = request.targetVersion;
+	state bool verbose = request.verbose;
+	state KeyRange range = request.range;
+	state Key addPrefix = request.addPrefix;
+	state Key removePrefix = request.removePrefix;
+	state bool lockDB = request.lockDB;
+	state UID randomUid = request.randomUid;
+
+	state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
+	state BackupDescription desc = wait(bc->describeBackup());
+
+	wait(desc.resolveVersionTimes(cx));
+
+	printf("Backup Description\n%s", desc.toString().c_str());
+	printf("MX: Restore code comes here\n");
+	if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
+		targetVersion = desc.maxRestorableVersion.get();
+
+	Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+
+	TraceEvent("RestoreMX").detail("StartRestoreForRequest", request.toString());
+
+	if(!restoreSet.present()) {
+		TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
+				.detail("BackupContainer", bc->getURL())
+				.detail("TargetVersion", targetVersion);
+		fprintf(stderr, "ERROR: Restore version %lld is not possible from %s\n", targetVersion, bc->getURL().c_str());
+		throw restore_invalid_version();
+	}
+
+	if (verbose) {
+		printf("Restoring backup to version: %lld\n", (long long) targetVersion);
+		TraceEvent("RestoreBackupMX").detail("TargetVersion", (long long) targetVersion);
+	}
+
+	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+	state Reference<Task> task(new Task());
+	loop {
+		try {
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			//wait(submitRestoreMX(cx, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid, task));
+			// ------------START 	wait(submitRestoreMX(cx, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid, task));
+			ASSERT(restoreRange.contains(removePrefix) || removePrefix.size() == 0);
+			// Get old restore config for this tag
+			state KeyBackedTag tag = makeRestoreTag(tagName.toString());
+			state Optional<UidAndAbortedFlagT> oldUidAndAborted = wait(tag.get(tr));
+			TraceEvent("SubmitRestoreMX").detail("OldUidAndAbortedPresent", oldUidAndAborted.present());
+			if(oldUidAndAborted.present()) {
+				if (oldUidAndAborted.get().first == uid) {
+					if (oldUidAndAborted.get().second) {
+						throw restore_duplicate_uid();
+					}
+					else {
+						return Void();
+					}
+				}
+
+				state RestoreConfig oldRestore(oldUidAndAborted.get().first);
+
+				// Make sure old restore for this tag is not runnable
+				bool runnable = wait(oldRestore.isRunnable(tr));
+
+				if (runnable) {
+				throw restore_duplicate_tag();
+				}
+
+				// Clear the old restore config
+				oldRestore.clear(tr);
+			}
+
+			KeyRange restoreIntoRange = KeyRangeRef(restoreRange.begin, restoreRange.end).removePrefix(removePrefix).withPrefix(addPrefix);
+			Standalone<RangeResultRef> existingRows = wait(tr->getRange(restoreIntoRange, 1));
+			if (existingRows.size() > 0) {
+				throw restore_destination_not_empty();
+			}
+
+			// Make new restore config
+			state RestoreConfig restore(uid);
+
+			// Point the tag to the new uid
+			tag.set(tr, {uid, false});
+
+			Reference<IBackupContainer> bc = IBackupContainer::openContainer(backupURL.toString());
+
+			// Configure the new restore
+			restore.tag().set(tr, tagName.toString());
+			restore.sourceContainer().set(tr, bc);
+			restore.stateEnum().set(tr, ERestoreState::QUEUED);
+			restore.restoreVersion().set(tr, restoreVersion);
+			restore.restoreRange().set(tr, restoreRange);
+			// this also sets restore.add/removePrefix.
+			restore.initApplyMutations(tr, addPrefix, removePrefix);
+			TraceEvent("SubmitRestoreMX").detail("RestoreConfigConstruct", "Done");
+			wait(restore.toTask(tr, task));
+
+			// MX: no need to add task. Instead, we should directly run the execute function
+			//Key taskKey = wait(fileBackup::StartFullRestoreTaskFunc::addTask(tr, backupAgent->taskBucket, uid, TaskCompletionKey::noSignal()));
+
+			if (lockDB)
+				wait(lockDatabase(tr, uid));
+			else
+				wait(checkDatabaseLock(tr, uid));
+
+			// -------------END
+
+
+			//state RestoreConfig restore(task);
+			//TraceEvent("SetApplyEndVersion_MX").detail("TargetVersion", targetVersion);
+			//restore.setApplyEndVersion(tr, targetVersion); //MX: TODO: This may need to be set at correct position and may be set multiple times?
+
+			wait(tr->commit());
+			// MX: Now execute the restore: Step 1 get the restore files (range and mutation log) name
 			wait( _executeMX(cx, task) );
 			break;
 		} catch(Error &e) {
@@ -1177,3 +1371,5 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 
 	return targetVersion;
 }
+
+*/

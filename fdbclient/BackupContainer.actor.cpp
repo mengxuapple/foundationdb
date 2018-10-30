@@ -900,6 +900,8 @@ public:
 		// can't be used because backup files are read-only.  Cached mode can only help during restore task retries handled
 		// by the same process that failed the first task execution anyway, which is a very rare case.
 		#endif
+		printf("readfile %s\n", fullPath.c_str());
+		TraceEvent("ReadFile").detail("FileFullPath", fullPath);
 		return IAsyncFileSystem::filesystem()->open(fullPath, flags, 0644);
 	}
 
