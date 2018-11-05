@@ -138,7 +138,7 @@ std::pair<uint64_t, uint32_t> decodeBKMutationLogKey(Key key) {
 }
 
 // value is an iterable representing all of the transaction log data for
-// a given version.Returns an iterable(generator) yielding a tuple for
+// a given version. Returns an iterable(generator) yielding a tuple for
 // each mutation in the log.At present, all mutations are represented as
 // (type, param1, param2) where type is an integer and param1 and param2 are byte strings
 Standalone<VectorRef<MutationRef>> decodeBackupLogValue(StringRef value) {
@@ -200,6 +200,7 @@ Standalone<VectorRef<MutationRef>> decodeBackupLogValue(StringRef value) {
 	}
 }
 
+//; This function decodes the backup log and get the MutationRef, which has the mutation type! //Use this function!
 //MX: This is where the mutation log is applied to DB
 void decodeBackupLogValue(Arena& arena, VectorRef<MutationRef>& result, int& mutationSize, StringRef value, StringRef addPrefix, StringRef removePrefix, Version version, Reference<KeyRangeMap<Version>> key_version) {
 	try {
@@ -238,7 +239,7 @@ void decodeBackupLogValue(Arena& arena, VectorRef<MutationRef>& result, int& mut
 
 			MutationRef logValue;
 			Arena tempArena;
-			logValue.type = type;
+			logValue.type = type; //MXX: This is where the mutation type is decoded.
 			logValue.param1 = value.substr(offset, len1);
 			offset += len1;
 			logValue.param2 = value.substr(offset, len2);

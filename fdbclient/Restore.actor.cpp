@@ -538,12 +538,15 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 
 //-------------------------CODE FOR RESTORE----------------------------
+std::map<Version, std::vector<MutationRef>> kvOps;
+
 
 //--- Apply backup file to DB system space
 // NOTE: 10/29: This function is stalled. We may need to write our own function to parse the range file
 ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_input, Reference<Task> task,
 													 RestoreFile rangeFile_input, int64_t readOffset_input, int64_t readLen_input,
-													 Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix) {
+													 Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
+													 ) {
 	TraceEvent("ExecuteApplyRangeFileToDB_MX").detail("RestoreRange", restoreRange.contents().toString()).detail("AddPrefix", addPrefix.printable()).detail("RemovePrefix", removePrefix.printable());
 
 
@@ -575,7 +578,7 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 //	state Future<Key> addPrefix;
 //	state Future<Key> removePrefix;
 
-	loop {
+//	loop {
 		try {
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
@@ -604,20 +607,38 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 //			wait(success(removePrefix));
 //			TraceEvent("WaitOnSuccessRemovePrefix");
 			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix));
-			break;
+//			break;
 
 		} catch(Error &e) {
 			wait(tr->onError(e));
 		}
-	}
+//	}
 
 	TraceEvent("ReadFileStart").detail("Filename", rangeFile.fileName);
 	state Reference<IAsyncFile> inFile = wait(bc->readFile(rangeFile.fileName));
 	TraceEvent("ReadFileFinish").detail("Filename", rangeFile.fileName).detail("FileRefValid", inFile.isValid());
 
+//	state int64_t beginBlock = 0;
+//	state int64_t j = beginBlock *rangeFile.blockSize;
+//	// For each block of the file
+//	for(; j < rangeFile.fileSize; j += rangeFile.blockSize) {
+//		readOffset = j;
+//		readLen = std::min<int64_t>(rangeFile.blockSize, rangeFile.fileSize - j);
+//		state Standalone<VectorRef<KeyValueRef>> blockData = wait(fileBackup::decodeRangeFileBlock(inFile, readOffset, readLen));
+//		//TODO: Decode the Key-Value from data and assign it to the mutationMap
+//		// Increment beginBlock for the file
+//		++beginBlock;
+//
+//		TraceEvent("ReadLogFileFinish").detail("RangeFileName", rangeFile.fileName).detail("DecodedDataSize", blockData.contents().size());
+//		TraceEvent("ApplyRangeFileToDB_MX").detail("BlockDataVectorSize", blockData.contents().size())
+//				.detail("RangeFirstKey", blockData.front().key.printable()).detail("RangeLastKey", blockData.back().key.printable());
+//	}
+
+
 	state Standalone<VectorRef<KeyValueRef>> blockData = wait(fileBackup::decodeRangeFileBlock(inFile, readOffset, readLen));
 	TraceEvent("ApplyRangeFileToDB_MX").detail("BlockDataVectorSize", blockData.contents().size())
 			.detail("RangeFirstKey", blockData.front().key.printable()).detail("RangeLastKey", blockData.back().key.printable());
+
 
 	// First and last key are the range for this file
 	state KeyRange fileRange = KeyRangeRef(blockData.front().key, blockData.back().key);
@@ -690,9 +711,16 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 				tr->setOption(FDBTransactionOptions::NEXT_WRITE_NO_WRITE_CONFLICT_RANGE);
 				tr->set(data[i].key.removePrefix(removePrefix).withPrefix(addPrefix), data[i].value);
 				//MXX: print out the key value version, and operations.
-				printf("RangeFile [key:%s, value:%s, version:%ld, op:set]\n", data[i].key.printable().c_str(), data[i].value.printable().c_str(), rangeFile.version);
+//				printf("RangeFile [key:%s, value:%s, version:%ld, op:set]\n", data[i].key.printable().c_str(), data[i].value.printable().c_str(), rangeFile.version);
 				TraceEvent("PrintRangeFile_MX").detail("Key", data[i].key.printable()).detail("Value", data[i].value.printable())
 					.detail("Version", rangeFile.version).detail("Op", "set");
+				MutationRef m(MutationRef::Type::SetValue, data[i].key, data[i].value); //ASSUME: all operation in range file is set.
+				if ( kvOps.find(rangeFile.version) == kvOps.end() ) {
+					kvOps.insert(std::make_pair(rangeFile.version, std::vector<MutationRef>()));
+				} else {
+					kvOps[rangeFile.version].push_back(m);
+				}
+
 			}
 
 			// Add to bytes written count
@@ -724,6 +752,9 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 					.detail("OriginalFileRange", printable(originalFileRange))
 					.detail("TaskInstance", (uint64_t)this);
 
+
+			TraceEvent("ApplyRangeFileToDBEnd_MX").detail("KVOpsMapSizeMX", kvOps.size()).detail("MutationSize", kvOps[rangeFile.version].size());
+
 			// Commit succeeded, so advance starting point
 			start = i;
 
@@ -743,7 +774,8 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 
 ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
 														   RestoreFile logFile_input, int64_t readOffset_input, int64_t readLen_input,
-														   Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix) {
+														   Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
+														   ) {
 	state RestoreConfig restore(task);
 
 	state RestoreFile logFile = logFile_input;
@@ -784,13 +816,35 @@ ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> 
 	state Key mutationLogPrefix = restore.mutationLogPrefix();
 	TraceEvent("ReadLogFileStart").detail("LogFileName", logFile.fileName);
 	state Reference<IAsyncFile> inFile = wait(bc->readFile(logFile.fileName));
-	TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName);
+	TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName).detail("FileInfo", logFile.toString());
+
+//	state RestoreFile f = logFile_input;
+/*
+	state int64_t beginBlock = 0;
+	state int64_t j = beginBlock *logFile.blockSize;
+	// For each block of the file
+	for(; j < logFile.fileSize; j += logFile.blockSize) {
+		readOffset = j;
+		readLen = std::min<int64_t>(logFile.blockSize, logFile.fileSize - j);
+		state Standalone<VectorRef<KeyValueRef>> data = wait(fileBackup::decodeLogFileBlock(inFile, readOffset, readLen));
+		//TODO: Decode the Key-Value from data and assign it to the mutationMap
+		// Increment beginBlock for the file
+		++beginBlock;
+
+		TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName).detail("DecodedDataSize", data.contents().size());
+	}
+*/
+
+
 	state Standalone<VectorRef<KeyValueRef>> data = wait(fileBackup::decodeLogFileBlock(inFile, readOffset, readLen));
+	//state Standalone<VectorRef<MutationRef>> data = wait(fileBackup::decodeLogFileBlock_MX(inFile, readOffset, readLen)); //Decode log file
 	TraceEvent("ReadLogFileFinish").detail("LogFileName", logFile.fileName).detail("DecodedDataSize", data.contents().size());
 
 	state int start = 0;
 	state int end = data.size();
 	state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
+
+
 
 	tr->reset();
 	loop {
@@ -813,6 +867,14 @@ ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> 
 				printf("LogFile [key:%s, value:%s, version:%ld, op:set]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
 				TraceEvent("PrintMutationLogFile_MX").detail("Key",  k.printable()).detail("Value", v.printable())
 						.detail("Version", logFile.version).detail("Op", "set");
+
+				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
+				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.
+				if ( kvOps.find(logFile.version) == kvOps.end() ) {
+					kvOps.insert(std::make_pair(logFile.version, std::vector<MutationRef>()));
+				} else {
+					kvOps[logFile.version].push_back(m);
+				}
 			}
 
 			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
@@ -840,6 +902,8 @@ ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> 
 					.detail("DataSize", data.size())
 					.detail("Bytes", txBytes)
 					.detail("TaskInstance", (uint64_t)this);
+
+			TraceEvent("ApplyLogFileToDBEnd_MX").detail("KVOpsMapSizeMX", kvOps.size()).detail("MutationSize", kvOps[logFile.version].size());
 
 			// Commit succeeded, so advance starting point
 			start = i;
@@ -1005,21 +1069,64 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 	}
 
 	//Apply range and log files to DB
-
 	TraceEvent("ApplyBackupFileToDB").detail("FileSize", files.size());
+	state int64_t beginBlock = 0;
+	state int64_t j = 0;
+	state int64_t readLen = 0;
+	state int64_t readOffset = 0;
+	//Get the mutation log into the kvOps first
+	for ( const RestoreConfig::RestoreFile f : files ) {
+		if ( !f.isRange ) {
+			TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString());
+			beginBlock = 0;
+			j = beginBlock *f.blockSize;
+			readLen = 0;
+			// For each block of the file
+			for(; j < f.fileSize; j += f.blockSize) {
+				readOffset = j;
+				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
+				_executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix);
+
+				// Increment beginBlock for the file
+				++beginBlock;
+				TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString()).detail("ReadOffset", readOffset).detail("ReadLen", readLen);
+			}
+
+//			_executeApplyMutationLogFileToDB(cx, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
+			//_finishApplyMutationLogFileToDB(cx, task);
+			//TraceEvent("ApplyLogFileToDB_MX").detail("KVOpsMapSizeMX", kvOps.size());
+		}
+	}
+
+	//Get the range file into the kvOps later
 	for ( const RestoreConfig::RestoreFile f : files ) {
 		if ( f.isRange ) {
 			TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString());
+			beginBlock = 0;
+			j = beginBlock *f.blockSize;
+			readLen = 0;
+			// For each block of the file
+			for(; j < f.fileSize; j += f.blockSize) {
+				readOffset = j;
+				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
+				_executeApplyRangeFileToDB(cx, restore, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix);
+
+				// Increment beginBlock for the file
+				++beginBlock;
+				TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString()).detail("ReadOffset", readOffset).detail("ReadLen", readLen);
+			}
+
+
 			// Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
 			//Reference<IBackupContainer> bcmx = bc;
-			_executeApplyRangeFileToDB(cx, restore, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
+//			_executeApplyRangeFileToDB(cx, restore, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
+			//TraceEvent("ApplyRangeFileToDB_MX").detail("KVOpsMapSizeMX", kvOps.size());
 			//_finishApplyRangeFileToDB(cx, task);
-		} else {
-			TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString());
-			_executeApplyMutationLogFileToDB(cx, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
-			//_finishApplyMutationLogFileToDB(cx, task);
 		}
 	}
+
+
+	//TODO: Apply the kv operations
 
 	return Void();
 }

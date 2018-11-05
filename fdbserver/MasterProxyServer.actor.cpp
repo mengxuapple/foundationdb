@@ -727,6 +727,7 @@ ACTOR Future<Void> commitBatch(
 			backupMutation.type = MutationRef::SetValue;
 			partBuffer = NULL;
 
+			//MXX: Fast restore related: This is how backup agent records mutation log into system space of DB
 			val = BinaryWriter::toValue(logRangeMutation.second, IncludeVersion());
 
 			for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {

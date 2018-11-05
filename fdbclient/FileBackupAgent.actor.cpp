@@ -384,7 +384,7 @@ namespace fileBackup {
 
 		try {
 			// Read header, currently only decoding version 1001
-			if(reader.consume<int32_t>() != 1001)
+			if(reader.consume<int32_t>() != 1001) //MXX: In big edian, it is encoded as e903 in xxd output, which is 03e9 in human-readable hex
 				throw restore_unsupported_file_version();
 
 			// Read begin key, if this fails then block was invalid.
@@ -429,6 +429,8 @@ namespace fileBackup {
 				.detail("BlockLen", len)
 				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
 				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+			printf("FileRestoreCorruptRangeFileBlock: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+			printf("Maybe forget to read the file block by block?\n");
 			throw;
 		}
 	}
@@ -490,8 +492,9 @@ namespace fileBackup {
 
 		try {
 			// Read header, currently only decoding version 2001
-			if(reader.consume<int32_t>() != 2001)
+			if(reader.consume<int32_t>() != 2001) //MX: The header in big edian is d107, which is 07d1 in human readable hex
 				throw restore_unsupported_file_version();
+			TraceEvent("DecodeLogFileBlock").detail("CheckHeader", "HeaderIsCorrect");
 
 			// Read k/v pairs.  Block ends either at end of last value exactly or with 0xFF as first key len byte.
 			while(1) {
@@ -504,6 +507,9 @@ namespace fileBackup {
 				const uint8_t *k = reader.consume(kLen);
 				uint32_t vLen = reader.consumeNetworkUInt32();
 				const uint8_t *v = reader.consume(vLen);
+
+				TraceEvent("DecodeLogFileBlock").detail("KLen", kLen).detail("VLen", vLen);
+				TraceEvent("DecodeLogFileBlock").detail("Key", KeyRef(k, kLen).printable()).detail("Value", ValueRef(v, vLen).printable());
 
 				results.push_back(results.arena(), KeyValueRef(KeyRef(k, kLen), ValueRef(v, vLen)));
 			}
@@ -523,9 +529,79 @@ namespace fileBackup {
 				.detail("BlockLen", len)
 				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
 				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+				printf("FileRestoreCorruptLogFileBlock: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+				printf("Maybe forget to read the file block by block?\n");
+
 			throw;
 		}
 	}
+
+	//TODO: Figure out the format of the file, which is super important! Once you know the file format, you can easily decode the file
+	ACTOR Future<Standalone<VectorRef<MutationRef>>> decodeLogFileBlock_MX(Reference<IAsyncFile> file, int64_t offset, int len) {
+		state Standalone<StringRef> buf = makeString(len);
+		int rLen = wait(file->read(mutateString(buf), len, offset));
+		if(rLen != len)
+			throw restore_bad_read();
+
+		Standalone<VectorRef<MutationRef>> results({}, buf.arena());
+		state StringRefReader reader(buf, restore_corrupted_data());
+
+		try {
+			// Read header, currently only decoding version 2001
+			/*
+			if(reader.consume<int32_t>() != 2001)
+				throw restore_unsupported_file_version();
+			 */
+
+			// Read k/v pairs.  Block ends either at end of last value exactly or with 0xFF as first key len byte.
+			while(1) {
+				// If eof reached or first key len bytes is 0xFF then end of block was reached.
+				if(reader.eof() || *reader.rptr == 0xFF) {
+					printf("---Log---Read the end of file\n");
+					break;
+				}
+
+
+				// Read key and value.  If anything throws then there is a problem.
+				uint32_t opType = reader.consumeNetworkUInt32();; // Type is 32bits
+				uint32_t kLen = reader.consumeNetworkUInt32();
+				const uint8_t *k = reader.consume(kLen);
+				uint32_t vLen = reader.consumeNetworkUInt32();
+				const uint8_t *v = reader.consume(vLen);
+
+				//results.push_back(results.arena(), KeyValueRef(KeyRef(k, kLen), ValueRef(v, vLen)));
+				results.push_back(results.arena(), MutationRef((MutationRef::Type) (opType), KeyRef(k, kLen), ValueRef(v, vLen)));
+				printf("---Log---Type:%d ksize:%d key:%s vsize:%d value:%s\n",
+						opType, kLen, KeyRef(k, kLen).printable().c_str(), vLen,
+						ValueRef(v, vLen).printable().c_str());
+			}
+
+			// Make sure any remaining bytes in the block are 0xFF
+			for(auto b : reader.remainder())
+				if(b != 0xFF) {
+					printf("---Log---LogFile is corrupted\n");
+					//throw restore_corrupted_data_padding();
+				}
+
+
+			return results;
+
+		} catch(Error &e) {
+			printf("---Log---LogFile is corrupted\n");
+			TraceEvent(SevWarn, "FileRestoreCorruptLogFileBlock")
+				.error(e)
+				.detail("Filename", file->getFilename())
+				.detail("BlockOffset", offset)
+				.detail("BlockLen", len)
+				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
+				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+			//return results; //MXX: force to return so that we can proceed to the next log file. This line is for debug purpose
+			printf("FileRestoreCorruptLogFileBlock_MX: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+			printf("Maybe forget to read the file block by block?\n");
+			throw; //MXX: Reenable after debug
+		}
+	}
+
 
 	ACTOR Future<Void> checkTaskVersion(Database cx, Reference<Task> task, StringRef name, uint32_t version) {
 		uint32_t taskVersion = task->getVersion();
@@ -1619,7 +1695,7 @@ namespace fileBackup {
 					state int i = 0;
 					for (; i < r.first.size(); ++i) {
 						// Remove the backupLogPrefix + UID bytes from the key
-						wait(logFile.writeKV(r.first[i].key.substr(backupLogPrefixBytes + 16), r.first[i].value));
+						wait(logFile.writeKV(r.first[i].key.substr(backupLogPrefixBytes + 16), r.first[i].value)); //MX: Why don't we record mutation type?
 						lastVersion = r.second;
 					}
 				}
@@ -1640,7 +1716,7 @@ namespace fileBackup {
 			wait(outFile->finish());
 
 			TraceEvent("FileBackupWroteLogFile")
-				.suppressFor(60)
+//				.suppressFor(60)
 				.detail("BackupUID", config.getUid())
 				.detail("Size", outFile->size())
 				.detail("BeginVersion", beginVersion)
@@ -2531,7 +2607,7 @@ namespace fileBackup {
 					for(; i < end && txBytes < dataSizeLimit; ++i) {
 						Key k = data[i].key.withPrefix(mutationLogPrefix);
 						ValueRef v = data[i].value;
-						tr->set(k, v);
+						tr->set(k, v); //MXX: Why we always set the (k,v) retrieved from log file? Shouldn't we have other operations, e.g., clear?
 						txBytes += k.expectedSize();
 						txBytes += v.expectedSize();
 					}
@@ -2676,7 +2752,7 @@ namespace fileBackup {
 				TraceEvent("FileBackupAgentFinishMX").detail("MX", 1).detail("RestoureConfigFiles", files.size());
 			for(; i < files.size(); ++i) {
 				RestoreConfig::RestoreFile &f = files[i];
-				TraceEvent("RestoureConfigFiles").detail("Index", i).detail("FileInfo", f.toString());
+				TraceEvent("RestoreConfigFiles").detail("Index", i).detail("FileInfo", f.toString());
 			}
 
 			// allPartsDone will be set once all block tasks in the current batch are finished.

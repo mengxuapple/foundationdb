@@ -217,7 +217,11 @@ public:
 	}
 
 	Future<Reference<IBackupFile>> writeLogFile(Version beginVersion, Version endVersion, int blockSize) {
-		return writeFile(logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize));
+		std::string fileName = logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize);
+		printf("---Log---WriteLogFilename:%s\n", fileName.c_str());
+		TraceEvent("WriteLogFile").detail("Filename", fileName);
+		return writeFile(fileName);
+		//return writeFile(logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize));
 	}
 
 	Future<Reference<IBackupFile>> writeRangeFile(Version version, int blockSize) {
