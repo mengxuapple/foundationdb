@@ -386,6 +386,7 @@ ACTOR Future<Void> readCommitted(Database cx, PromiseStream<RangeResultWithVersi
 }
 
 //MX: Where the mutation log is read
+//Read key from the range in the system key space. Use function groupBy to group the read keys
 ACTOR Future<Void> readCommitted(Database cx, PromiseStream<RCGroup> results, Future<Void> active, Reference<FlowLock> lock,
 	KeyRangeRef range, std::function< std::pair<uint64_t, uint32_t>(Key key) > groupBy,
 	bool terminator, bool systemAccess, bool lockAware)
@@ -497,7 +498,7 @@ ACTOR Future<int> dumpData(Database cx, PromiseStream<RCGroup> results, Referenc
 
 				BinaryWriter bw(Unversioned());
 				for(int i = 0; i < group.items.size(); ++i) {
-					bw.serializeBytes(group.items[i].value);
+					bw.serializeBytes(group.items[i].value); //MXX: Concatenate the log values in the k-v pair, where v is too larger (>10000B) and is splitted into multiple small kv pairs
 				}
 				decodeBackupLogValue(req.arena, req.transaction.mutations, mutationSize, bw.toStringRef(), addPrefix, removePrefix, group.groupKey, keyVersion);
 				newBeginVersion = group.groupKey + 1;

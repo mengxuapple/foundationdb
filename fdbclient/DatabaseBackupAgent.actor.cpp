@@ -1130,6 +1130,7 @@ namespace dbBackup {
 				results.push_back(PromiseStream<RCGroup>());
 				rc.push_back(readCommitted(taskBucket->src, results[i], Future<Void>(Void()), lock, ranges[i], decodeBKMutationLogKey, true, true, true));
 				dump.push_back(dumpData(cx, task, results[i], lock.getPtr(), taskBucket));
+				dump.push_back(dumpData(cx, task, results[i], lock.getPtr(), taskBucket));
 			}
 
 			wait(waitForAll(dump));

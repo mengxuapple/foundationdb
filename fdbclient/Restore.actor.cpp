@@ -539,11 +539,76 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 //-------------------------CODE FOR RESTORE----------------------------
 std::map<Version, std::vector<MutationRef>> kvOps;
+std::vector<MutationRef> mOps;
+
+void printKVOps() {
+	std::string typeStr = "MSet";
+	TraceEvent("PrintKVOPs").detail("MapSize", kvOps.size());
+	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
+		TraceEvent("PrintKVOPs\t").detail("Version", it->first).detail("OpNum", it->second.size());
+		for ( auto m = it->second.begin(); m != it->second.end(); ++m ) {
+			if ( m->type != MutationRef::Type::SetValue)
+				typeStr = "MLog";
+
+			TraceEvent("PrintKVOPs\t\t").detail("Version", it->first)
+				.detail("MType", m->type).detail("MTypeStr", typeStr)
+				.detail("MKey", m->param1.printable())
+				.detail("MValueSize", m->param2.size())
+				.detail("MValue", m->param2.printable());
+		}
+	}
+}
+
+
+void filterAndSortMutationOps() {
+	std::string typeStr = "MSet";
+	mOps.clear();
+	TraceEvent("FilterAndSortMutationOps").detail("MapSize", kvOps.size());
+	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
+		TraceEvent("PrintKVOPs\t").detail("Version", it->first).detail("OpNum", it->second.size());
+		for ( auto m = it->second.begin(); m != it->second.end(); ++m ) {
+			if ( m->type == MutationRef::Type::SetValue) {
+				continue;
+			}
+			else if ( m->type != MutationRef::Type::NoOp ) { //Mutation log op is marked as NoOp. The actual op is in the mutationRef value
+				printf("Something went wrong with the operation decoded from range and log files. Continue though\n");
+				continue;
+			}
+
+			typeStr = "MNoOp";
+
+			TraceEvent("DecodeKVOps").detail("Version", it->first)
+					.detail("MType", m->type).detail("MTypeStr", typeStr)
+					.detail("MKey", m->param1.printable())
+					.detail("MValueSize", m->param2.size())
+					.detail("MValue", m->param2.printable());
+
+			StringRef k = m->param1;
+			StringRef v = m->param2;
+			//decode the value
+			// Possible helper functions are
+			// std::pair<uint64_t, uint32_t> decodeBKMutationLogKey(Key key)
+			// Standalone<VectorRef<MutationRef>> decodeBackupLogValue(StringRef value)
+			std::pair<uint64_t, uint32_t> versionPart = decodeBKMutationLogKey(k);
+			TraceEvent("DecodeMutationKV").detail("Version", versionPart.first).detail("Part", versionPart.second);
+
+			std::pair<uint64_t, uint32_t> versionPart2 = decodeBKMutationLogKey(v);
+			TraceEvent("DecodeMutationKV2").detail("Version", versionPart2.first).detail("Part", versionPart2.second);
+
+
+			/*
+			Standalone<VectorRef<MutationRef>> mutations =  decodeBackupLogValue(v);
+			TraceEvent("DecodeMutationKV").detail("Version", versionPart.first).detail("Part", versionPart.second)
+				.detail("Mutation", mutations.contents().size());
+			 */
+		}
+	}
+}
 
 
 //--- Apply backup file to DB system space
 // NOTE: 10/29: This function is stalled. We may need to write our own function to parse the range file
-ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_input, Reference<Task> task,
+ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_input, Reference<Task> task,
 													 RestoreFile rangeFile_input, int64_t readOffset_input, int64_t readLen_input,
 													 Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
 													 ) {
@@ -646,7 +711,7 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 	// If fileRange doesn't intersect restore range then we're done.
 	if(!fileRange.intersects(restoreRange)) {
 		TraceEvent("ApplyRangeFileToDB_MX").detail("NoIntersectRestoreRange", "FinishAndReturn");
-		return;
+		return Void();
 	}
 
 	// We know the file range intersects the restore range but there could still be keys outside the restore range.
@@ -760,7 +825,7 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 
 			if(start == end) {
 				TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "DoneApplyKVToDB");
-				return;
+				return Void();
 			}
 			tr->reset();
 		} catch(Error &e) {
@@ -772,7 +837,7 @@ ACTOR static void _executeApplyRangeFileToDB(Database cx, RestoreConfig restore_
 	}
 }
 
-ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
+ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Reference<Task> task,
 														   RestoreFile logFile_input, int64_t readOffset_input, int64_t readLen_input,
 														   Reference<IBackupContainer> bc, KeyRange restoreRange, Key addPrefix, Key removePrefix
 														   ) {
@@ -850,7 +915,7 @@ ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> 
 	loop {
 		try {
 			if(start == end)
-				return;
+				return Void();
 
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
@@ -915,6 +980,7 @@ ACTOR static void _executeApplyMutationLogFileToDB(Database cx, Reference<Task> 
 				wait(tr->onError(e));
 		}
 	}
+
 }
 
 
@@ -1074,8 +1140,11 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 	state int64_t j = 0;
 	state int64_t readLen = 0;
 	state int64_t readOffset = 0;
+	state RestoreConfig::RestoreFile f;
+	state int fi = 0;
 	//Get the mutation log into the kvOps first
-	for ( const RestoreConfig::RestoreFile f : files ) {
+	for ( fi = 0; fi < files.size(); ++fi ) {
+		f = files[fi];
 		if ( !f.isRange ) {
 			TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString());
 			beginBlock = 0;
@@ -1085,7 +1154,7 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			for(; j < f.fileSize; j += f.blockSize) {
 				readOffset = j;
 				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
-				_executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix);
+				wait( _executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
 
 				// Increment beginBlock for the file
 				++beginBlock;
@@ -1099,7 +1168,8 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 	}
 
 	//Get the range file into the kvOps later
-	for ( const RestoreConfig::RestoreFile f : files ) {
+	for ( fi = 0; fi < files.size(); ++fi ) {
+		f = files[fi];
 		if ( f.isRange ) {
 			TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString());
 			beginBlock = 0;
@@ -1109,7 +1179,7 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			for(; j < f.fileSize; j += f.blockSize) {
 				readOffset = j;
 				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
-				_executeApplyRangeFileToDB(cx, restore, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix);
+				wait( _executeApplyRangeFileToDB(cx, restore, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
 
 				// Increment beginBlock for the file
 				++beginBlock;
@@ -1124,6 +1194,9 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			//_finishApplyRangeFileToDB(cx, task);
 		}
 	}
+
+	printKVOps();
+	filterAndSortMutationOps();
 
 
 	//TODO: Apply the kv operations
