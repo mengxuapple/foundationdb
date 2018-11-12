@@ -26,6 +26,12 @@
 
 static const char * typeString[] = { "SetValue", "ClearRange", "AddValue", "DebugKeyRange", "DebugKey", "NoOp", "And", "Or", "Xor", "AppendIfFits", "AvailableForReuse", "Reserved_For_LogProtocolMessage", "Max", "Min", "SetVersionstampedKey", "SetVersionstampedValue", "ByteMin", "ByteMax", "MinV2", "AndV2" };
 
+struct MutationRef;
+
+std::string getHexString(StringRef input);
+void printBackupMutationRefValueHex(Standalone<StringRef> val_input, std::string prefix);
+
+
 struct MutationRef { 
 	static const int OVERHEAD_BYTES = 12; //12 is the size of Header in MutationList entries
 	enum Type : uint8_t { SetValue=0, ClearRange, AddValue, DebugKeyRange, DebugKey, NoOp, And, Or,

@@ -27,6 +27,7 @@
 #include "RestoreInterface.h"
 #include "FileBackupAgent.h"
 #include "ManagementAPI.h"
+#include "MutationList.h"
 
 /*
 #include "BackupContainer.h"
@@ -538,8 +539,127 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 
 //-------------------------CODE FOR RESTORE----------------------------
+//std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
 std::map<Version, std::vector<MutationRef>> kvOps;
+// MXX: Important: Can not use std::vector because you won't have the arena and you will hold the reference to memory that will be freed.
+// Use push_back_deep() to copy data to the standalone arena.
+//Standalone<VectorRef<MutationRef>> mOps;
 std::vector<MutationRef> mOps;
+
+// Helper class for reading restore data from a buffer and throwing the right errors.
+struct StringRefReaderMX {
+	StringRefReaderMX(StringRef s = StringRef(), Error e = Error()) : rptr(s.begin()), end(s.end()), failure_error(e) {}
+
+	// Return remainder of data as a StringRef
+	StringRef remainder() {
+		return StringRef(rptr, end - rptr);
+	}
+
+	// Return a pointer to len bytes at the current read position and advance read pos
+	//Consume a little-Endian data. Since we only run on little-Endian machine, the data on storage is little Endian
+	const uint8_t * consume(unsigned int len) {
+		if(rptr == end && len != 0)
+			throw end_of_stream();
+		const uint8_t *p = rptr;
+		rptr += len;
+		if(rptr > end)
+			throw failure_error;
+		return p;
+	}
+
+	// Return a T from the current read position and advance read pos
+	template<typename T> const T consume() {
+		return *(const T *)consume(sizeof(T));
+	}
+
+	// Functions for consuming big endian (network byte order) integers.
+	// Consumes a big endian number, swaps it to little endian, and returns it.
+	const int32_t  consumeNetworkInt32()  { return (int32_t)bigEndian32((uint32_t)consume< int32_t>());}
+	const uint32_t consumeNetworkUInt32() { return          bigEndian32(          consume<uint32_t>());}
+
+	bool eof() { return rptr == end; }
+
+	const uint8_t *rptr, *end;
+	Error failure_error;
+};
+
+std::string getHexString(StringRef input) {
+	std::stringstream ss;
+	for (int i = 0; i<input.size(); i++) {
+		if ( i % 4 == 0 )
+			ss << " ";
+		if ( i == 12 ) { //The end of 12bytes, which is the version size for value
+			ss << "|";
+		}
+		if ( i == (12 + 12) ) { //The end of version + header
+			ss << "@";
+		}
+		ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[i]; // [] operator moves the pointer in step of unit8
+	}
+	return ss.str();
+}
+
+
+void printMutationListRefHex(MutationListRef m, std::string prefix) {
+	MutationListRef::Iterator iter = m.begin();
+	for ( ;iter != m.end(); ++iter) {
+		printf("%s mType:%04x param1:%s param2:%s param1_size:%d, param2_size:%d\n", prefix.c_str(), iter->type,
+			   getHexString(iter->param1).c_str(), getHexString(iter->param2).c_str(), iter->param1.size(), iter->param2.size());
+	}
+}
+
+//TODO: Print out the backup mutation log value. The backup log value (i.e., the value in the kv pair) has the following format
+//version(12B)|mutationRef|MutationRef|....
+//A mutationRef has the format: |type_4B|param1_size_4B|param2_size_4B|param1|param2.
+//Note: The data is stored in little endian! You need to convert it to BigEndian so that you know how long the param1 and param2 is and how to format them!
+void printBackupMutationRefValueHex(Standalone<StringRef> val_input, std::string prefix) {
+	std::stringstream ss;
+	const int version_size = 12;
+	const int header_size = 12;
+	StringRef val = val_input.contents();
+	StringRefReaderMX reader(val, restore_corrupted_data());
+
+	int count_size = 0;
+	// Get the version
+	uint64_t version = reader.consume<uint64_t>();
+	count_size += 8;
+	uint32_t val_length_decode = reader.consume<uint32_t>();
+	count_size += 4;
+
+	printf("----------------------------------------------------------\n");
+	printf("To decode value:%s\n", getHexString(val).c_str());
+	if ( val_length_decode != (val.size() - 12) ) {
+		printf("%s[PARSE ERROR]!!! val_length_decode:%d != val.size:%d\n", prefix.c_str(), val_length_decode, val.size());
+	} else {
+		printf("%s[PARSE SUCCESS] val_length_decode:%d == (val.size:%d - 12)\n", prefix.c_str(), val_length_decode, val.size());
+	}
+
+	// Get the mutation header
+	while (1) {
+		// stop when reach the end of the string
+		if(reader.eof() ) { //|| *reader.rptr == 0xFF
+			printf("Finish decode the value\n");
+			break;
+		}
+
+
+		uint32_t type = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		uint32_t kLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		uint32_t vLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		const uint8_t *k = reader.consume(kLen);
+		const uint8_t *v = reader.consume(vLen);
+		count_size += 4 * 3 + kLen + vLen;
+
+		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
+			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
+		}
+
+		printf("%s---DedoceBackupMutation: Type:%d K:%s V:%s\n k_size:%d v_size:%d\n", prefix.c_str(),
+				type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
+
+	}
+	printf("----------------------------------------------------------\n");
+}
 
 void printKVOps() {
 	std::string typeStr = "MSet";
@@ -552,9 +672,9 @@ void printKVOps() {
 
 			TraceEvent("PrintKVOPs\t\t").detail("Version", it->first)
 				.detail("MType", m->type).detail("MTypeStr", typeStr)
-				.detail("MKey", m->param1.printable())
+				.detail("MKey", getHexString(m->param1))
 				.detail("MValueSize", m->param2.size())
-				.detail("MValue", m->param2.printable());
+				.detail("MValue", getHexString(m->param2));
 		}
 	}
 }
@@ -579,9 +699,9 @@ void filterAndSortMutationOps() {
 
 			TraceEvent("DecodeKVOps").detail("Version", it->first)
 					.detail("MType", m->type).detail("MTypeStr", typeStr)
-					.detail("MKey", m->param1.printable())
+					.detail("MKey", getHexString(m->param1))
 					.detail("MValueSize", m->param2.size())
-					.detail("MValue", m->param2.printable());
+					.detail("MValue", getHexString(m->param2));
 
 			StringRef k = m->param1;
 			StringRef v = m->param2;
@@ -781,8 +901,10 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 					.detail("Version", rangeFile.version).detail("Op", "set");
 				MutationRef m(MutationRef::Type::SetValue, data[i].key, data[i].value); //ASSUME: all operation in range file is set.
 				if ( kvOps.find(rangeFile.version) == kvOps.end() ) {
+					//kvOps.insert(std::make_pair(rangeFile.version, Standalone<VectorRef<MutationRef>>(VectorRef<MutationRef>())));
 					kvOps.insert(std::make_pair(rangeFile.version, std::vector<MutationRef>()));
 				} else {
+					//kvOps[rangeFile.version].contents().push_back_deep(m);
 					kvOps[rangeFile.version].push_back(m);
 				}
 
@@ -929,9 +1051,10 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 				txBytes += k.expectedSize();
 				txBytes += v.expectedSize();
 				//MXX: print out the key value version, and operations.
-				printf("LogFile [key:%s, value:%s, version:%ld, op:set]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
-				TraceEvent("PrintMutationLogFile_MX").detail("Key",  k.printable()).detail("Value", v.printable())
-						.detail("Version", logFile.version).detail("Op", "set");
+				//printf("LogFile [key:%s, value:%s, version:%ld, op:NoOp]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
+				printf("LogFile [KEY:%s, VALUE:%s, VERSION:%ld, op:NoOp]\n", getHexString(k).c_str(), getHexString(v).c_str(), logFile.version);
+				TraceEvent("PrintMutationLogFile_MX").detail("Key",  getHexString(k)).detail("Value", getHexString(v))
+						.detail("Version", logFile.version).detail("Op", "NoOps");
 
 				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
 				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.

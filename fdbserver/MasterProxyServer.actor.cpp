@@ -728,7 +728,30 @@ ACTOR Future<Void> commitBatch(
 			partBuffer = NULL;
 
 			//MXX: Fast restore related: This is how backup agent records mutation log into system space of DB
-			val = BinaryWriter::toValue(logRangeMutation.second, IncludeVersion());
+			//val holds the mutationRef's blob data: |Header|param1|param2|, where Header has mutation type and param1_length and param2_length
+			//Header format: |type|p1len|p2len|, each field is int type
+			//MX: Q: Why 12 bytes of data is put at the beginning by IncludeVersion()? The version is only 64bits (8bytes)
+			//MX: A: IncludeVersion() put 8B to the header, the BinaryWriter write the length (which is 4B) of logRangeMutation.second behind the IncludeVersion().
+			//MXX: Should figure out how this function serialize the MutationListRef. Once we know this, we can decode it
+			val = BinaryWriter::toValue(logRangeMutation.second, IncludeVersion()); //IncludeVersion() put 64 bit at the head of logRangeMutation.second in val
+
+			BinaryWriter wr_logRangeMutation(Unversioned());
+			wr_logRangeMutation.serializeBinaryItem(logRangeMutation.second);
+
+			printf("---MXMutationLogSerialize: val_size:%dB logRangeMutation_size:%dB exp_size:%dB part_num:%d\n",
+					val.size(), logRangeMutation.second.totalSize(), logRangeMutation.second.expectedSize(), val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE);
+			printf("---MXMutationLogSerialize: mutationListRef is as follows---\n");
+			printMutationListRefHex(logRangeMutation.second, "\t");
+//			printf("\tlogRangeMutation type:%04x param1:%s param2:%s param1_size:%d, param2_size:%d\n",
+//					logRangeMutation.second.begin()->type, getHexString(logRangeMutation.second.begin()->param1).c_str(), getHexString(logRangeMutation.second.begin()->param2).c_str(),
+//				   logRangeMutation.second.begin()->param1.size(), logRangeMutation.second.begin()->param2.size());
+			printf("\tval:%s\n", getHexString(val).c_str());
+			printBackupMutationRefValueHex(val, "\t");
+			printf("\tlogRangeMutation No Version:%s\n", getHexString(wr_logRangeMutation.toStringRef()).c_str());
+			bool mxPrint = true; //always print
+			if ( val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE >= 1 ) {
+				mxPrint = true;
+			}
 
 			for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {
 
@@ -751,6 +774,10 @@ ACTOR Future<Void> commitBatch(
 				// Define the mutation type and and location
 				backupMutation.param1 = wr.toStringRef();
 				ASSERT( backupMutation.param1.startsWith(logRangeMutation.first) );  // We are writing into the configured destination
+				if ( mxPrint ) {
+					printf("\tSerialized Mutation: param1:%s\n", getHexString(backupMutation.param1).c_str());
+					printf("\tSerialized Mutation: param2:%s\n", getHexString(backupMutation.param2).c_str());
+				}
 					
 				auto& tags = self->tagsForKey(backupMutation.param1);
 				for (auto& tag : tags)
