@@ -715,9 +715,11 @@ ACTOR Future<Void> commitBatch(
 		// Serialize the log range mutations within the map
 		for (auto& logRangeMutation : logRangeMutations)
 		{
+			//Key
 			BinaryWriter wr(Unversioned());
 
 			// Serialize the log destination
+			printf("logRangeMutation first:%s\n", getHexString(logRangeMutation.first).c_str());
 			wr.serializeBytes( logRangeMutation.first );
 
 			// Write the log keys and version information
@@ -740,14 +742,14 @@ ACTOR Future<Void> commitBatch(
 
 			printf("---MXMutationLogSerialize: val_size:%dB logRangeMutation_size:%dB exp_size:%dB part_num:%d\n",
 					val.size(), logRangeMutation.second.totalSize(), logRangeMutation.second.expectedSize(), val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE);
-			printf("---MXMutationLogSerialize: mutationListRef is as follows---\n");
-			printMutationListRefHex(logRangeMutation.second, "\t");
+////			printf("---MXMutationLogSerialize: mutationListRef is as follows---\n");
+////			printMutationListRefHex(logRangeMutation.second, "\t");
 //			printf("\tlogRangeMutation type:%04x param1:%s param2:%s param1_size:%d, param2_size:%d\n",
 //					logRangeMutation.second.begin()->type, getHexString(logRangeMutation.second.begin()->param1).c_str(), getHexString(logRangeMutation.second.begin()->param2).c_str(),
 //				   logRangeMutation.second.begin()->param1.size(), logRangeMutation.second.begin()->param2.size());
-			printf("\tval:%s\n", getHexString(val).c_str());
-			printBackupMutationRefValueHex(val, "\t");
-			printf("\tlogRangeMutation No Version:%s\n", getHexString(wr_logRangeMutation.toStringRef()).c_str());
+////			printf("\tval:%s\n", getHexString(val).c_str());
+////			printBackupMutationRefValueHex(val, "\t");
+////			printf("\tlogRangeMutation No Version:%s\n", getHexString(wr_logRangeMutation.toStringRef()).c_str());
 			bool mxPrint = true; //always print
 			if ( val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE >= 1 ) {
 				mxPrint = true;
@@ -756,6 +758,8 @@ ACTOR Future<Void> commitBatch(
 			for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {
 
 				// Assign the second parameter as the part
+				// MXX: NOTE: if val is too big, we will have multiple parts. The parts that are not the 0th part will NOT have the 12Byte header in val put by IncludeVersion()
+				// We need to use backupMutation.param1 (after stripping the part value) to concatinate the backupMutation.param2 into the val again so that we can decode val into MutationListRef
 				backupMutation.param2 = val.substr(part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE,
 					std::min(val.size() - part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE, CLIENT_KNOBS->MUTATION_BLOCK_SIZE));
 
@@ -772,11 +776,11 @@ ACTOR Future<Void> commitBatch(
 				}
 
 				// Define the mutation type and and location
-				backupMutation.param1 = wr.toStringRef();
+				backupMutation.param1 = wr.toStringRef(); //MXX: TODO: Decode the key and concatenate the value for the same version. The same file may have multiple versions
 				ASSERT( backupMutation.param1.startsWith(logRangeMutation.first) );  // We are writing into the configured destination
 				if ( mxPrint ) {
-					printf("\tSerialized Mutation: param1:%s\n", getHexString(backupMutation.param1).c_str());
-					printf("\tSerialized Mutation: param2:%s\n", getHexString(backupMutation.param2).c_str());
+					printf("\tSerialized Mutation: param1:%s size:%d, logRangeMutation.first:%s\n", getHexString(backupMutation.param1).c_str(), backupMutation.param1.size(), getHexString(logRangeMutation.first).c_str());
+					printf("\tSerialized Mutation: param2:%s size:%d\n", getHexString(backupMutation.param2).c_str(), backupMutation.param2.size());
 				}
 					
 				auto& tags = self->tagsForKey(backupMutation.param1);

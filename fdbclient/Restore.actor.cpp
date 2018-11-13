@@ -540,7 +540,7 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 //-------------------------CODE FOR RESTORE----------------------------
 //std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
-std::map<Version, std::vector<MutationRef>> kvOps;
+std::map<Version, std::vector<MutationRef>> kvOps; //TODO: Must change to standAlone before run correctness test. otherwise, you will see the mutationref memory is corrupted
 // MXX: Important: Can not use std::vector because you won't have the arena and you will hold the reference to memory that will be freed.
 // Use push_back_deep() to copy data to the standalone arena.
 //Standalone<VectorRef<MutationRef>> mOps;
@@ -654,8 +654,57 @@ void printBackupMutationRefValueHex(Standalone<StringRef> val_input, std::string
 			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
 		}
 
-		printf("%s---DedoceBackupMutation: Type:%d K:%s V:%s\n k_size:%d v_size:%d\n", prefix.c_str(),
+		printf("%s---DedoceBackupMutation: Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
 				type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
+
+	}
+	printf("----------------------------------------------------------\n");
+}
+
+void printBackupLogKeyHex(Standalone<StringRef> key_input, std::string prefix) {
+	std::stringstream ss;
+	const int version_size = 12;
+	const int header_size = 12;
+	StringRef val = key_input.contents();
+	StringRefReaderMX reader(val, restore_corrupted_data());
+
+	int count_size = 0;
+	// Get the version
+	uint64_t version = reader.consume<uint64_t>();
+	count_size += 8;
+	uint32_t val_length_decode = reader.consume<uint32_t>();
+	count_size += 4;
+
+	printf("----------------------------------------------------------\n");
+	printf("To decode value:%s\n", getHexString(val).c_str());
+	if ( val_length_decode != (val.size() - 12) ) {
+		printf("%s[PARSE ERROR]!!! val_length_decode:%d != val.size:%d\n", prefix.c_str(), val_length_decode, val.size());
+	} else {
+		printf("%s[PARSE SUCCESS] val_length_decode:%d == (val.size:%d - 12)\n", prefix.c_str(), val_length_decode, val.size());
+	}
+
+	// Get the mutation header
+	while (1) {
+		// stop when reach the end of the string
+		if(reader.eof() ) { //|| *reader.rptr == 0xFF
+			printf("Finish decode the value\n");
+			break;
+		}
+
+
+		uint32_t type = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		uint32_t kLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		uint32_t vLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		const uint8_t *k = reader.consume(kLen);
+		const uint8_t *v = reader.consume(vLen);
+		count_size += 4 * 3 + kLen + vLen;
+
+		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
+			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
+		}
+
+		printf("%s---DedoceBackupMutation: Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
+			   type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
 
 	}
 	printf("----------------------------------------------------------\n");
@@ -664,11 +713,19 @@ void printBackupMutationRefValueHex(Standalone<StringRef> val_input, std::string
 void printKVOps() {
 	std::string typeStr = "MSet";
 	TraceEvent("PrintKVOPs").detail("MapSize", kvOps.size());
+	printf("PrintKVOPs num_of_version:%d\n", kvOps.size());
 	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
 		TraceEvent("PrintKVOPs\t").detail("Version", it->first).detail("OpNum", it->second.size());
+		printf("PrintKVOPs Version:%08lx num_of_ops:%d\n",  it->first, it->second.size());
 		for ( auto m = it->second.begin(); m != it->second.end(); ++m ) {
-			if ( m->type != MutationRef::Type::SetValue)
-				typeStr = "MLog";
+			if (  m->type >= MutationRef::Type::SetValue && m->type <= MutationRef::Type::MAX_ATOMIC_OP )
+				typeStr = typeString[m->type];
+			else {
+				printf("PrintKVOPs MutationType:%d is out of range\n", m->type);
+			}
+
+			printf("\tPrintKVOPs MType:%s K:%s, V:%s K_size:%d V_size:%d\n", typeStr.c_str(),
+				   getHexString(m->param1).c_str(), getHexString(m->param2).c_str(), m->param1.size(), m->param2.size());
 
 			TraceEvent("PrintKVOPs\t\t").detail("Version", it->first)
 				.detail("MType", m->type).detail("MTypeStr", typeStr)
@@ -679,18 +736,78 @@ void printKVOps() {
 	}
 }
 
+//version_input is the file version
+void registerBackupMutation(Standalone<StringRef> val_input, Version file_version) {
+	std::string prefix = "||\t";
+	std::stringstream ss;
+	const int version_size = 12;
+	const int header_size = 12;
+	StringRef val = val_input.contents();
+	StringRefReaderMX reader(val, restore_corrupted_data());
+
+	int count_size = 0;
+	// Get the version
+	uint64_t version = reader.consume<uint64_t>();
+	count_size += 8;
+	uint32_t val_length_decode = reader.consume<uint32_t>();
+	count_size += 4;
+
+	if ( kvOps.find(file_version) == kvOps.end() ) {
+		//kvOps.insert(std::make_pair(rangeFile.version, Standalone<VectorRef<MutationRef>>(VectorRef<MutationRef>())));
+		kvOps.insert(std::make_pair(file_version, std::vector<MutationRef>()));
+	}
+
+	printf("----------------------------------------------------------Register Backup Mutation into KVOPs version:%08lx\n", file_version);
+	printf("To decode value:%s\n", getHexString(val).c_str());
+	if ( val_length_decode != (val.size() - 12) ) {
+		printf("[PARSE ERROR]!!! val_length_decode:%d != val.size:%d\n",  val_length_decode, val.size());
+	} else {
+		printf("[PARSE SUCCESS] val_length_decode:%d == (val.size:%d - 12)\n", val_length_decode, val.size());
+	}
+
+	// Get the mutation header
+	while (1) {
+		// stop when reach the end of the string
+		if(reader.eof() ) { //|| *reader.rptr == 0xFF
+			printf("Finish decode the value\n");
+			break;
+		}
+
+
+		uint32_t type = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		uint32_t kLen = reader.consume<uint32_t>();//reader.consumeNetworkUInkvOps[t32();
+		uint32_t vLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+		const uint8_t *k = reader.consume(kLen);
+		const uint8_t *v = reader.consume(vLen);
+		count_size += 4 * 3 + kLen + vLen;
+
+		MutationRef m((MutationRef::Type) type, KeyRef(k, kLen), KeyRef(v, vLen)); //ASSUME: all operation in range file is set.
+		kvOps[file_version].push_back(m);
+
+//		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
+//			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
+//		}
+//
+		printf("%s---RegisterBackupMutation: Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
+			   type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
+
+	}
+//	printf("----------------------------------------------------------\n");
+}
+
 
 void filterAndSortMutationOps() {
 	std::string typeStr = "MSet";
 	mOps.clear();
 	TraceEvent("FilterAndSortMutationOps").detail("MapSize", kvOps.size());
+	printf("FilterAndSortMutationOps, mapsSize:%d\n", kvOps.size());
 	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
 		TraceEvent("PrintKVOPs\t").detail("Version", it->first).detail("OpNum", it->second.size());
+		printf("PrintKVOPs, k:%08lx v_size:%d\n", it->first, it->second.size());
 		for ( auto m = it->second.begin(); m != it->second.end(); ++m ) {
 			if ( m->type == MutationRef::Type::SetValue) {
 				continue;
-			}
-			else if ( m->type != MutationRef::Type::NoOp ) { //Mutation log op is marked as NoOp. The actual op is in the mutationRef value
+			} else if ( m->type != MutationRef::Type::NoOp ) { //Mutation log op is marked as NoOp. The actual op is in the mutationRef value
 				printf("Something went wrong with the operation decoded from range and log files. Continue though\n");
 				continue;
 			}
@@ -703,17 +820,21 @@ void filterAndSortMutationOps() {
 					.detail("MValueSize", m->param2.size())
 					.detail("MValue", getHexString(m->param2));
 
-			StringRef k = m->param1;
-			StringRef v = m->param2;
+			StringRef param1 = m->param1;
+			StringRef param2 = m->param2;
+			//decode the param2 which is the serialized mutationListRef
+			printf("\tMutationLog param1:%s\n", param1);
+			printBackupMutationRefValueHex(param2, " |\t");
+
 			//decode the value
 			// Possible helper functions are
 			// std::pair<uint64_t, uint32_t> decodeBKMutationLogKey(Key key)
 			// Standalone<VectorRef<MutationRef>> decodeBackupLogValue(StringRef value)
-			std::pair<uint64_t, uint32_t> versionPart = decodeBKMutationLogKey(k);
-			TraceEvent("DecodeMutationKV").detail("Version", versionPart.first).detail("Part", versionPart.second);
-
-			std::pair<uint64_t, uint32_t> versionPart2 = decodeBKMutationLogKey(v);
-			TraceEvent("DecodeMutationKV2").detail("Version", versionPart2.first).detail("Part", versionPart2.second);
+//			std::pair<uint64_t, uint32_t> versionPart = decodeBKMutationLogKey(k);
+//			TraceEvent("DecodeMutationKV").detail("Version", versionPart.first).detail("Part", versionPart.second);
+//
+//			std::pair<uint64_t, uint32_t> versionPart2 = decodeBKMutationLogKey(v);
+//			TraceEvent("DecodeMutationKV2").detail("Version", versionPart2.first).detail("Part", versionPart2.second);
 
 
 			/*
@@ -757,16 +878,16 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 			.detail("TaskInstance", (uint64_t)this);
 	//MXX: the set of key value version is rangeFile.version. the key-value set in the same range file has the same version
 
-	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
+//	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
 //	state Future<Reference<IBackupContainer>> bc;
 //	state Future<KeyRange> restoreRange;
 //	state Future<Key> addPrefix;
 //	state Future<Key> removePrefix;
 
 //	loop {
-		try {
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+//		try {
+//			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+//			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
 //
 //			TraceEvent("Getbc");
@@ -793,10 +914,10 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 //			TraceEvent("WaitOnSuccessRemovePrefix");
 			//wait(success(bc) && success(restoreRange) && success(addPrefix) && success(removePrefix));
 //			break;
-
-		} catch(Error &e) {
-			wait(tr->onError(e));
-		}
+//
+//		} catch(Error &e) {
+//			wait(tr->onError(e));
+//		}
 //	}
 
 	TraceEvent("ReadFileStart").detail("Filename", rangeFile.fileName);
@@ -866,13 +987,13 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 	state int end = data.size();
 	state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
 
-	tr->reset();
+//	tr->reset();
 	//MX: This is where the key-value pair in range file is applied into DB
 	TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "StartApplyKVToDB").detail("DataSize", data.size()).detail("DataSizeLimit", dataSizeLimit);
 	loop {
-		try {
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+//		try {
+//			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+//			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
 			state int i = start;
 			state int txBytes = 0;
@@ -890,11 +1011,11 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 			state KeyRange trRange = KeyRangeRef((start == 0 ) ? fileRange.begin : data[start].key.removePrefix(removePrefix).withPrefix(addPrefix)
 					, (iend == end) ? fileRange.end   : data[iend ].key.removePrefix(removePrefix).withPrefix(addPrefix));
 
-			tr->clear(trRange);
+//			tr->clear(trRange);
 
 			for(; i < iend; ++i) {
-				tr->setOption(FDBTransactionOptions::NEXT_WRITE_NO_WRITE_CONFLICT_RANGE);
-				tr->set(data[i].key.removePrefix(removePrefix).withPrefix(addPrefix), data[i].value);
+//				tr->setOption(FDBTransactionOptions::NEXT_WRITE_NO_WRITE_CONFLICT_RANGE);
+//				tr->set(data[i].key.removePrefix(removePrefix).withPrefix(addPrefix), data[i].value);
 				//MXX: print out the key value version, and operations.
 //				printf("RangeFile [key:%s, value:%s, version:%ld, op:set]\n", data[i].key.printable().c_str(), data[i].value.printable().c_str(), rangeFile.version);
 				TraceEvent("PrintRangeFile_MX").detail("Key", data[i].key.printable()).detail("Value", data[i].value.printable())
@@ -911,13 +1032,13 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 			}
 
 			// Add to bytes written count
-			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
-
-			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
+//			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
+//
+//			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
 
 //			wait(taskBucket->keepRunning(tr, task));
 
-			wait( checkLock );
+//			wait( checkLock );
 
 //			wait(tr->commit());
 
@@ -929,15 +1050,15 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 					.detail("FileSize", rangeFile.fileSize)
 					.detail("ReadOffset", readOffset)
 					.detail("ReadLen", readLen)
-					.detail("CommitVersion", tr->getCommittedVersion())
+//					.detail("CommitVersion", tr->getCommittedVersion())
 					.detail("BeginRange", printable(trRange.begin))
 					.detail("EndRange", printable(trRange.end))
 					.detail("StartIndex", start)
 					.detail("EndIndex", i)
 					.detail("DataSize", data.size())
 					.detail("Bytes", txBytes)
-					.detail("OriginalFileRange", printable(originalFileRange))
-					.detail("TaskInstance", (uint64_t)this);
+					.detail("OriginalFileRange", printable(originalFileRange));
+//					.detail("TaskInstance", (uint64_t)this);
 
 
 			TraceEvent("ApplyRangeFileToDBEnd_MX").detail("KVOpsMapSizeMX", kvOps.size()).detail("MutationSize", kvOps[rangeFile.version].size());
@@ -949,13 +1070,13 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 				TraceEvent("ApplyRangeFileToDB_MX").detail("Progress", "DoneApplyKVToDB");
 				return Void();
 			}
-			tr->reset();
-		} catch(Error &e) {
-			if(e.code() == error_code_transaction_too_large)
-				dataSizeLimit /= 2;
-			else
-				wait(tr->onError(e));
-		}
+//			tr->reset();
+//		} catch(Error &e) {
+//			if(e.code() == error_code_transaction_too_large)
+//				dataSizeLimit /= 2;
+//			else
+//				wait(tr->onError(e));
+//		}
 	}
 }
 
@@ -969,7 +1090,7 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 	state int64_t readOffset = readOffset_input;
 	state int64_t readLen = readLen_input;
 
-	TraceEvent("FileRestoreLogStart")
+	TraceEvent("FileRestoreLogStart_MX")
 			.suppressFor(60)
 			.detail("RestoreUID", restore.getUid())
 			.detail("FileName", logFile.fileName)
@@ -980,25 +1101,25 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 			.detail("ReadLen", readLen)
 			.detail("TaskInstance", (uint64_t)this);
 
-	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
+//	state Reference<ReadYourWritesTransaction> tr( new ReadYourWritesTransaction(cx) );
 //	state Reference<IBackupContainer> bc;
 
 //	loop {
-		try {
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-
-//			Reference<IBackupContainer> _bc = wait(restore.sourceContainer().getOrThrow(tr));
-//			bc = _bc;
-
-//			wait(checkTaskVersion(tr->getDatabase(), task, name, version));
-//			wait(taskBucket->keepRunning(tr, task));
-
-//			break;
-		} catch(Error &e) {
-			wait(tr->onError(e));
-		}
-//	}
+//		try {
+//			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+//			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+//
+////			Reference<IBackupContainer> _bc = wait(restore.sourceContainer().getOrThrow(tr));
+////			bc = _bc;
+//
+////			wait(checkTaskVersion(tr->getDatabase(), task, name, version));
+////			wait(taskBucket->keepRunning(tr, task));
+//
+////			break;
+//		} catch(Error &e) {
+//			wait(tr->onError(e));
+//		}
+////	}
 
 	state Key mutationLogPrefix = restore.mutationLogPrefix();
 	TraceEvent("ReadLogFileStart").detail("LogFileName", logFile.fileName);
@@ -1033,47 +1154,51 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 
 
 
-	tr->reset();
+//	tr->reset();
 	loop {
-		try {
+//		try {
+			printf("Process start:%d where end=%d\n", start, end);
 			if(start == end)
 				return Void();
 
-			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+//			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+//			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
 			state int i = start;
 			state int txBytes = 0;
 			for(; i < end && txBytes < dataSizeLimit; ++i) {
 				Key k = data[i].key.withPrefix(mutationLogPrefix);
 				ValueRef v = data[i].value;
-				tr->set(k, v);
+//				tr->set(k, v);
 				txBytes += k.expectedSize();
 				txBytes += v.expectedSize();
 				//MXX: print out the key value version, and operations.
 				//printf("LogFile [key:%s, value:%s, version:%ld, op:NoOp]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
-				printf("LogFile [KEY:%s, VALUE:%s, VERSION:%ld, op:NoOp]\n", getHexString(k).c_str(), getHexString(v).c_str(), logFile.version);
+//				printf("LogFile [KEY:%s, VALUE:%s, VERSION:%ld, op:NoOp]\n", getHexString(k).c_str(), getHexString(v).c_str(), logFile.version);
+//				printBackupMutationRefValueHex(v, " |\t");
 				TraceEvent("PrintMutationLogFile_MX").detail("Key",  getHexString(k)).detail("Value", getHexString(v))
 						.detail("Version", logFile.version).detail("Op", "NoOps");
 
-				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
-				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.
-				if ( kvOps.find(logFile.version) == kvOps.end() ) {
-					kvOps.insert(std::make_pair(logFile.version, std::vector<MutationRef>()));
-				} else {
-					kvOps[logFile.version].push_back(m);
-				}
+				printf("||Register backup mutation:file:%s, data:%d\n", logFile.fileName.c_str(), i);
+				registerBackupMutation(data[i].value, logFile.version);
+//				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
+//				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.
+//				if ( kvOps.find(logFile.version) == kvOps.end() ) {
+//					kvOps.insert(std::make_pair(logFile.version, std::vector<MutationRef>()));
+//				} else {
+//					kvOps[logFile.version].push_back(m);
+//				}
 			}
 
-			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
+//			state Future<Void> checkLock = checkDatabaseLock(tr, restore.getUid());
 
 //			wait(taskBucket->keepRunning(tr, task));
-			wait( checkLock );
+//			wait( checkLock );
 
 			// Add to bytes written count
-			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
+//			restore.bytesWritten().atomicOp(tr, txBytes, MutationRef::Type::AddValue);
 
-			wait(tr->commit());
+//			wait(tr->commit());
 
 			TraceEvent("FileRestoreCommittedLog")
 					.suppressFor(60)
@@ -1084,24 +1209,24 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 					.detail("FileSize", logFile.fileSize)
 					.detail("ReadOffset", readOffset)
 					.detail("ReadLen", readLen)
-					.detail("CommitVersion", tr->getCommittedVersion())
+//					.detail("CommitVersion", tr->getCommittedVersion())
 					.detail("StartIndex", start)
 					.detail("EndIndex", i)
 					.detail("DataSize", data.size())
-					.detail("Bytes", txBytes)
-					.detail("TaskInstance", (uint64_t)this);
+					.detail("Bytes", txBytes);
+//					.detail("TaskInstance", (uint64_t)this);
 
 			TraceEvent("ApplyLogFileToDBEnd_MX").detail("KVOpsMapSizeMX", kvOps.size()).detail("MutationSize", kvOps[logFile.version].size());
 
 			// Commit succeeded, so advance starting point
 			start = i;
-			tr->reset();
-		} catch(Error &e) {
-			if(e.code() == error_code_transaction_too_large)
-				dataSizeLimit /= 2;
-			else
-				wait(tr->onError(e));
-		}
+//			tr->reset();
+//		} catch(Error &e) {
+//			if(e.code() == error_code_transaction_too_large)
+//				dataSizeLimit /= 2;
+//			else
+//				wait(tr->onError(e));
+//		}
 	}
 
 }
@@ -1259,6 +1384,7 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 
 	//Apply range and log files to DB
 	TraceEvent("ApplyBackupFileToDB").detail("FileSize", files.size());
+	printf("ApplyBackupFileToDB, FileSize:%d\n", files.size());
 	state int64_t beginBlock = 0;
 	state int64_t j = 0;
 	state int64_t readLen = 0;
@@ -1266,10 +1392,13 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 	state RestoreConfig::RestoreFile f;
 	state int fi = 0;
 	//Get the mutation log into the kvOps first
+	printf("ApplyMutationLogs\n");
+	state std::vector<Future<Void>> futures;
 	for ( fi = 0; fi < files.size(); ++fi ) {
 		f = files[fi];
 		if ( !f.isRange ) {
 			TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString());
+			printf("ApplyMutationLogs: id:%d fileInfo:%s\n", fi, f.toString().c_str());
 			beginBlock = 0;
 			j = beginBlock *f.blockSize;
 			readLen = 0;
@@ -1277,11 +1406,13 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			for(; j < f.fileSize; j += f.blockSize) {
 				readOffset = j;
 				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
-				wait( _executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
+				printf("ApplyMutationLogs: id:%d fileInfo:%s, readOffset:%d\n", fi, f.toString().c_str(), readOffset);
+
+				futures.push_back(_executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix));
 
 				// Increment beginBlock for the file
 				++beginBlock;
-				TraceEvent("ApplyLogFileToDB_MX").detail("FileInfo", f.toString()).detail("ReadOffset", readOffset).detail("ReadLen", readLen);
+				TraceEvent("ApplyLogFileToDB_MX_Offset").detail("FileInfo", f.toString()).detail("ReadOffset", readOffset).detail("ReadLen", readLen);
 			}
 
 //			_executeApplyMutationLogFileToDB(cx, task, f, 0, f.fileSize, bc, restoreRange, addPrefix, removePrefix);
@@ -1289,10 +1420,16 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			//TraceEvent("ApplyLogFileToDB_MX").detail("KVOpsMapSizeMX", kvOps.size());
 		}
 	}
+	printf("Wait for  futures of applyMutationLogs, start waiting\n");
+	wait(waitForAny(futures));
+	printf("Wait for  futures of applyMutationLogs, finish waiting\n");
 
 	//Get the range file into the kvOps later
+	printf("ApplyRangeFiles\n");
+	futures.clear();
 	for ( fi = 0; fi < files.size(); ++fi ) {
 		f = files[fi];
+		printf("ApplyRangeFiles:id:%d\n", fi);
 		if ( f.isRange ) {
 			TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString());
 			beginBlock = 0;
@@ -1302,7 +1439,7 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			for(; j < f.fileSize; j += f.blockSize) {
 				readOffset = j;
 				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
-				wait( _executeApplyRangeFileToDB(cx, restore, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
+				futures.push_back( _executeApplyRangeFileToDB(cx, restore, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
 
 				// Increment beginBlock for the file
 				++beginBlock;
@@ -1317,9 +1454,15 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			//_finishApplyRangeFileToDB(cx, task);
 		}
 	}
+	if ( futures.size() != 0 ) {
+		printf("Wait for  futures of applyRangeFiles, start waiting\n");
+		wait(waitForAny(futures));
+		printf("Wait for  futures of applyRangeFiles, finish waiting\n");
+	}
 
+	printf("Now print KVOps\n");
 	printKVOps();
-	filterAndSortMutationOps();
+//	filterAndSortMutationOps();
 
 
 	//TODO: Apply the kv operations
