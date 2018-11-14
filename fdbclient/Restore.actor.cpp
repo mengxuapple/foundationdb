@@ -541,6 +541,8 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 //-------------------------CODE FOR RESTORE----------------------------
 //std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
 std::map<Version, std::vector<MutationRef>> kvOps; //TODO: Must change to standAlone before run correctness test. otherwise, you will see the mutationref memory is corrupted
+std::map<Standalone<StringRef>, Standalone<StringRef>> mutationMap; //key is the unique identifier for a batch of mutation logs at the same version
+std::map<Standalone<StringRef>, uint32_t> mutationPartMap; //Record the most recent
 // MXX: Important: Can not use std::vector because you won't have the arena and you will hold the reference to memory that will be freed.
 // Use push_back_deep() to copy data to the standalone arena.
 //Standalone<VectorRef<MutationRef>> mOps;
@@ -577,6 +579,9 @@ struct StringRefReaderMX {
 	const int32_t  consumeNetworkInt32()  { return (int32_t)bigEndian32((uint32_t)consume< int32_t>());}
 	const uint32_t consumeNetworkUInt32() { return          bigEndian32(          consume<uint32_t>());}
 
+	const int64_t  consumeNetworkInt64()  { return (int64_t)bigEndian64((uint32_t)consume< int64_t>());}
+	const uint64_t consumeNetworkUInt64() { return          bigEndian64(          consume<uint64_t>());}
+
 	bool eof() { return rptr == end; }
 
 	const uint8_t *rptr, *end;
@@ -594,6 +599,36 @@ std::string getHexString(StringRef input) {
 		if ( i == (12 + 12) ) { //The end of version + header
 			ss << "@";
 		}
+		ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[i]; // [] operator moves the pointer in step of unit8
+	}
+	return ss.str();
+}
+
+std::string getHexKey(StringRef input, int skip) {
+	std::stringstream ss;
+	for (int i = 0; i<skip; i++) {
+		if ( i % 4 == 0 )
+			ss << " ";
+		ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[i]; // [] operator moves the pointer in step of unit8
+	}
+	ss << "||";
+
+	//hashvalue
+	ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[skip]; // [] operator moves the pointer in step of unit8
+	ss << "|";
+
+	// commitversion in 64bit
+	int count = 0;
+	for (int i = skip+1; i<input.size() && i < skip+1+8; i++) {
+		if ( count++ % 4 == 0 )
+			ss << " ";
+		ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[i]; // [] operator moves the pointer in step of unit8
+	}
+	// part value
+	count = 0;
+	for (int i = skip+1+8; i<input.size(); i++) {
+		if ( count++ % 4 == 0 )
+			ss << " ";
 		ss << std::setfill('0') << std::setw(2) << std::hex << (int) input[i]; // [] operator moves the pointer in step of unit8
 	}
 	return ss.str();
@@ -793,6 +828,131 @@ void registerBackupMutation(Standalone<StringRef> val_input, Version file_versio
 
 	}
 //	printf("----------------------------------------------------------\n");
+}
+
+//key_input format: [logRangeMutation.first][hash_value_of_commit_version:1B][bigEndian64(commitVersion)][bigEndian32(part)]
+void concatenateBackupMutation(Standalone<StringRef> val_input, Standalone<StringRef> key_input) {
+	std::string prefix = "||\t";
+	std::stringstream ss;
+	const int version_size = 12;
+	const int header_size = 12;
+	StringRef val = val_input.contents();
+	StringRefReaderMX reader(val, restore_corrupted_data());
+	StringRefReaderMX readerKey(key_input, restore_corrupted_data()); //read key_input!
+	int logRangeMutationFirstLength = key_input.size() - 1 - 8 - 4;
+
+	if ( logRangeMutationFirstLength < 0 ) {
+		printf("[ERROR]!!! logRangeMutationFirstLength:%d < 0, key_input.size:%d\n", logRangeMutationFirstLength, key_input.size());
+	}
+
+	printf("[DEBUG] Process key_input:%s\n", getHexKey(key_input, logRangeMutationFirstLength).c_str());
+	//PARSE key
+	Standalone<StringRef> id = key_input.substr(0, key_input.size() - 4); //Used to sanity check the decoding of key is correct
+	Standalone<StringRef> partStr = key_input.substr(key_input.size() - 4, 4); //part
+	StringRefReaderMX readerPart(partStr, restore_corrupted_data());
+	uint32_t part_direct = readerPart.consumeNetworkUInt32(); //Consume a bigEndian value
+	printf("[DEBUG] Process id:%s and partStr:%s part_direct:%08x fromm key_input:%s, size:%d\n",
+			getHexKey(id, logRangeMutationFirstLength).c_str(),
+			getHexString(partStr).c_str(),
+		    part_direct,
+			getHexKey(key_input, logRangeMutationFirstLength).c_str(),
+		    key_input.size());
+
+	StringRef longRangeMutationFirst;
+
+	if ( logRangeMutationFirstLength > 0 ) {
+		printf("readerKey consumes %dB\n", logRangeMutationFirstLength);
+		longRangeMutationFirst = StringRef(readerKey.consume(logRangeMutationFirstLength), logRangeMutationFirstLength);
+	}
+
+	uint8_t hashValue = readerKey.consume<uint8_t>();
+	uint64_t commitVersion = readerKey.consume<uint64_t>();
+	uint32_t part = readerKey.consumeNetworkUInt32();
+	Standalone<StringRef> id2 = longRangeMutationFirst.withSuffix(StringRef(&hashValue,1)).withSuffix(StringRef((uint8_t*) &commitVersion, 8));
+
+	printf("[DEBUG] key_input_size:%d longRangeMutationFirst:%s hashValue:%02x commitVersion:%s part:%08x, part_direct:%08x mutationMap.size:%d\n",
+			key_input.size(), longRangeMutationFirst.printable().c_str(), hashValue, getHexString(StringRef((uint8_t*) &commitVersion, 8)).c_str(), part, part_direct, mutationMap.size());
+
+	if ( mutationMap.find(id) == mutationMap.end() ) {
+		mutationMap.insert(std::make_pair(id, val_input));
+		if ( part_direct != 0 ) {
+			printf("[ERROR]!!! part:%d != 0 for key_input:%s\n", part, getHexString(key_input).c_str());
+		}
+		mutationPartMap.insert(std::make_pair(id, part));
+	} else { // concatenate the val string
+		mutationMap[id] = mutationMap[id].contents().withSuffix(val_input.contents()); //Assign the new Areana to the map's value
+		if ( part_direct != (mutationPartMap[id] + 1) ) {
+			printf("[ERROR]!!! current part id:%d new part_direct:%d is not the next integer of key_input:%s\n", mutationPartMap[id], part_direct, getHexString(key_input).c_str());
+		}
+		if ( part_direct != part ) {
+			printf("part_direct:%08x != part:%08x\n", part_direct, part);
+		}
+		mutationPartMap[id] = part;
+	}
+}
+
+void registerBackupMutationForAll(Version empty) {
+	std::string prefix = "||\t";
+	std::stringstream ss;
+	const int version_size = 12;
+	const int header_size = 12;
+
+	for ( auto& m: mutationMap ) {
+		StringRef val = m.second.contents();
+		StringRefReaderMX reader(val, restore_corrupted_data());
+
+		int count_size = 0;
+		// Get the version
+		uint64_t version = reader.consume<uint64_t>();
+		count_size += 8;
+		uint32_t val_length_decode = reader.consume<uint32_t>(); //Parse little endian value, confirmed it is correct!
+		count_size += 4;
+
+		if ( kvOps.find(version) == kvOps.end() ) {
+			kvOps.insert(std::make_pair(version, std::vector<MutationRef>()));
+		}
+
+		printf("----------------------------------------------------------Register Backup Mutation into KVOPs version:%08lx\n", version);
+		printf("To decode value:%s\n", getHexString(val).c_str());
+		if ( val_length_decode != (val.size() - 12) ) {
+			//IF we see val.size() == 10000, It means val should be concatenated! The concatenation may fail to copy the data
+			printf("[PARSE ERROR]!!! val_length_decode:%d != val.size:%d\n",  val_length_decode, val.size());
+		} else {
+			printf("[PARSE SUCCESS] val_length_decode:%d == (val.size:%d - 12)\n", val_length_decode, val.size());
+		}
+
+		// Get the mutation header
+		while (1) {
+			// stop when reach the end of the string
+			if(reader.eof() ) { //|| *reader.rptr == 0xFF
+				printf("Finish decode the value\n");
+				break;
+			}
+
+
+			uint32_t type = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+			uint32_t kLen = reader.consume<uint32_t>();//reader.consumeNetworkUInkvOps[t32();
+			uint32_t vLen = reader.consume<uint32_t>();//reader.consumeNetworkUInt32();
+			const uint8_t *k = reader.consume(kLen);
+			const uint8_t *v = reader.consume(vLen);
+			count_size += 4 * 3 + kLen + vLen;
+
+			MutationRef m((MutationRef::Type) type, KeyRef(k, kLen), KeyRef(v, vLen)); //ASSUME: all operation in range file is set.
+			kvOps[version].push_back(m);
+
+//		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
+//			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
+//		}
+//
+			printf("%s---RegisterBackupMutation: Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
+				   type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
+
+		}
+//	printf("----------------------------------------------------------\n");
+	}
+
+
+
 }
 
 
@@ -1176,11 +1336,15 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 				//printf("LogFile [key:%s, value:%s, version:%ld, op:NoOp]\n", k.printable().c_str(), v.printable().c_str(), logFile.version);
 //				printf("LogFile [KEY:%s, VALUE:%s, VERSION:%ld, op:NoOp]\n", getHexString(k).c_str(), getHexString(v).c_str(), logFile.version);
 //				printBackupMutationRefValueHex(v, " |\t");
+/*
 				TraceEvent("PrintMutationLogFile_MX").detail("Key",  getHexString(k)).detail("Value", getHexString(v))
 						.detail("Version", logFile.version).detail("Op", "NoOps");
 
 				printf("||Register backup mutation:file:%s, data:%d\n", logFile.fileName.c_str(), i);
 				registerBackupMutation(data[i].value, logFile.version);
+*/
+				printf("[DEBUG]||Concatenate backup mutation:file:%s, data:%d\n", logFile.fileName.c_str(), i);
+				concatenateBackupMutation(data[i].value, data[i].key);
 //				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
 //				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.
 //				if ( kvOps.find(logFile.version) == kvOps.end() ) {
@@ -1408,7 +1572,8 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 				readLen = std::min<int64_t>(f.blockSize, f.fileSize - j);
 				printf("ApplyMutationLogs: id:%d fileInfo:%s, readOffset:%d\n", fi, f.toString().c_str(), readOffset);
 
-				futures.push_back(_executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix));
+				//futures.push_back(_executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix));
+				wait( _executeApplyMutationLogFileToDB(cx, task, f, readOffset, readLen, bc, restoreRange, addPrefix, removePrefix) );
 
 				// Increment beginBlock for the file
 				++beginBlock;
@@ -1420,9 +1585,13 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 			//TraceEvent("ApplyLogFileToDB_MX").detail("KVOpsMapSizeMX", kvOps.size());
 		}
 	}
-	printf("Wait for  futures of applyMutationLogs, start waiting\n");
-	wait(waitForAny(futures));
-	printf("Wait for  futures of applyMutationLogs, finish waiting\n");
+	printf("Wait for  futures of concatenate mutation logs, start waiting\n");
+//	wait(waitForAll(futures));
+	printf("Wait for  futures of concatenate mutation logs, finish waiting\n");
+
+	printf("Now parse concatenated mutation log and register it to kvOps, start...\n");
+	registerBackupMutationForAll(Version());
+	printf("Now parse concatenated mutation log and register it to kvOps, done...\n");
 
 	//Get the range file into the kvOps later
 	printf("ApplyRangeFiles\n");
@@ -1456,12 +1625,12 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 	}
 	if ( futures.size() != 0 ) {
 		printf("Wait for  futures of applyRangeFiles, start waiting\n");
-		wait(waitForAny(futures));
+		wait(waitForAll(futures));
 		printf("Wait for  futures of applyRangeFiles, finish waiting\n");
 	}
 
-	printf("Now print KVOps\n");
-	printKVOps();
+//	printf("Now print KVOps\n");
+//	printKVOps();
 //	filterAndSortMutationOps();
 
 

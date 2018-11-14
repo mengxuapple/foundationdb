@@ -29,6 +29,7 @@ static const char * typeString[] = { "SetValue", "ClearRange", "AddValue", "Debu
 struct MutationRef;
 
 std::string getHexString(StringRef input);
+std::string getHexKey(StringRef input, int skip);
 void printBackupMutationRefValueHex(Standalone<StringRef> val_input, std::string prefix);
 
 
