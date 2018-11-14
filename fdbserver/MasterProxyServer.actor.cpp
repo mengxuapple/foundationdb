@@ -779,6 +779,7 @@ ACTOR Future<Void> commitBatch(
 				backupMutation.param1 = wr.toStringRef(); //MXX: TODO: Decode the key and concatenate the value for the same version. The same file may have multiple versions
 				ASSERT( backupMutation.param1.startsWith(logRangeMutation.first) );  // We are writing into the configured destination
 				if ( mxPrint ) {
+					printf("\tSerialized Mutation: version:%016lx\n", commitVersion);
 					printf("\tSerialized Mutation: param1:%s size:%d, logRangeMutation.first:%s\n", getHexString(backupMutation.param1).c_str(), backupMutation.param1.size(), getHexString(logRangeMutation.first).c_str());
 					printf("\tSerialized Mutation: param2:%s size:%d\n", getHexString(backupMutation.param2).c_str(), backupMutation.param2.size());
 				}

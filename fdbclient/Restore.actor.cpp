@@ -539,8 +539,8 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 
 //-------------------------CODE FOR RESTORE----------------------------
-//std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
-std::map<Version, std::vector<MutationRef>> kvOps; //TODO: Must change to standAlone before run correctness test. otherwise, you will see the mutationref memory is corrupted
+std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
+//std::map<Version, std::vector<MutationRef>> kvOps; //TODO: Must change to standAlone before run correctness test. otherwise, you will see the mutationref memory is corrupted
 std::map<Standalone<StringRef>, Standalone<StringRef>> mutationMap; //key is the unique identifier for a batch of mutation logs at the same version
 std::map<Standalone<StringRef>, uint32_t> mutationPartMap; //Record the most recent
 // MXX: Important: Can not use std::vector because you won't have the arena and you will hold the reference to memory that will be freed.
@@ -759,7 +759,7 @@ void printKVOps() {
 				printf("PrintKVOPs MutationType:%d is out of range\n", m->type);
 			}
 
-			printf("\tPrintKVOPs MType:%s K:%s, V:%s K_size:%d V_size:%d\n", typeStr.c_str(),
+			printf("\tPrintKVOPs Version:%016lx MType:%s K:%s, V:%s K_size:%d V_size:%d\n", it->first, typeStr.c_str(),
 				   getHexString(m->param1).c_str(), getHexString(m->param2).c_str(), m->param1.size(), m->param2.size());
 
 			TraceEvent("PrintKVOPs\t\t").detail("Version", it->first)
@@ -789,7 +789,7 @@ void registerBackupMutation(Standalone<StringRef> val_input, Version file_versio
 
 	if ( kvOps.find(file_version) == kvOps.end() ) {
 		//kvOps.insert(std::make_pair(rangeFile.version, Standalone<VectorRef<MutationRef>>(VectorRef<MutationRef>())));
-		kvOps.insert(std::make_pair(file_version, std::vector<MutationRef>()));
+		kvOps.insert(std::make_pair(file_version, VectorRef<MutationRef>()));
 	}
 
 	printf("----------------------------------------------------------Register Backup Mutation into KVOPs version:%08lx\n", file_version);
@@ -817,7 +817,7 @@ void registerBackupMutation(Standalone<StringRef> val_input, Version file_versio
 		count_size += 4 * 3 + kLen + vLen;
 
 		MutationRef m((MutationRef::Type) type, KeyRef(k, kLen), KeyRef(v, vLen)); //ASSUME: all operation in range file is set.
-		kvOps[file_version].push_back(m);
+		kvOps[file_version].push_back_deep(kvOps[file_version].arena(), m);
 
 //		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
 //			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
@@ -847,12 +847,12 @@ void concatenateBackupMutation(Standalone<StringRef> val_input, Standalone<Strin
 
 	printf("[DEBUG] Process key_input:%s\n", getHexKey(key_input, logRangeMutationFirstLength).c_str());
 	//PARSE key
-	Standalone<StringRef> id = key_input.substr(0, key_input.size() - 4); //Used to sanity check the decoding of key is correct
+	Standalone<StringRef> id_old = key_input.substr(0, key_input.size() - 4); //Used to sanity check the decoding of key is correct
 	Standalone<StringRef> partStr = key_input.substr(key_input.size() - 4, 4); //part
 	StringRefReaderMX readerPart(partStr, restore_corrupted_data());
 	uint32_t part_direct = readerPart.consumeNetworkUInt32(); //Consume a bigEndian value
-	printf("[DEBUG] Process id:%s and partStr:%s part_direct:%08x fromm key_input:%s, size:%d\n",
-			getHexKey(id, logRangeMutationFirstLength).c_str(),
+	printf("[DEBUG] Process prefix:%s and partStr:%s part_direct:%08x fromm key_input:%s, size:%d\n",
+			getHexKey(id_old, logRangeMutationFirstLength).c_str(),
 			getHexString(partStr).c_str(),
 		    part_direct,
 			getHexKey(key_input, logRangeMutationFirstLength).c_str(),
@@ -866,12 +866,20 @@ void concatenateBackupMutation(Standalone<StringRef> val_input, Standalone<Strin
 	}
 
 	uint8_t hashValue = readerKey.consume<uint8_t>();
-	uint64_t commitVersion = readerKey.consume<uint64_t>();
-	uint32_t part = readerKey.consumeNetworkUInt32();
+	uint64_t commitVersion = readerKey.consumeNetworkUInt64(); // Consume big Endian value encoded in log file, commitVersion is in littleEndian
+	uint64_t commitVersionBE = bigEndian64(commitVersion);
+	uint32_t part = readerKey.consumeNetworkUInt32(); //Consume big Endian value encoded in log file
+	uint32_t partBE = bigEndian32(part);
 	Standalone<StringRef> id2 = longRangeMutationFirst.withSuffix(StringRef(&hashValue,1)).withSuffix(StringRef((uint8_t*) &commitVersion, 8));
 
-	printf("[DEBUG] key_input_size:%d longRangeMutationFirst:%s hashValue:%02x commitVersion:%s part:%08x, part_direct:%08x mutationMap.size:%d\n",
-			key_input.size(), longRangeMutationFirst.printable().c_str(), hashValue, getHexString(StringRef((uint8_t*) &commitVersion, 8)).c_str(), part, part_direct, mutationMap.size());
+	//Use commitVersion as id
+	Standalone<StringRef> id = StringRef((uint8_t*) &commitVersion, 8);
+
+	printf("[DEBUG] key_input_size:%d longRangeMutationFirst:%s hashValue:%02x commitVersion:%016lx (BigEndian:%016lx) part:%08x (BigEndian:%08x), part_direct:%08x mutationMap.size:%d\n",
+			key_input.size(), longRangeMutationFirst.printable().c_str(), hashValue,
+			commitVersion, commitVersionBE,
+			part, partBE,
+			part_direct, mutationMap.size());
 
 	if ( mutationMap.find(id) == mutationMap.end() ) {
 		mutationMap.insert(std::make_pair(id, val_input));
@@ -898,21 +906,27 @@ void registerBackupMutationForAll(Version empty) {
 	const int header_size = 12;
 
 	for ( auto& m: mutationMap ) {
+		StringRef k = m.first.contents();
+		StringRefReaderMX readerVersion(k, restore_corrupted_data());
+		uint64_t commitVerison = readerVersion.consume<uint64_t>(); // Consume little Endian data
+
+
 		StringRef val = m.second.contents();
 		StringRefReaderMX reader(val, restore_corrupted_data());
 
 		int count_size = 0;
-		// Get the version
-		uint64_t version = reader.consume<uint64_t>();
+		// Get the include version in the batch commit, which is not the commitVersion.
+		// commitVersion is in the key
+		uint64_t includeVersion = reader.consume<uint64_t>();
 		count_size += 8;
 		uint32_t val_length_decode = reader.consume<uint32_t>(); //Parse little endian value, confirmed it is correct!
 		count_size += 4;
 
-		if ( kvOps.find(version) == kvOps.end() ) {
-			kvOps.insert(std::make_pair(version, std::vector<MutationRef>()));
+		if ( kvOps.find(commitVerison) == kvOps.end() ) {
+			kvOps.insert(std::make_pair(commitVerison, VectorRef<MutationRef>()));
 		}
 
-		printf("----------------------------------------------------------Register Backup Mutation into KVOPs version:%08lx\n", version);
+		printf("----------------------------------------------------------Register Backup Mutation into KVOPs version:%08lx\n", commitVerison);
 		printf("To decode value:%s\n", getHexString(val).c_str());
 		if ( val_length_decode != (val.size() - 12) ) {
 			//IF we see val.size() == 10000, It means val should be concatenated! The concatenation may fail to copy the data
@@ -938,14 +952,14 @@ void registerBackupMutationForAll(Version empty) {
 			count_size += 4 * 3 + kLen + vLen;
 
 			MutationRef m((MutationRef::Type) type, KeyRef(k, kLen), KeyRef(v, vLen)); //ASSUME: all operation in range file is set.
-			kvOps[version].push_back(m);
+			kvOps[commitVerison].push_back_deep(kvOps[commitVerison].arena(), m);
 
 //		if ( kLen < 0 || kLen > val.size() || vLen < 0 || vLen > val.size() ) {
 //			printf("%s[PARSE ERROR]!!!! kLen:%d(0x%04x) vLen:%d(0x%04x)\n", prefix.c_str(), kLen, kLen, vLen, vLen);
 //		}
 //
-			printf("%s---RegisterBackupMutation: Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
-				   type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
+			printf("%s---RegisterBackupMutation: Version:%016lx Type:%d K:%s V:%s k_size:%d v_size:%d\n", prefix.c_str(),
+				   commitVerison, type,  getHexString(KeyRef(k, kLen)).c_str(), getHexString(KeyRef(v, vLen)).c_str(), kLen, vLen);
 
 		}
 //	printf("----------------------------------------------------------\n");
@@ -1183,10 +1197,10 @@ ACTOR static Future<Void> _executeApplyRangeFileToDB(Database cx, RestoreConfig 
 				MutationRef m(MutationRef::Type::SetValue, data[i].key, data[i].value); //ASSUME: all operation in range file is set.
 				if ( kvOps.find(rangeFile.version) == kvOps.end() ) {
 					//kvOps.insert(std::make_pair(rangeFile.version, Standalone<VectorRef<MutationRef>>(VectorRef<MutationRef>())));
-					kvOps.insert(std::make_pair(rangeFile.version, std::vector<MutationRef>()));
+					kvOps.insert(std::make_pair(rangeFile.version, VectorRef<MutationRef>()));
 				} else {
 					//kvOps[rangeFile.version].contents().push_back_deep(m);
-					kvOps[rangeFile.version].push_back(m);
+					kvOps[rangeFile.version].push_back_deep(kvOps[rangeFile.version].arena(), m);
 				}
 
 			}
@@ -1343,7 +1357,7 @@ ACTOR static Future<Void> _executeApplyMutationLogFileToDB(Database cx, Referenc
 				printf("||Register backup mutation:file:%s, data:%d\n", logFile.fileName.c_str(), i);
 				registerBackupMutation(data[i].value, logFile.version);
 */
-				printf("[DEBUG]||Concatenate backup mutation:file:%s, data:%d\n", logFile.fileName.c_str(), i);
+				printf("[DEBUG]||Concatenate backup mutation:fileInfo:%s, data:%d\n", logFile.toString().c_str(), i);
 				concatenateBackupMutation(data[i].value, data[i].key);
 //				//TODO: Decode the value to get the mutation type. Use NoOp to distinguish from range kv for now.
 //				MutationRef m(MutationRef::Type::NoOp, data[i].key, data[i].value); //ASSUME: all operation in log file is NoOp.
@@ -1601,6 +1615,7 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 		printf("ApplyRangeFiles:id:%d\n", fi);
 		if ( f.isRange ) {
 			TraceEvent("ApplyRangeFileToDB_MX").detail("FileInfo", f.toString());
+			printf("ApplyRangeFileToDB_MX FileInfo:%s\n", f.toString().c_str());
 			beginBlock = 0;
 			j = beginBlock *f.blockSize;
 			readLen = 0;
@@ -1629,8 +1644,8 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 		printf("Wait for  futures of applyRangeFiles, finish waiting\n");
 	}
 
-//	printf("Now print KVOps\n");
-//	printKVOps();
+	printf("Now print KVOps\n");
+	printKVOps();
 //	filterAndSortMutationOps();
 
 
