@@ -47,6 +47,7 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <algorithm>
+
 //Backup agent header end
 
 #include "flow/actorcompiler.h"  // This must be the last #include.
@@ -320,6 +321,7 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 	if(leaderInterf.present()) {
 		printf("MX: I am NOT the leader.\n");
 		TraceEvent("RestoreAgentNotLeader");
+
 		loop {
 			try {
 				tr0.set(restoreAgentKeyFor(interf.id()), restoreAgentValue(interf));
@@ -330,6 +332,9 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 			}
 		}
 
+		return Void(); //TODO: This is to let agent return so that testers can check the correctness. Remove this line later
+
+/*
 		loop {
 			choose {
 				//Actual restore code
@@ -357,6 +362,7 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 				}
 			}
 		}
+*/
 
 	}
 
@@ -397,12 +403,16 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 
 	// ----------------Restore code START
 	state int restoreId = 0;
+	state int checkNum = 0;
 	loop {
 		state vector<RestoreRequest> restoreRequests;
 		loop {
 			state Transaction tr2(cx);
 			try {
 				TraceEvent("CheckRestoreRequestTrigger");
+				printf("CheckRestoreRequestTrigger:%d\n", checkNum);
+				checkNum++;
+
 				state Optional<Value> numRequests = wait(tr2.get(restoreRequestTriggerKey));
 				if ( !numRequests.present() ) { // restore has not been triggered yet
 					TraceEvent("CheckRestoreRequestTrigger").detail("SecondsOfWait", 5);
@@ -418,7 +428,6 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 					for ( auto &it : restoreRequestValues ) {
 						restoreRequests.push_back(decodeRestoreRequestValue(it.value));
 					}
-					break;
 				}
 				break;
 			} catch( Error &e ) {
@@ -429,28 +438,37 @@ ACTOR Future<Void> restoreAgent_runDB(Database cx_input, LocalityData locality) 
 		// Perform the restore requests
 		for ( auto &it : restoreRequests ) {
 			TraceEvent("LeaderGotRestoreRequest").detail("RestoreRequestInfo", it.toString());
-			Version ver = wait( restoreMX(cx, it) ); // MX: Seems stuck at this function.
+			Version ver = wait( restoreMX(cx, it) );
 		}
 
 		// Notify the finish of the restore by cleaning up the restore keys
 		state Transaction tr3(cx);
+		tr3.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+		tr3.setOption(FDBTransactionOptions::LOCK_AWARE);
 		try {
 			tr3.clear(restoreRequestTriggerKey);
 			tr3.clear(restoreRequestKeys);
 			tr3.set(restoreRequestDoneKey, restoreRequestDoneValue(restoreRequests.size()));
-			TraceEvent("LeaderFinishRestoreRequest"); // MX: Never reached this line.
+			TraceEvent("LeaderFinishRestoreRequest");
+			printf("LeaderFinishRestoreRequest\n");
 			wait(tr3.commit());
 		}  catch( Error &e ) {
 			TraceEvent("RestoreAgentLeaderErrorTr3").detail("ErrorCode", e.code()).detail("ErrorName", e.name());
 			wait( tr3.onError(e) );
 		}
 
+		printf("MXRestoreEndHere RestoreID:%d\n", restoreId);
 		TraceEvent("MXRestoreEndHere").detail("RestoreID", restoreId++);
 		wait( delay(5.0) );
+		//NOTE: we have to break the loop so that the tester.actor can receive the return of this test workload.
+		//Otherwise, this special workload never returns and tester will think the test workload is stuck and the tester will timesout
+		break; //TODO: this break will be removed later since we need the restore agent to run all the time!
+
 		//assert( 0 );
 		//atomicRestoreMX();
 	}
 
+	return Void();
 
 	// ----------------Restore code END
 
@@ -539,6 +557,13 @@ ACTOR static Future<ERestoreState> restoreAgentWaitRestore(Database cx, Key tagN
 
 
 //-------------------------CODE FOR RESTORE----------------------------
+
+struct cmpForKVOps {
+	bool operator()(const Version& a, const Version& b) const {
+		return a < b;
+	}
+};
+
 std::map<Version, Standalone<VectorRef<MutationRef>>> kvOps;
 //std::map<Version, std::vector<MutationRef>> kvOps; //TODO: Must change to standAlone before run correctness test. otherwise, you will see the mutationref memory is corrupted
 std::map<Standalone<StringRef>, Standalone<StringRef>> mutationMap; //key is the unique identifier for a batch of mutation logs at the same version
@@ -769,6 +794,101 @@ void printKVOps() {
 				.detail("MValue", getHexString(m->param2));
 		}
 	}
+}
+
+// Sanity check if KVOps is sorted
+bool isKVOpsSorted() {
+	bool ret = true;
+	auto prev = kvOps.begin();
+	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
+		if ( prev->first > it->first ) {
+			ret = false;
+			break;
+		}
+		prev = it;
+	}
+	return ret;
+}
+
+bool allOpsAreKnown() {
+	bool ret = true;
+	for ( auto it = kvOps.begin(); it != kvOps.end(); ++it ) {
+		for ( auto m = it->second.begin(); m != it->second.end(); ++m ) {
+			if ( m->type == MutationRef::SetValue || m->type == MutationRef::ClearRange  )
+				continue;
+			else {
+				printf("[ERROR] Unknown mutation type:%d\n", m->type);
+				ret = false;
+			}
+		}
+
+	}
+
+	return ret;
+}
+
+ACTOR Future<Void> applyKVOpsToDB(Database cx) {
+	state bool isPrint = false;
+	state std::string typeStr = "";
+
+	TraceEvent("ApplyKVOPsToDB").detail("MapSize", kvOps.size());
+	printf("ApplyKVOPsToDB num_of_version:%d\n", kvOps.size());
+	state std::map<Version, Standalone<VectorRef<MutationRef>>>::iterator it = kvOps.begin();
+	state int count = 0;
+	for ( ; it != kvOps.end(); ++it ) {
+
+//		TraceEvent("ApplyKVOPsToDB\t").detail("Version", it->first).detail("OpNum", it->second.size());
+		printf("ApplyKVOPsToDB Version:%08lx num_of_ops:%d\n",  it->first, it->second.size());
+
+		state MutationRef m;
+		state int index = 0;
+		for ( ; index < it->second.size(); ++index ) {
+			m = it->second[index];
+			if (  m.type >= MutationRef::Type::SetValue && m.type <= MutationRef::Type::MAX_ATOMIC_OP )
+				typeStr = typeString[m.type];
+			else {
+				printf("ApplyKVOPsToDB MutationType:%d is out of range\n", m.type);
+			}
+
+			state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+
+			loop {
+				try {
+					tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+					tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+
+					if ( m.type == MutationRef::SetValue ) {
+						tr->set(m.param1, m.param2);
+					} else if ( m.type == MutationRef::ClearRange ) {
+						KeyRangeRef mutationRange(m.param1, m.param2);
+						tr->clear(mutationRange);
+					} else {
+						printf("[WARNING] mtype:%d (%s) unhandled\n", m.type, typeStr.c_str());
+					}
+
+					wait(tr->commit());
+					break;
+				} catch(Error &e) {
+					printf("ApplyKVOPsToDB transaction error:%s. Type:%d, Param1:%s, Param2:%s\n", e.what(),
+							m.type, getHexString(m.param1).c_str(), getHexString(m.param2).c_str());
+					wait(tr->onError(e));
+				}
+			}
+
+			if ( isPrint ) {
+				printf("\tApplyKVOPsToDB Version:%016lx MType:%s K:%s, V:%s K_size:%d V_size:%d\n", it->first, typeStr.c_str(),
+					   getHexString(m.param1).c_str(), getHexString(m.param2).c_str(), m.param1.size(), m.param2.size());
+
+				TraceEvent("ApplyKVOPsToDB\t\t").detail("Version", it->first)
+						.detail("MType", m.type).detail("MTypeStr", typeStr)
+						.detail("MKey", getHexString(m.param1))
+						.detail("MValueSize", m.param2.size())
+						.detail("MValue", getHexString(m.param2));
+			}
+		}
+	}
+
+	return Void();
 }
 
 //version_input is the file version
@@ -1644,8 +1764,28 @@ ACTOR static Future<Void> _executeMX(Database cx,  Reference<Task> task, UID uid
 		printf("Wait for  futures of applyRangeFiles, finish waiting\n");
 	}
 
-	printf("Now print KVOps\n");
-	printKVOps();
+//	printf("Now print KVOps\n");
+//	printKVOps();
+
+//	printf("Now sort KVOps in increasing order of commit version\n");
+//	sort(kvOps.begin(), kvOps.end()); //sort in increasing order of key using default less_than comparator
+	if ( isKVOpsSorted() ) {
+		printf("[CORRECT] KVOps is sorted by version\n");
+	} else {
+		printf("[ERROR]!!! KVOps is NOT sorted by version\n");
+//		assert( 0 );
+	}
+
+	if ( allOpsAreKnown() ) {
+		printf("[CORRECT] KVOps all operations are known.\n");
+	} else {
+		printf("[ERROR]!!! KVOps has unknown mutation op. Exit...\n");
+//		assert( 0 );
+	}
+
+	printf("Now apply KVOps to DB. start...\n");
+	wait( applyKVOpsToDB(cx) );
+	printf("Now apply KVOps to DB, Done\n");
 //	filterAndSortMutationOps();
 
 
@@ -1727,13 +1867,14 @@ ACTOR static Future<Void> submitRestoreMX(Database cx, Reference<ReadYourWritesT
 }
 
 
-ACTOR static Future<Void> _finishMX(Reference<ReadYourWritesTransaction> tr,  Reference<Task> task) {
+ACTOR static Future<Void> _finishMX(Reference<ReadYourWritesTransaction> tr,  Reference<Task> task,  UID uid) {
 //	wait(checkTaskVersion(tr->getDatabase(), task, name, version));
 
-	state RestoreConfig restore(task);
-	restore.stateEnum().set(tr, ERestoreState::COMPLETED);
+	//state RestoreConfig restore(task);
+	state RestoreConfig restore(uid);
+//	restore.stateEnum().set(tr, ERestoreState::COMPLETED);
 	// Clear the file map now since it could be huge.
-	restore.fileSet().clear(tr);
+//	restore.fileSet().clear(tr);
 
 	// TODO:  Validate that the range version map has exactly the restored ranges in it.  This means that for any restore operation
 	// the ranges to restore must be within the backed up ranges, otherwise from the restore perspective it will appear that some
@@ -1741,10 +1882,30 @@ ACTOR static Future<Void> _finishMX(Reference<ReadYourWritesTransaction> tr,  Re
 	// This validation cannot be done currently because Restore only supports a single restore range but backups can have many ranges.
 
 	// Clear the applyMutations stuff, including any unapplied mutations from versions beyond the restored version.
-	restore.clearApplyMutationsKeys(tr);
+//	restore.clearApplyMutationsKeys(tr);
 
 //	wait(taskBucket->finish(tr, task));
-	wait(unlockDatabase(tr, restore.getUid()));
+
+
+	try {
+		printf("UnlockDB now. Start.\n");
+		wait(unlockDatabase(tr, uid)); //NOTE: unlockDatabase didn't commit inside the function!
+
+		printf("CheckDBlock:%s START\n", uid.toString().c_str());
+		wait(checkDatabaseLock(tr, uid));
+		printf("CheckDBlock:%s DONE\n", uid.toString().c_str());
+
+		printf("UnlockDB now. Commit.\n");
+		wait( tr->commit() );
+
+		printf("UnlockDB now. Done.\n");
+	} catch( Error &e ) {
+		printf("Error when we unlockDB. Error:%s\n", e.what());
+		wait(tr->onError(e));
+	}
+
+
+
 
 	return Void();
 }
@@ -1813,6 +1974,22 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 			wait(tr->commit());
 			// MX: Now execute the restore: Step 1 get the restore files (range and mutation log) name
 			wait( _executeMX(cx, task, randomUid, request) );
+			printf("Finish my restore now!\n");
+
+			//Unlock DB
+			TraceEvent("RestoreMX").detail("UnlockDB", "Start");
+			//state RestoreConfig restore(task);
+
+			// MX: Unlock DB after restore
+			state Reference<ReadYourWritesTransaction> tr_unlockDB(new ReadYourWritesTransaction(cx));
+			printf("Finish restore cleanup. Start\n");
+			wait( _finishMX(tr_unlockDB, task, randomUid) );
+			printf("Finish restore cleanup. Done\n");
+
+			TraceEvent("RestoreMX").detail("UnlockDB", "Done");
+
+
+
 			break;
 		} catch(Error &e) {
 			if(e.code() != error_code_restore_duplicate_tag) {
@@ -1830,11 +2007,7 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 //	restore.setApplyEndVersion(tr1, targetVersion); //MX: TODO: This may need to be set at correct position and may be set multiple times?
 //	wait(tr1->commit());
 
-	TraceEvent("RestoreMX").detail("UnlockDB", "Start");
-	//state RestoreConfig restore(task);
 
-	// MX: Unlock DB after restore
-	wait( _finishMX(tr, task) );
 
 	//TODO: _finish() task: Make sure the restore is finished.
 

@@ -438,6 +438,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 				//TODO:
 				loop {
 					state Transaction tr2(cx);
+					tr2.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+					tr2.setOption(FDBTransactionOptions::LOCK_AWARE);
 					try {
 						TraceEvent("CheckRestoreRequestDoneMX");
 						state Optional<Value> numFinished = wait(tr2.get(restoreRequestDoneKey));
@@ -447,18 +449,21 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 							continue;
 						}
 						int num = decodeRestoreRequestDoneValue(numFinished.get());
-						TraceEvent("RestoreRequestKeyDone").detail("NumFinished", num);
+						TraceEvent("RestoreRequestKeyDoneFinished").detail("NumFinished", num);
+						printf("RestoreRequestKeyDone, numFinished:%d\n", num);
 						tr2.clear(restoreRequestDoneKey);
 						wait( tr2.commit() );
 						break;
 					} catch( Error &e ) {
-						TraceEvent("CheckRestoreRequestDoneErrorMX");
+						TraceEvent("CheckRestoreRequestDoneErrorMX").detail("ErrorInfo", e.what());
 						wait( tr2.onError(e) );
 					}
 
 				}
 
-				wait(waitForAll(restores));
+				if ( !restores.empty() ) {
+					wait(waitForAll(restores));
+				}
 
 				for (auto &restore : restores) {
 					assert(!restore.isError());
