@@ -1936,7 +1936,7 @@ ACTOR static Future<Version> restoreMX(Database cx, RestoreRequest request) {
 	wait(desc.resolveVersionTimes(cx));
 
 	printf("Backup Description\n%s", desc.toString().c_str());
-	printf("MX: Restore code comes here\n");
+	printf("MX: Restore code comes here in restoreMX(), lockDB:%d\n", lockDB);
 	if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
 		targetVersion = desc.maxRestorableVersion.get();
 

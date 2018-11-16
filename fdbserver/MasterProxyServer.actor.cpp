@@ -719,7 +719,7 @@ ACTOR Future<Void> commitBatch(
 			BinaryWriter wr(Unversioned());
 
 			// Serialize the log destination
-			printf("logRangeMutation first:%s\n", getHexString(logRangeMutation.first).c_str());
+////			printf("logRangeMutation first:%s\n", getHexString(logRangeMutation.first).c_str());
 			wr.serializeBytes( logRangeMutation.first );
 
 			// Write the log keys and version information
@@ -740,8 +740,8 @@ ACTOR Future<Void> commitBatch(
 			BinaryWriter wr_logRangeMutation(Unversioned());
 			wr_logRangeMutation.serializeBinaryItem(logRangeMutation.second);
 
-			printf("---MXMutationLogSerialize: val_size:%dB logRangeMutation_size:%dB exp_size:%dB part_num:%d\n",
-					val.size(), logRangeMutation.second.totalSize(), logRangeMutation.second.expectedSize(), val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE);
+////			printf("---MXMutationLogSerialize: val_size:%dB logRangeMutation_size:%dB exp_size:%dB part_num:%d\n",
+////					val.size(), logRangeMutation.second.totalSize(), logRangeMutation.second.expectedSize(), val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE);
 ////			printf("---MXMutationLogSerialize: mutationListRef is as follows---\n");
 ////			printMutationListRefHex(logRangeMutation.second, "\t");
 //			printf("\tlogRangeMutation type:%04x param1:%s param2:%s param1_size:%d, param2_size:%d\n",
@@ -754,6 +754,7 @@ ACTOR Future<Void> commitBatch(
 			if ( val.size() / CLIENT_KNOBS->MUTATION_BLOCK_SIZE >= 1 ) {
 				mxPrint = true;
 			}
+			mxPrint = false; //mute the print
 
 			for (int part = 0; part * CLIENT_KNOBS->MUTATION_BLOCK_SIZE < val.size(); part++) {
 

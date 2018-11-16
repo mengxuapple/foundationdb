@@ -3798,7 +3798,7 @@ public:
 		wait(desc.resolveVersionTimes(cx));
 
 		printf("Backup Description\n%s", desc.toString().c_str());
-		printf("MX: Restore code comes here\n");
+		printf("MX: Restore code comes here in restore_old() at FileBackupAgent.actor\n");
 		if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
 			targetVersion = desc.maxRestorableVersion.get();
 
