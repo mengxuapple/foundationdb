@@ -258,9 +258,20 @@ extern const KeyRangeRef monitorConfKeys;
 
 extern const KeyRef restoreLeaderKey;
 extern const KeyRangeRef restoreAgentsKeys;
+extern const KeyRef restoreRequestTriggerKey;
+extern const KeyRef restoreRequestDoneKey;
+extern const KeyRangeRef restoreRequestKeys;
 
 const Key restoreAgentKeyFor( UID const& agentID );
 const Value restoreAgentValue( RestoreInterface const& server );
 RestoreInterface decodeRestoreAgentValue( ValueRef const& value );
+// MX: parallel restore
+const Value restoreRequestTriggerValue (int const numRequests);
+const int decodeRestoreRequestTriggerValue( ValueRef const& value );
+const Value restoreRequestDoneValue (int const numRequests);
+const int decodeRestoreRequestDoneValue( ValueRef const& value );
+const Key restoreRequestKeyFor( int const& index );
+const Value restoreRequestValue( RestoreRequest const& server );
+RestoreRequest decodeRestoreRequestValue( ValueRef const& value );
 
 #endif

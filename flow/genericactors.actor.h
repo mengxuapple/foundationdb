@@ -945,6 +945,18 @@ Future<std::vector<T>> getAll( std::vector<Future<T>> input ) {
 	return output;
 }
 
+
+ACTOR template <class T>
+Future<std::vector<T>> getAny( std::vector<Future<T>> input ) {
+	if (input.empty()) return std::vector<T>();
+	wait( quorum( input, 1 ) );
+
+	std::vector<T> output;
+	for(int i=0; i<input.size(); i++)
+		output.push_back( input[i].get() );
+	return output;
+}
+
 ACTOR template <class T>
 Future<std::vector<T>> appendAll( std::vector<Future<std::vector<T>>> input ) {
 	wait( quorum( input, input.size() ) );

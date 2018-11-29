@@ -31,6 +31,7 @@
 #include <ctime>
 #include <climits>
 #include "BackupContainer.h"
+//#include "RestoreInterface.h"
 
 class BackupAgentBase : NonCopyable {
 public:
@@ -759,4 +760,5 @@ public:
 		return updateErrorInfo(cx, e, details);
 	}
 };
+
 #endif

@@ -35,7 +35,11 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <algorithm>
 
+#include "RestoreInterface.h"
+#include "FileBackupAgent.h"
+
 #include "flow/actorcompiler.h"  // This must be the last #include.
+
 
 static std::string boolToYesOrNo(bool val) { return val ? std::string("Yes") : std::string("No"); }
 
@@ -82,8 +86,7 @@ std::string secondsToTimeFormat(int64_t seconds) {
 
 const Key FileBackupAgent::keyLastRestorable = LiteralStringRef("last_restorable");
 
-// For convenience
-typedef FileBackupAgent::ERestoreState ERestoreState;
+
 
 StringRef FileBackupAgent::restoreStateText(ERestoreState id) {
 	switch(id) {
@@ -97,8 +100,6 @@ StringRef FileBackupAgent::restoreStateText(ERestoreState id) {
 	}
 }
 
-template<> Tuple Codec<ERestoreState>::pack(ERestoreState const &val) { return Tuple().append(val); }
-template<> ERestoreState Codec<ERestoreState>::unpack(Tuple const &val) { return (ERestoreState)val.getInt(0); }
 
 ACTOR Future<std::vector<KeyBackedTag>> TagUidMap::getAll_impl(TagUidMap *tagsMap, Reference<ReadYourWritesTransaction> tr) {
 	state Key prefix = tagsMap->prefix; // Copying it here as tagsMap lifetime is not tied to this actor
@@ -112,209 +113,32 @@ ACTOR Future<std::vector<KeyBackedTag>> TagUidMap::getAll_impl(TagUidMap *tagsMa
 KeyBackedTag::KeyBackedTag(std::string tagName, StringRef tagMapPrefix)
 		: KeyBackedProperty<UidAndAbortedFlagT>(TagUidMap(tagMapPrefix).getProperty(tagName)), tagName(tagName), tagMapPrefix(tagMapPrefix) {}
 
-class RestoreConfig : public KeyBackedConfig {
-public:
-	RestoreConfig(UID uid = UID()) : KeyBackedConfig(fileRestorePrefixRange.begin, uid) {}
-	RestoreConfig(Reference<Task> task) : KeyBackedConfig(fileRestorePrefixRange.begin, task) {}
 
-	KeyBackedProperty<ERestoreState> stateEnum() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	Future<StringRef> stateText(Reference<ReadYourWritesTransaction> tr) {
-		return map(stateEnum().getD(tr), [](ERestoreState s) -> StringRef { return FileBackupAgent::restoreStateText(s); });
-	}
-	KeyBackedProperty<Key> addPrefix() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Key> removePrefix() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<KeyRange> restoreRange() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Key> batchFuture() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	KeyBackedProperty<Version> restoreVersion() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+Future<StringRef> RestoreConfig::stateText(Reference<ReadYourWritesTransaction> tr) {
+	return map(stateEnum().getD(tr), [](ERestoreState s) -> StringRef { return FileBackupAgent::restoreStateText(s); });
+}
 
-	KeyBackedProperty<Reference<IBackupContainer>> sourceContainer() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Get the source container as a bare URL, without creating a container instance
-	KeyBackedProperty<Value> sourceContainerURL() {
-		return configSpace.pack(LiteralStringRef("sourceContainer"));
-	}
 
-	// Total bytes written by all log and range restore tasks.
-	KeyBackedBinaryValue<int64_t> bytesWritten() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// File blocks that have had tasks created for them by the Dispatch task
-	KeyBackedBinaryValue<int64_t> filesBlocksDispatched() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// File blocks whose tasks have finished
-	KeyBackedBinaryValue<int64_t> fileBlocksFinished() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Total number of files in the fileMap
-	KeyBackedBinaryValue<int64_t> fileCount() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
-	// Total number of file blocks in the fileMap
-	KeyBackedBinaryValue<int64_t> fileBlockCount() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+template<> Tuple Codec<ERestoreState>::pack(ERestoreState const &val) { return Tuple().append(val); }
+template<> ERestoreState Codec<ERestoreState>::unpack(Tuple const &val) { return (ERestoreState)val.getInt(0); }
 
-	// Describes a file to load blocks from during restore.  Ordered by version and then fileName to enable
-	// incrementally advancing through the map, saving the version and path of the next starting point.
-	struct RestoreFile {
-		Version version;
-		std::string fileName;
-		bool isRange;  // false for log file
-		int64_t blockSize;
-		int64_t fileSize;
-		Version endVersion;  // not meaningful for range files
 
-		Tuple pack() const {
-			return Tuple()
-				.append(version)
-				.append(StringRef(fileName))
-				.append(isRange)
-				.append(fileSize)
-				.append(blockSize)
-				.append(endVersion);
-		}
-		static RestoreFile unpack(Tuple const &t) {
-			RestoreFile r;
-			int i = 0;
-			r.version = t.getInt(i++);
-			r.fileName = t.getString(i++).toString();
-			r.isRange = t.getInt(i++) != 0;
-			r.fileSize = t.getInt(i++);
-			r.blockSize = t.getInt(i++);
-			r.endVersion = t.getInt(i++);
-			return r;
-		}
-	};
+ACTOR Future<int64_t> RestoreConfig::getApplyVersionLag_impl(Reference<ReadYourWritesTransaction> tr, UID uid) {
+	// Both of these are snapshot reads
+	state Future<Optional<Value>> beginVal = tr->get(uidPrefixKey(applyMutationsBeginRange.begin, uid), true);
+	state Future<Optional<Value>> endVal = tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid), true);
+	wait(success(beginVal) && success(endVal));
 
-	typedef KeyBackedSet<RestoreFile> FileSetT;
-	FileSetT fileSet() {
-		return configSpace.pack(LiteralStringRef(__FUNCTION__));
-	}
+	if(!beginVal.get().present() || !endVal.get().present())
+		return 0;
 
-	Future<bool> isRunnable(Reference<ReadYourWritesTransaction> tr) {
-		return map(stateEnum().getD(tr), [](ERestoreState s) -> bool { return   s != ERestoreState::ABORTED
-																			&& s != ERestoreState::COMPLETED
-																			&& s != ERestoreState::UNITIALIZED;
-		});
-	}
+	Version beginVersion = BinaryReader::fromStringRef<Version>(beginVal.get().get(), Unversioned());
+	Version endVersion = BinaryReader::fromStringRef<Version>(endVal.get().get(), Unversioned());
+	return endVersion - beginVersion;
+}
 
-	Future<Void> logError(Database cx, Error e, std::string const &details, void *taskInstance = nullptr) {
-		if(!uid.isValid()) {
-			TraceEvent(SevError, "FileRestoreErrorNoUID").error(e).detail("Description", details);
-			return Void();
-		}
-		TraceEvent t(SevWarn, "FileRestoreError");
-		t.error(e).detail("RestoreUID", uid).detail("Description", details).detail("TaskInstance", (uint64_t)taskInstance);
-		// These should not happen
-		if(e.code() == error_code_key_not_found)
-			t.backtrace();
 
-		return updateErrorInfo(cx, e, details);
-	}
-
-	Key mutationLogPrefix() {
-		return uidPrefixKey(applyLogKeys.begin, uid);
-	}
-
-	Key applyMutationsMapPrefix() {
-		 return uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-	}
-
-	ACTOR static Future<int64_t> getApplyVersionLag_impl(Reference<ReadYourWritesTransaction> tr, UID uid) {
-		// Both of these are snapshot reads
-		state Future<Optional<Value>> beginVal = tr->get(uidPrefixKey(applyMutationsBeginRange.begin, uid), true);
-		state Future<Optional<Value>> endVal = tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid), true);
-		wait(success(beginVal) && success(endVal));
-
-		if(!beginVal.get().present() || !endVal.get().present())
-			return 0;
-
-		Version beginVersion = BinaryReader::fromStringRef<Version>(beginVal.get().get(), Unversioned());
-		Version endVersion = BinaryReader::fromStringRef<Version>(endVal.get().get(), Unversioned());
-		return endVersion - beginVersion;
-	}
-
-	Future<int64_t> getApplyVersionLag(Reference<ReadYourWritesTransaction> tr) {
-		return getApplyVersionLag_impl(tr, uid);
-	}
-
-	void initApplyMutations(Reference<ReadYourWritesTransaction> tr, Key addPrefix, Key removePrefix) {
-		// Set these because they have to match the applyMutations values.
-		this->addPrefix().set(tr, addPrefix);
-		this->removePrefix().set(tr, removePrefix);
-
-		clearApplyMutationsKeys(tr);
-
-		// Initialize add/remove prefix, range version map count and set the map's start key to InvalidVersion
-		tr->set(uidPrefixKey(applyMutationsAddPrefixRange.begin, uid), addPrefix);
-		tr->set(uidPrefixKey(applyMutationsRemovePrefixRange.begin, uid), removePrefix);
-		int64_t startCount = 0;
-		tr->set(uidPrefixKey(applyMutationsKeyVersionCountRange.begin, uid), StringRef((uint8_t*)&startCount, 8));
-		Key mapStart = uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-		tr->set(mapStart, BinaryWriter::toValue<Version>(invalidVersion, Unversioned()));
-	}
-
-	void clearApplyMutationsKeys(Reference<ReadYourWritesTransaction> tr) {
-		tr->setOption(FDBTransactionOptions::COMMIT_ON_FIRST_PROXY);
-		
-		// Clear add/remove prefix keys
-		tr->clear(uidPrefixKey(applyMutationsAddPrefixRange.begin, uid));
-		tr->clear(uidPrefixKey(applyMutationsRemovePrefixRange.begin, uid));
-
-		// Clear range version map and count key
-		tr->clear(uidPrefixKey(applyMutationsKeyVersionCountRange.begin, uid));
-		Key mapStart = uidPrefixKey(applyMutationsKeyVersionMapRange.begin, uid);
-		tr->clear(KeyRangeRef(mapStart, strinc(mapStart)));
-
-		// Clear any loaded mutations that have not yet been applied
-		Key mutationPrefix = mutationLogPrefix();
-		tr->clear(KeyRangeRef(mutationPrefix, strinc(mutationPrefix)));
-
-		// Clear end and begin versions (intentionally in this order)
-		tr->clear(uidPrefixKey(applyMutationsEndRange.begin, uid));
-		tr->clear(uidPrefixKey(applyMutationsBeginRange.begin, uid));
-	}
-
-	void setApplyBeginVersion(Reference<ReadYourWritesTransaction> tr, Version ver) {
-		tr->set(uidPrefixKey(applyMutationsBeginRange.begin, uid), BinaryWriter::toValue(ver, Unversioned()));
-	}
-
-	void setApplyEndVersion(Reference<ReadYourWritesTransaction> tr, Version ver) {
-		tr->set(uidPrefixKey(applyMutationsEndRange.begin, uid), BinaryWriter::toValue(ver, Unversioned()));
-	}
-
-	Future<Version> getApplyEndVersion(Reference<ReadYourWritesTransaction> tr) {
-		return map(tr->get(uidPrefixKey(applyMutationsEndRange.begin, uid)), [=](Optional<Value> const &value) -> Version {
-			return value.present() ? BinaryReader::fromStringRef<Version>(value.get(), Unversioned()) : 0;
-		});
-	}
-
-	static Future<std::string> getProgress_impl(RestoreConfig const &restore, Reference<ReadYourWritesTransaction> const &tr);
-	Future<std::string> getProgress(Reference<ReadYourWritesTransaction> tr) {
-		return getProgress_impl(*this, tr);
-	}
-
-	static Future<std::string> getFullStatus_impl(RestoreConfig const &restore, Reference<ReadYourWritesTransaction> const &tr);
-	Future<std::string> getFullStatus(Reference<ReadYourWritesTransaction> tr) {
-		return getFullStatus_impl(*this, tr);
-	}
-};
-
-typedef RestoreConfig::RestoreFile RestoreFile;
+//typedef RestoreConfig::RestoreFile RestoreFile;
 
 ACTOR Future<std::string> RestoreConfig::getProgress_impl(RestoreConfig restore, Reference<ReadYourWritesTransaction> tr) {
 	tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
@@ -548,6 +372,7 @@ namespace fileBackup {
 		Error failure_error;
 	};
 
+	//MX: This is where the range file is decoded, broken into smaller pieces and applied to DB
 	ACTOR Future<Standalone<VectorRef<KeyValueRef>>> decodeRangeFileBlock(Reference<IAsyncFile> file, int64_t offset, int len) {
 		state Standalone<StringRef> buf = makeString(len);
 		int rLen = wait(file->read(mutateString(buf), len, offset));
@@ -559,7 +384,7 @@ namespace fileBackup {
 
 		try {
 			// Read header, currently only decoding version 1001
-			if(reader.consume<int32_t>() != 1001)
+			if(reader.consume<int32_t>() != 1001) //MXX: In big edian, it is encoded as e903 in xxd output, which is 03e9 in human-readable hex
 				throw restore_unsupported_file_version();
 
 			// Read begin key, if this fails then block was invalid.
@@ -604,6 +429,8 @@ namespace fileBackup {
 				.detail("BlockLen", len)
 				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
 				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+			printf("FileRestoreCorruptRangeFileBlock: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+			printf("Maybe forget to read the file block by block?\n");
 			throw;
 		}
 	}
@@ -665,8 +492,9 @@ namespace fileBackup {
 
 		try {
 			// Read header, currently only decoding version 2001
-			if(reader.consume<int32_t>() != 2001)
+			if(reader.consume<int32_t>() != 2001) //MX: The header in big edian is d107, which is 07d1 in human readable hex
 				throw restore_unsupported_file_version();
+			TraceEvent("DecodeLogFileBlock").detail("CheckHeader", "HeaderIsCorrect");
 
 			// Read k/v pairs.  Block ends either at end of last value exactly or with 0xFF as first key len byte.
 			while(1) {
@@ -679,6 +507,9 @@ namespace fileBackup {
 				const uint8_t *k = reader.consume(kLen);
 				uint32_t vLen = reader.consumeNetworkUInt32();
 				const uint8_t *v = reader.consume(vLen);
+
+				TraceEvent("DecodeLogFileBlock").detail("KLen", kLen).detail("VLen", vLen);
+				TraceEvent("DecodeLogFileBlock").detail("Key", KeyRef(k, kLen).printable()).detail("Value", ValueRef(v, vLen).printable());
 
 				results.push_back(results.arena(), KeyValueRef(KeyRef(k, kLen), ValueRef(v, vLen)));
 			}
@@ -698,9 +529,79 @@ namespace fileBackup {
 				.detail("BlockLen", len)
 				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
 				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+				printf("FileRestoreCorruptLogFileBlock: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+				printf("Maybe forget to read the file block by block?\n");
+
 			throw;
 		}
 	}
+
+	//TODO: Figure out the format of the file, which is super important! Once you know the file format, you can easily decode the file
+	ACTOR Future<Standalone<VectorRef<MutationRef>>> decodeLogFileBlock_MX(Reference<IAsyncFile> file, int64_t offset, int len) {
+		state Standalone<StringRef> buf = makeString(len);
+		int rLen = wait(file->read(mutateString(buf), len, offset));
+		if(rLen != len)
+			throw restore_bad_read();
+
+		Standalone<VectorRef<MutationRef>> results({}, buf.arena());
+		state StringRefReader reader(buf, restore_corrupted_data());
+
+		try {
+			// Read header, currently only decoding version 2001
+			/*
+			if(reader.consume<int32_t>() != 2001)
+				throw restore_unsupported_file_version();
+			 */
+
+			// Read k/v pairs.  Block ends either at end of last value exactly or with 0xFF as first key len byte.
+			while(1) {
+				// If eof reached or first key len bytes is 0xFF then end of block was reached.
+				if(reader.eof() || *reader.rptr == 0xFF) {
+					printf("---Log---Read the end of file\n");
+					break;
+				}
+
+
+				// Read key and value.  If anything throws then there is a problem.
+				uint32_t opType = reader.consumeNetworkUInt32();; // Type is 32bits
+				uint32_t kLen = reader.consumeNetworkUInt32();
+				const uint8_t *k = reader.consume(kLen);
+				uint32_t vLen = reader.consumeNetworkUInt32();
+				const uint8_t *v = reader.consume(vLen);
+
+				//results.push_back(results.arena(), KeyValueRef(KeyRef(k, kLen), ValueRef(v, vLen)));
+				results.push_back(results.arena(), MutationRef((MutationRef::Type) (opType), KeyRef(k, kLen), ValueRef(v, vLen)));
+				printf("---Log---Type:%d ksize:%d key:%s vsize:%d value:%s\n",
+						opType, kLen, KeyRef(k, kLen).printable().c_str(), vLen,
+						ValueRef(v, vLen).printable().c_str());
+			}
+
+			// Make sure any remaining bytes in the block are 0xFF
+			for(auto b : reader.remainder())
+				if(b != 0xFF) {
+					printf("---Log---LogFile is corrupted\n");
+					//throw restore_corrupted_data_padding();
+				}
+
+
+			return results;
+
+		} catch(Error &e) {
+			printf("---Log---LogFile is corrupted\n");
+			TraceEvent(SevWarn, "FileRestoreCorruptLogFileBlock")
+				.error(e)
+				.detail("Filename", file->getFilename())
+				.detail("BlockOffset", offset)
+				.detail("BlockLen", len)
+				.detail("ErrorRelativeOffset", reader.rptr - buf.begin())
+				.detail("ErrorAbsoluteOffset", reader.rptr - buf.begin() + offset);
+			//return results; //MXX: force to return so that we can proceed to the next log file. This line is for debug purpose
+			printf("FileRestoreCorruptLogFileBlock_MX: filename:%s blockLen:%d blockOffset:%d\n", file->getFilename().c_str(), len, offset);
+			printf("Maybe forget to read the file block by block?\n");
+			throw; //MXX: Reenable after debug
+		}
+	}
+
 
 	ACTOR Future<Void> checkTaskVersion(Database cx, Reference<Task> task, StringRef name, uint32_t version) {
 		uint32_t taskVersion = task->getVersion();
@@ -1794,7 +1695,7 @@ namespace fileBackup {
 					state int i = 0;
 					for (; i < r.first.size(); ++i) {
 						// Remove the backupLogPrefix + UID bytes from the key
-						wait(logFile.writeKV(r.first[i].key.substr(backupLogPrefixBytes + 16), r.first[i].value));
+						wait(logFile.writeKV(r.first[i].key.substr(backupLogPrefixBytes + 16), r.first[i].value)); //MX: Why don't we record mutation type?
 						lastVersion = r.second;
 					}
 				}
@@ -1815,7 +1716,7 @@ namespace fileBackup {
 			wait(outFile->finish());
 
 			TraceEvent("FileBackupWroteLogFile")
-				.suppressFor(60)
+//				.suppressFor(60)
 				.detail("BackupUID", config.getUid())
 				.detail("Size", outFile->size())
 				.detail("BeginVersion", beginVersion)
@@ -2415,12 +2316,12 @@ namespace fileBackup {
 
 		std::string toString(Reference<Task> task) {
 			return format("fileName '%s' readLen %lld readOffset %lld",
-				Params.inputFile().get(task).fileName.c_str(), 
+				Params.inputFile().get(task).fileName.c_str(),
 				Params.readLen().get(task),
 				Params.readOffset().get(task));
 		}
 	};
-	
+
 	struct RestoreRangeTaskFunc : RestoreFileTaskFuncBase {
 		static struct : InputParams {
 			// The range of data that the (possibly empty) data represented, which is set if it intersects the target restore range
@@ -2495,6 +2396,7 @@ namespace fileBackup {
 			while(rangeEnd > rangeStart && !restoreRange.get().contains(blockData[rangeEnd - 1].key))
 				--rangeEnd;
 
+			//MX: This is where the range file is splitted into smaller pieces
 			state VectorRef<KeyValueRef> data = blockData.slice(rangeStart, rangeEnd);
 
 			// Shrink file range to be entirely within restoreRange and translate it to the new prefix
@@ -2516,6 +2418,7 @@ namespace fileBackup {
 			state int dataSizeLimit = BUGGIFY ? g_random->randomInt(256 * 1024, 10e6) : CLIENT_KNOBS->RESTORE_WRITE_TX_SIZE;
 
 			tr->reset();
+			//MX: This is where the key-value pair in range file is applied into DB
 			loop {
 				try {
 					tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
@@ -2612,7 +2515,7 @@ namespace fileBackup {
 
 			// Create a restore config from the current task and bind it to the new task.
 			wait(RestoreConfig(parentTask).toTask(tr, task));
-			
+
 			Params.inputFile().set(task, rf);
 			Params.readOffset().set(task, offset);
 			Params.readLen().set(task, len);
@@ -2704,7 +2607,7 @@ namespace fileBackup {
 					for(; i < end && txBytes < dataSizeLimit; ++i) {
 						Key k = data[i].key.withPrefix(mutationLogPrefix);
 						ValueRef v = data[i].value;
-						tr->set(k, v);
+						tr->set(k, v); //MXX: Why we always set the (k,v) retrieved from log file? Shouldn't we have other operations, e.g., clear?
 						txBytes += k.expectedSize();
 						txBytes += v.expectedSize();
 					}
@@ -2797,6 +2700,7 @@ namespace fileBackup {
 			static TaskParam<int64_t> remainingInBatch() { return LiteralStringRef(__FUNCTION__); }
 		} Params;
 
+		//MX: This is the function that see the restore task is done. it traces "restore_complete". This part of code should go into restore agents
 		ACTOR static Future<Void> _finish(Reference<ReadYourWritesTransaction> tr, Reference<TaskBucket> taskBucket, Reference<FutureBucket> futureBucket, Reference<Task> task) {
 			state RestoreConfig restore(task);
 
@@ -2812,6 +2716,7 @@ namespace fileBackup {
 
 			// If not adding to an existing batch then update the apply mutations end version so the mutations from the
 			// previous batch can be applied.  Only do this once beginVersion is > 0 (it will be 0 for the initial dispatch).
+			//MX: Must setApplyEndVersion to trigger master proxy to apply mutation to DB.
 			if(!addingToExistingBatch && beginVersion > 0) {
 				restore.setApplyEndVersion(tr, std::min(beginVersion, restoreVersion + 1));
 			}
@@ -2842,6 +2747,13 @@ namespace fileBackup {
 			// Get a batch of files.  We're targeting batchSize blocks being dispatched so query for batchSize files (each of which is 0 or more blocks).
 			state int taskBatchSize = BUGGIFY ? 1 : CLIENT_KNOBS->RESTORE_DISPATCH_ADDTASK_SIZE;
 			state RestoreConfig::FileSetT::Values files = wait(restore.fileSet().getRange(tr, {beginVersion, beginFile}, {}, taskBatchSize));
+
+			if ( files.size() )
+				TraceEvent("FileBackupAgentFinishMX").detail("MX", 1).detail("RestoureConfigFiles", files.size());
+			for(; i < files.size(); ++i) {
+				RestoreConfig::RestoreFile &f = files[i];
+				TraceEvent("RestoreConfigFiles").detail("Index", i).detail("FileInfo", f.toString());
+			}
 
 			// allPartsDone will be set once all block tasks in the current batch are finished.
 			state Reference<TaskFuture> allPartsDone;
@@ -2924,7 +2836,7 @@ namespace fileBackup {
 			}
 
 			// Start moving through the file list and queuing up blocks.  Only queue up to RESTORE_DISPATCH_ADDTASK_SIZE blocks per Dispatch task
-			// and target batchSize total per batch but a batch must end on a complete version boundary so exceed the limit if necessary 
+			// and target batchSize total per batch but a batch must end on a complete version boundary so exceed the limit if necessary
 			// to reach the end of a version of files.
 			state std::vector<Future<Key>> addTaskFutures;
 			state Version endVersion = files[0].version;
@@ -2956,6 +2868,7 @@ namespace fileBackup {
 					if(blocksDispatched == taskBatchSize)
 						break;
 
+					//MX:Important: Add a task for each block in the file.
 					if(f.isRange) {
 						addTaskFutures.push_back(RestoreRangeTaskFunc::addTask(tr, taskBucket, task,
 							f, j, std::min<int64_t>(f.blockSize, f.fileSize - j),
@@ -2972,21 +2885,29 @@ namespace fileBackup {
 					++blocksDispatched;
 					--remainingInBatch;
 				}
-				
+
 				// Stop if we've reached the addtask limit
 				if(blocksDispatched == taskBatchSize)
 					break;
 
-				// We just completed an entire file so the next task should start at the file after this one within endVersion (or later) 
+				// We just completed an entire file so the next task should start at the file after this one within endVersion (or later)
 				// if this iteration ends up being the last for this task
 				beginFile = beginFile + '\x00';
 				beginBlock = 0;
 
+
 				TraceEvent("FileRestoreDispatchedFile")
-					.suppressFor(60)
-					.detail("RestoreUID", restore.getUid())
-					.detail("FileName", f.fileName)
-					.detail("TaskInstance", (uint64_t)this);
+						.detail("MX", 1)
+						.detail("RestoreUID", restore.getUid())
+						.detail("FileName", f.fileName)
+						.detail("TaskInstance", (uint64_t)this)
+						.detail("FileInfo", f.toString());
+
+//				TraceEvent("FileRestoreDispatchedFile")
+//					.suppressFor(60)
+//					.detail("RestoreUID", restore.getUid())
+//					.detail("FileName", f.fileName)
+//					.detail("TaskInstance", (uint64_t)this);
 			}
 
 			// If no blocks were dispatched then the next dispatch task should run now and be joined with the allPartsDone future
@@ -3015,7 +2936,7 @@ namespace fileBackup {
 					.detail("RemainingInBatch", remainingInBatch);
 
 				wait(success(RestoreDispatchTaskFunc::addTask(tr, taskBucket, task, endVersion, beginFile, beginBlock, batchSize, remainingInBatch, TaskCompletionKey::joinWith((allPartsDone)))));
-				
+
 				// If adding to existing batch then task is joined with a batch future so set done future.
 				// Note that this must be done after joining at least one task with the batch future in case all other blockers already finished.
 				Future<Void> setDone = addingToExistingBatch ? onDone->set(tr, taskBucket) : Void();
@@ -3028,7 +2949,7 @@ namespace fileBackup {
 			// Increment the number of blocks dispatched in the restore config
 			restore.filesBlocksDispatched().atomicOp(tr, blocksDispatched, MutationRef::Type::AddValue);
 
-			// If beginFile is not empty then we had to stop in the middle of a version (possibly within a file) so we cannot end 
+			// If beginFile is not empty then we had to stop in the middle of a version (possibly within a file) so we cannot end
 			// the batch here because we do not know if we got all of the files and blocks from the last version queued, so
 			// make sure remainingInBatch is at least 1.
 			if(!beginFile.empty())
@@ -3323,10 +3244,12 @@ namespace fileBackup {
 
 			Key doneKey = wait(completionKey.get(tr, taskBucket));
 			state Reference<Task> task(new Task(StartFullRestoreTaskFunc::name, StartFullRestoreTaskFunc::version, doneKey));
+			TraceEvent("ParalleRestore").detail("AddRestoreTask", task->toString());
 
 			state RestoreConfig restore(uid);
 			// Bind the restore config to the new task
 			wait(restore.toTask(tr, task));
+			TraceEvent("ParalleRestore").detail("AddRestoreConfigToRestoreTask", task->toString());
 
 			if (!waitFor) {
 				return taskBucket->addTask(tr, task);
@@ -3500,6 +3423,7 @@ public:
 		return Void();
 	}
 
+	//MX: All restore code; BackupContainer: format of backup file.
 	ACTOR static Future<Void> submitRestore(FileBackupAgent* backupAgent, Reference<ReadYourWritesTransaction> tr, Key tagName, Key backupURL, Version restoreVersion, Key addPrefix, Key removePrefix, KeyRange restoreRange, bool lockDB, UID uid) {
 		ASSERT(restoreRange.contains(removePrefix) || removePrefix.size() == 0);
 
@@ -3860,16 +3784,28 @@ public:
 		return r;
 	}
 
-	ACTOR static Future<Version> restore(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+	ACTOR static Future<Version> restore_old(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+
+		//Future<Void> restoreAgentFuture1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		//Future<Void> restoreAgentFuture2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+		//TraceEvent("WaitOnRestoreAgentFutureBegin").detail("URL", url.contents().printable());
+		//wait(restoreAgentFuture1 || restoreAgentFuture2);
+		//TraceEvent("WaitOnRestoreAgentFutureEnd").detail("URL", url.contents().printable());
+
 		state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
 		state BackupDescription desc = wait(bc->describeBackup());
+
 		wait(desc.resolveVersionTimes(cx));
 
 		printf("Backup Description\n%s", desc.toString().c_str());
+		printf("MX: Restore code comes here in restore_old() at FileBackupAgent.actor\n");
 		if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
 			targetVersion = desc.maxRestorableVersion.get();
 
 		Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+
+		//Above is the restore master code
+		//Below is the agent code
 
 		if(!restoreSet.present()) {
 			TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
@@ -3890,6 +3826,12 @@ public:
 				tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 				wait(submitRestore(backupAgent, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid));
 				wait(tr->commit());
+				//MX: restore agent example
+				//TODO: MX: add restore master
+				//printf("MX:Perform FileBackupAgent restore...\n");
+				//Future<Void> ra1 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+				//Future<Void> ra2 = restoreAgent_run(cx.getPtr()->cluster->getConnectionFile(), LocalityData());
+
 				break;
 			} catch(Error &e) {
 				if(e.code() != error_code_restore_duplicate_tag) {
@@ -4005,6 +3947,28 @@ public:
 		Version ver = wait( restore(backupAgent, cx, tagName, KeyRef(bc->getURL()), true, -1, true, range, addPrefix, removePrefix, true, randomUid) );
 		return ver;
 	}
+
+
+	ACTOR static Future<Version> restore(FileBackupAgent* backupAgent, Database cx, Key tagName, Key url, bool waitForComplete, Version targetVersion, bool verbose, KeyRange range, Key addPrefix, Key removePrefix, bool lockDB, UID randomUid) {
+
+		Version ver = wait( restore_old(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid) );
+		return ver;
+//
+//		TraceEvent("WaitOnRestoreAgentFutureBegin").detail("Actor", "RestoreAgentRestore")
+//				.detail("URL", url.contents().printable());
+//
+//		Future<Void> v1 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+//		Future<Void> v2 = restoreAgentRestore(backupAgent, cx, tagName, url, waitForComplete, targetVersion, verbose, range, addPrefix, removePrefix, lockDB, randomUid);
+//
+//		wait(v1 || v2);
+//
+//		TraceEvent("WaitOnRestoreAgentFutureEnd").detail("Actor", "RestoreAgentRestore")
+//				.detail("URL", url.contents().printable());
+//
+//		return targetVersion;
+
+	}
+
 };
 
 const std::string BackupAgentBase::defaultTagName = "default";
@@ -4063,5 +4027,225 @@ void FileBackupAgent::setLastRestorable(Reference<ReadYourWritesTransaction> tr,
 
 Future<int> FileBackupAgent::waitBackup(Database cx, std::string tagName, bool stopWhenDone) {
 	return FileBackupAgentImpl::waitBackup(this, cx, tagName, stopWhenDone);
+}
+
+
+
+//-------MX: Parallel restore code
+
+void traceRestorableFileSet(Optional<RestorableFileSet> restoreSetOpt) {
+	if ( restoreSetOpt.present() ) {
+		return;
+	}
+	RestorableFileSet &restoreSet = restoreSetOpt.get();
+	TraceEvent("RestorableFileSet").detail("Version", restoreSet.targetVersion);
+	int i = 0;
+	for ( auto &log : restoreSet.logs ) {
+		TraceEvent("LogFile\t").detail("Index", i++).detail("Info", log.toString());
+	}
+	i = 0;
+	for ( auto &range : restoreSet.ranges ) {
+		TraceEvent("RangeFile\t").detail("Index", i++).detail("Info", range.toString());
+	}
+
+	TraceEvent("Snapshot\t").detail("Info", restoreSet.snapshot.toString());
+}
+
+ACTOR Future<Void> restoreAgentRestore(FileBackupAgent* backupAgent, Database db, Standalone<StringRef>  tagName, Standalone<StringRef>  url, bool waitForComplete,
+										  Version targetVersion, bool verbose, Standalone<KeyRangeRef> range, Standalone<StringRef>  addPrefix, Standalone<StringRef>  removePrefix, bool lockDB, UID randomUid) {
+
+	TraceEvent("RestoreAgentRestoreRun").detail("URL", url.contents().printable());
+	state Database cx = db;
+
+	state RestoreInterface interf;
+	interf.initEndpoints();
+	state Optional<RestoreInterface> leaderInterf;
+
+	TraceEvent("RestoreAgentStartTryBeLeader");
+	state Transaction tr1(cx);
+	TraceEvent("RestoreAgentStartCreateTransaction").detail("NumErrors", tr1.numErrors);
+	loop {
+		try {
+			TraceEvent("RestoreAgentStartReadLeaderKeyStart").detail("NumErrors", tr1.numErrors).detail("ReadLeaderKey", restoreLeaderKey.printable());
+			Optional<Value> leader = wait(tr1.get(restoreLeaderKey));
+			TraceEvent("RestoreAgentStartReadLeaderKeyEnd").detail("NumErrors", tr1.numErrors)
+					.detail("LeaderValuePresent", leader.present());
+			if(leader.present()) {
+				leaderInterf = decodeRestoreAgentValue(leader.get());
+				break;
+			}
+			tr1.set(restoreLeaderKey, restoreAgentValue(interf));
+			wait(tr1.commit());
+			break;
+		} catch( Error &e ) {
+			wait( tr1.onError(e) );
+		}
+	}
+
+
+	//NOTE: leader may die, when that happens, all agents will block. We will have to clear the leader key and launch a new leader
+	//we are not the leader, so put our interface in the agent list
+	if(leaderInterf.present()) {
+		printf("MX: I am NOT the leader.\n");
+		TraceEvent("RestoreAgentNotLeader");
+		loop {
+			try {
+				tr1.set(restoreAgentKeyFor(interf.id()), restoreAgentValue(interf));
+				wait(tr1.commit());
+				break;
+			} catch( Error &e ) {
+				wait( tr1.onError(e) );
+			}
+		}
+
+		loop {
+			choose {
+				//Dumpy code from skeleton code
+				when(RestoreRequest req = waitNext(interf.request.getFuture())) {
+					printf("Got Restore Request: Index %d. RequestData:%d\n", req.testData, req.restoreRequests[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRestoreRequestID", req.testData)
+							.detail("GotRestoreRequestValue", req.restoreRequests[req.testData]);
+					//TODO: MX: actual restore
+					std::vector<int> values(req.restoreRequests);
+					values[req.testData]++;
+					req.reply.send(RestoreReply(req.testData * -1, values));
+					printf("Send Reply: %d, Value:%d\n", req.testData, values[req.testData]);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData).detail("Value", req.restoreRequests[req.testData]);
+					if ( values[req.testData] > 10 ) { //MX: only calculate up to 10
+						return Void();
+					}
+
+					if ( values[req.testData] > 2 ) { // set > 0 to skip restore; set > 2 to enable restore
+						TraceEvent("DoNotRunRestoreTwice");
+						continue;
+					}
+
+					//MX: actual restore from old restore code
+					state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+					loop {
+						try {
+							tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+							tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+							wait(FileBackupAgentImpl::submitRestore(backupAgent, tr, tagName, url, targetVersion, addPrefix, removePrefix, range, lockDB, randomUid));
+							wait(tr->commit());
+
+							break;
+						} catch(Error &e) {
+							if(e.code() != error_code_restore_duplicate_tag) {
+								wait(tr->onError(e));
+							}
+						}
+					}
+
+					if(waitForComplete) {
+						ERestoreState finalState = wait(FileBackupAgentImpl::waitRestore(cx, tagName, verbose));
+						if(finalState != ERestoreState::COMPLETED)
+							throw restore_error();
+					}
+
+					return Void();
+				}
+				//Example code
+				when(TestRequest req = waitNext(interf.test.getFuture())) {
+					printf("Got Request: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("GotRequest", req.testData);
+					req.reply.send(TestReply(req.testData + 1));
+					printf("Send Reply: %d\n", req.testData);
+					TraceEvent("RestoreAgentNotLeader").detail("SendReply", req.testData);
+				}
+			}
+		}
+
+	}
+
+	//I am the leader
+	//NOTE: The leader may be blocked when one agent dies. It will keep waiting for reply from the agents
+	printf("MX: I am the leader.\n");
+	TraceEvent("RestoreAgentIsLeader");
+	wait( delay(5.0) );
+
+	state vector<RestoreInterface> agents;
+	loop {
+		try {
+			Standalone<RangeResultRef> agentValues = wait(tr1.getRange(restoreAgentsKeys, CLIENT_KNOBS->TOO_MANY));
+			ASSERT(!agentValues.more);
+			if(agentValues.size()) {
+				for(auto& it : agentValues) {
+					agents.push_back(decodeRestoreAgentValue(it.value));
+				}
+				break;
+			}
+			printf("MX: agents number:%d\n", agentValues.size());
+			TraceEvent("RestoreAgentLeader").detail("AgentSize", agentValues.size());
+			wait( delay(5.0) );
+		} catch( Error &e ) {
+			wait( tr1.onError(e) );
+		}
+	}
+
+	ASSERT(agents.size() > 0);
+
+	//create initial point, The initial request value for agent i is i.
+	state std::vector<int> restoreRequests;
+	for ( int i = 0; i < agents.size(); ++i ) {
+		restoreRequests.push_back(i);
+	}
+
+	loop {
+		wait(delay(1.0));
+
+		printf("---Sending Requests\n");
+		TraceEvent("RestoreAgentLeader").detail("SendingRequests", "CheckBelow");
+		for (int i = 0; i < restoreRequests.size(); ++i ) {
+			printf("RestoreRequests[%d]=%d\n", i, restoreRequests[i]);
+			TraceEvent("RestoreRequests").detail("Index", i).detail("Value", restoreRequests[i]);
+		}
+		std::vector<Future<RestoreReply>> replies;
+		for ( int i = 0; i < agents.size(); ++i) {
+			auto &it = agents[i];
+			replies.push_back( it.request.getReply(RestoreRequest(i, restoreRequests)) );
+		}
+		printf("Wait on all %d requests\n", agents.size());
+
+		std::vector<RestoreReply> reps = wait( getAll(replies ));
+		printf("GetRestoreReply values\n", reps.size());
+		for ( int i = 0; i < reps.size(); ++i ) {
+			printf("RestoreReply[%d]=%d\n [checksum=%d]", i, reps[i].restoreReplies[i], reps[i].replyData);
+			//prepare to send the next request batch
+			restoreRequests[i] = reps[i].restoreReplies[i];
+			if ( restoreRequests[i] > 10 ) { //MX: only calculate up to 10
+				return Void();
+			}
+		}
+		TraceEvent("RestoreAgentLeader").detail("GetTestReplySize",  reps.size());
+
+		//-------- Restore Code start -----------------
+
+		state Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
+		state BackupDescription desc = wait(bc->describeBackup());
+
+		wait(desc.resolveVersionTimes(cx));
+
+		printf("Backup Description\n%s", desc.toString().c_str());
+		printf("MX: Restore master code comes here\n");
+		if(targetVersion == invalidVersion && desc.maxRestorableVersion.present())
+			targetVersion = desc.maxRestorableVersion.get();
+
+		Optional<RestorableFileSet> restoreSet = wait(bc->getRestoreSet(targetVersion));
+		TraceEvent("ParallelRestore").detail("MX", "Info").detail("RestoreSet", "Below");
+		traceRestorableFileSet(restoreSet);
+
+		if(!restoreSet.present()) {
+			TraceEvent(SevWarn, "FileBackupAgentRestoreNotPossible")
+					.detail("BackupContainer", bc->getURL())
+					.detail("TargetVersion", targetVersion);
+			fprintf(stderr, "ERROR: Restore version %lld is not possible from %s\n", targetVersion, bc->getURL().c_str());
+			throw restore_invalid_version();
+		}
+
+		if (verbose) {
+			printf("Restoring backup to version: %lld\n", (long long) targetVersion);
+		}
+	}
 }
 

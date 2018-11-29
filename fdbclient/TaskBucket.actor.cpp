@@ -37,6 +37,7 @@ struct UnblockFutureTaskFunc : TaskFuncBase {
 
 		futureBucket->setOptions(tr);
 
+		TraceEvent("UnblockFutureTaskMX").detail("KeyBlockIDToClear", task->params[Task::reservedTaskParamKeyBlockID].contents().printable());
 		tr->clear(future->blocks.pack(task->params[Task::reservedTaskParamKeyBlockID]));
 
 		bool is_set = wait(future->isSet(tr));
@@ -346,17 +347,21 @@ public:
 		}
 	}
 
+	//MX: This is where the file content is restored to DB.
 	ACTOR static Future<bool> doTask(Database cx, Reference<TaskBucket> taskBucket, Reference<FutureBucket> futureBucket, Reference<Task> task) {
 		if (!task || !TaskFuncBase::isValidTask(task))
 			return false;
 
 		state Reference<TaskFuncBase> taskFunc;
+		TraceEvent("ParallelRestore").detail("DoTask", task->toString());
 
 		try {
+			TraceEvent("CreateTaskMX").detail("KeyType", task->params[Task::reservedTaskParamKeyType].contents().printable());
 			taskFunc = TaskFuncBase::create(task->params[Task::reservedTaskParamKeyType]);
 			if (taskFunc) {
 				state bool verifyTask = (task->params.find(Task::reservedTaskParamValidKey) != task->params.end());
 
+				TraceEvent("CreateTaskMX").detail("VerifyTask", verifyTask);
 				if (verifyTask) {
 					loop {
 						state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
@@ -368,7 +373,7 @@ public:
 							if (!validTask) {
 								bool isFinished = wait(taskBucket->isFinished(tr, task));
 								if (!isFinished) {
-									wait(taskBucket->finish(tr, task));
+									wait(taskBucket->finish(tr, task)); //MX: May split the task into smaller tasks and dispatch later
 								}
 								wait(tr->commit());
 								return true;
@@ -381,9 +386,12 @@ public:
 					}
 				}
 
+				TraceEvent("ParallelRestore").detail("TaskExecuteStart", task->toString());
 				wait(taskFunc->execute(cx, taskBucket, futureBucket, task) || extendTimeoutRepeatedly(cx, taskBucket, task));
+				TraceEvent("ParallelRestore").detail("TaskExecuteDone", task->toString());
 
 				if (BUGGIFY) wait(delay(10.0));
+				//MX: make sure the task is finished. wait on the task to finish.
 				wait(runRYWTransaction(cx, [=](Reference<ReadYourWritesTransaction> tr) {
 					return finishTaskRun(tr, taskBucket, futureBucket, task, taskFunc, verifyTask);
 				}));
@@ -430,6 +438,7 @@ public:
 				for(int i = 0, imax = std::min<unsigned int>(getBatchSize, availableSlots.size()); i < imax; ++i)
 					getTasks.push_back(taskBucket->getOne(cx));
 				wait(waitForAllReady(getTasks));
+				TraceEvent("DispatchTaskMX").detail("NumTasks", getTasks.size());
 
 				bool done = false;
 				for(int i = 0; i < getTasks.size(); ++i) {
@@ -1059,6 +1068,7 @@ public:
 		taskFuture->futureBucket->setOptions(tr);
 
 		Standalone<RangeResultRef> values = wait(tr->getRange(taskFuture->callbacks.range(), CLIENT_KNOBS->TOO_MANY));
+		TraceEvent("PerformAllActionsMX").detail("Ranges", values.contents().toString()).detail("ValuesSize", values.size());
 		tr->clear(taskFuture->callbacks.range());
 
 		std::vector<Future<Void>> actions;
@@ -1066,7 +1076,8 @@ public:
 		if(values.size() != 0) {
 			state Reference<Task> task(new Task());
 			Key lastTaskID;
-			for (auto & s : values) {
+			for (auto & s : values) { //MX: s is a key-value pair and values is a vector of key-value pair
+				TraceEvent("PerformAllActionsMX").detail("Key", s.key.toString()).detail("Value", s.value.toString());
 				Tuple t = taskFuture->callbacks.unpack(s.key);
 				Key taskID = t.getString(0);
 				Key key = t.getString(1);

@@ -1101,6 +1101,8 @@ int main(int argc, char* argv[]) {
 						printHelpTeaser(argv[0]);
 						flushAndExit(FDB_EXIT_ERROR);
 					}
+					buggifyEnabled = false;
+					printf("[DEBUG]!!! ALWAYS SET biggify=false because we have not handle restart restore yet\n");
 					break;
 				case OPT_CRASHONERROR:
 					g_crashOnError = true;

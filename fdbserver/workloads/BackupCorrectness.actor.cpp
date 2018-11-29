@@ -23,6 +23,7 @@
 #include "fdbclient/BackupContainer.h"
 #include "workloads.h"
 #include "BulkSetup.actor.h"
+#include "RestoreInterface.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
 
@@ -38,6 +39,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 	bool locked;
 	bool allowPauses;
 	bool shareLogRange;
+
+	std::map<Standalone<KeyRef>, Standalone<ValueRef>> dbKVs;
 
 	BackupAndRestoreCorrectnessWorkload(WorkloadContext const& wcx)
 		: TestWorkload(wcx) {
@@ -300,6 +303,122 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		return Void();
 	}
 
+	static void compareDBKVs(Standalone<RangeResultRef> data, BackupAndRestoreCorrectnessWorkload* self) {
+		bool hasDiff = false;
+		//Get the new KV pairs in the DB
+		std::map<Standalone<KeyRef>, Standalone<ValueRef>> newDbKVs;
+		for ( auto kvRef = data.contents().begin(); kvRef != data.contents().end(); kvRef++ ) {
+			newDbKVs.insert(std::make_pair(kvRef->key, kvRef->value));
+		}
+
+		if ( self->dbKVs.empty() ) {
+			printf("[CheckDB] set DB kv for the first time.\n");
+			self->dbKVs = newDbKVs;
+			return;
+		}
+
+		printf("[CheckDB] KV Number. Prev DB:%d Current DB:%d\n", self->dbKVs.size(), newDbKVs.size());
+		//compare the KV pairs in the DB
+		printf("---------------------Now print out the diff between the prev DB and current DB----------------------\n");
+		if ( self->dbKVs.size() >= newDbKVs.size() ) {
+			for ( auto kv = self->dbKVs.begin(); kv != self->dbKVs.end(); kv++ ) {
+				bool exist = (newDbKVs.find(kv->first) != newDbKVs.end());
+				if ( !exist ) {
+					printf("\tPrevKey:%s PrevValue:%s newValue:%s\n", getHexString(kv->first).c_str(), getHexString(kv->second).c_str(),
+						   "[Not Exist]");
+					hasDiff = true;
+				}
+				if ( exist && (newDbKVs[kv->first] != self->dbKVs[kv->first]) ) {
+					printf("\tPrevKey:%s PrevValue:%s newValue:%s\n", getHexString(kv->first).c_str(), getHexString(kv->second).c_str(),
+						   getHexString(newDbKVs[kv->first]).c_str());
+					hasDiff = true;
+				}
+			}
+		} else {
+			for ( auto newKV = newDbKVs.begin(); newKV != newDbKVs.end(); newKV++ ) {
+				bool exist = (self->dbKVs.find(newKV->first) != self->dbKVs.end());
+				if ( !exist ) {
+					printf("\tPrevKey:%s PrevValue:%s newValue:%s\n", "[Not Exist]",
+							getHexString(newKV->first).c_str(), getHexString(newKV->second).c_str());
+					hasDiff = true;
+				}
+				if ( exist && (newDbKVs[newKV->first] != self->dbKVs[newKV->first]) ) {
+					printf("\tPrevKey:%s PrevValue:%s newValue:%s\n", getHexString(newKV->first).c_str(), getHexString(self->dbKVs[newKV->first]).c_str(),
+						   getHexString(newDbKVs[newKV->first]).c_str());
+					hasDiff = true;
+				}
+			}
+		}
+
+		int numEntries = 10;
+		int i = 0;
+		if ( hasDiff ) {
+			//print out the first and last 10 entries
+			printf("\t---Prev DB first and last %d entries\n", numEntries);
+			auto kv = self->dbKVs.begin();
+			for ( ; kv != self->dbKVs.end(); kv++ ) {
+				if ( i >= numEntries )
+					break;
+
+				printf("\t[Entry:%d]Key:%s Value:%s\n", i++, getHexString(kv->first).c_str(), getHexString(kv->second).c_str());
+			}
+
+			i = self->dbKVs.size();
+			kv = self->dbKVs.end();
+			for ( --kv; kv != self->dbKVs.begin(); kv-- ) {
+				if ( i <=  self->dbKVs.size() - numEntries )
+					break;
+
+				printf("\t[Entry:%d]Key:%s Value:%s\n", i--, getHexString(kv->first).c_str(), getHexString(kv->second).c_str());
+			}
+
+			printf("\t---Current DB first and last %d entries\n", numEntries);
+			kv = newDbKVs.begin();
+			i = 0;
+			for ( ; kv != newDbKVs.end(); kv++ ) {
+				if ( i >= numEntries )
+					break;
+
+				printf("\t[Entry:%d]Key:%s Value:%s\n", i++, getHexString(kv->first).c_str(), getHexString(kv->second).c_str());
+			}
+
+			i = newDbKVs.size();
+			kv = newDbKVs.end();
+			for ( --kv; kv != newDbKVs.begin(); kv-- ) {
+				if ( i <=  newDbKVs.size() - numEntries )
+					break;
+
+				printf("\t[Entry:%d]Key:%s Value:%s\n", i--, getHexString(kv->first).c_str(), getHexString(kv->second).c_str());
+			}
+		}
+
+		self->dbKVs = newDbKVs; //update the dbKVs
+	}
+
+
+	ACTOR static Future<Void> checkDB( Database cx, std::string when, BackupAndRestoreCorrectnessWorkload* self ) {
+		state Key keyPrefix = LiteralStringRef("");
+//		int numPrint = 20; //number of entries in the front and end to print out.
+		state Transaction tr(cx);
+		state int retryCount = 0;
+		loop {
+			try {
+				state Version v = wait( tr.getReadVersion() );
+				state Standalone<RangeResultRef> data = wait(tr.getRange(firstGreaterOrEqual(doubleToTestKey(0.0, keyPrefix)), firstGreaterOrEqual(doubleToTestKey(1.0, keyPrefix)), std::numeric_limits<int>::max()));
+				printf("Check DB, at %s. retryCount:%d Data size:%d, rangeResultInfo:%s\n", when.c_str(), retryCount,
+						data.size(), data.contents().toString().c_str());
+				compareDBKVs(data, self);
+				break;
+			} catch (Error& e) {
+				retryCount++;
+				TraceEvent(retryCount > 20 ? SevWarnAlways : SevWarn, "CheckDBError").error(e);
+				wait(tr.onError(e));
+			}
+		}
+
+		return Void();
+	}
+
 	ACTOR static Future<Void> _start(Database cx, BackupAndRestoreCorrectnessWorkload* self) {
 		state FileBackupAgent backupAgent;
 		state Future<Void> extraBackup;
@@ -324,6 +443,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			// backup
 			wait(delay(self->backupAfter));
 
+			wait(checkDB(cx, "BeforeStartBackup", self));
+
 			TraceEvent("BARW_DoBackup1", randomID).detail("Tag", printable(self->backupTag));
 			state Promise<Void> submitted;
 			state Future<Void> b = doBackup(self, 0, &backupAgent, cx, self->backupTag, self->backupRanges, self->stopDifferentialAfter, submitted);
@@ -346,6 +467,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			}
 			TraceEvent("BARW_DoBackupDone", randomID).detail("BackupTag", printable(self->backupTag)).detail("AbortAndRestartAfter", self->abortAndRestartAfter);
 
+			wait(checkDB(cx, "BackupDone", self));
+
 			state KeyBackedTag keyBackedTag = makeBackupTag(self->backupTag.toString());
 			UidAndAbortedFlagT uidFlag = wait(keyBackedTag.getOrThrow(cx));
 			state UID logUid = uidFlag.first;
@@ -367,7 +490,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 
 			TEST(!startRestore.isReady()); //Restore starts at specified time
 			wait(startRestore);
-			
+
+			wait(checkDB(cx, "BeforeRestore", self));
 			if (lastBackupContainer && self->performRestore) {
 				if (g_random->random01() < 0.5) {
 					wait(attemptDirtyRestore(self, cx, &backupAgent, StringRef(lastBackupContainer->getURL()), randomID));
@@ -401,12 +525,20 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 				state std::vector<Standalone<StringRef>> restoreTags;
 				state int restoreIndex;
 
+				state Transaction tr1(cx);
 				for (restoreIndex = 0; restoreIndex < self->backupRanges.size(); restoreIndex++) {
 					auto range = self->backupRanges[restoreIndex];
 					Standalone<StringRef> restoreTag(self->backupTag.toString() + "_" + std::to_string(restoreIndex));
 					restoreTags.push_back(restoreTag);
-					restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
+					//MX: restore the key range
+					struct RestoreRequest restoreRequest(restoreIndex, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked, g_random->randomUniqueID());
+					tr1.set(restoreRequestKeyFor(restoreRequest.index), restoreRequestValue(restoreRequest));
+
+					//restores.push_back(backupAgent.restore(cx, restoreTag, KeyRef(lastBackupContainer->getURL()), true, targetVersion, true, range, Key(), Key(), self->locked));
 				}
+				tr1.set(restoreRequestTriggerKey, restoreRequestTriggerValue(self->backupRanges.size()));
+				wait(tr1.commit());
+				//assert( 0 ); // Error on purpose
 				
 				// Sometimes kill and restart the restore
 				if(BUGGIFY) {
@@ -425,7 +557,38 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 					}
 				}
 
-				wait(waitForAll(restores));
+				//MX: Should wait on all restore before proceeds
+				//TODO:
+				loop {
+					state Transaction tr2(cx);
+					tr2.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+					tr2.setOption(FDBTransactionOptions::LOCK_AWARE);
+					try {
+						TraceEvent("CheckRestoreRequestDoneMX");
+						state Optional<Value> numFinished = wait(tr2.get(restoreRequestDoneKey));
+						if ( !numFinished.present() ) { // restore has not been finished yet
+							TraceEvent("CheckRestoreRequestDone").detail("SecondsOfWait", 5);
+							wait( delay(5.0) );
+							continue;
+						}
+						int num = decodeRestoreRequestDoneValue(numFinished.get());
+						TraceEvent("RestoreRequestKeyDoneFinished").detail("NumFinished", num);
+						printf("RestoreRequestKeyDone, numFinished:%d\n", num);
+						tr2.clear(restoreRequestDoneKey);
+						wait( tr2.commit() );
+						break;
+					} catch( Error &e ) {
+						TraceEvent("CheckRestoreRequestDoneErrorMX").detail("ErrorInfo", e.what());
+						wait( tr2.onError(e) );
+					}
+
+				}
+
+				wait(checkDB(cx, "FinishRestore", self));
+
+				if ( !restores.empty() ) {
+					wait(waitForAll(restores));
+				}
 
 				for (auto &restore : restores) {
 					assert(!restore.isError());
@@ -469,8 +632,6 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 
 				try {
 					tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-
-
 
 					// Check the left over tasks
 					// We have to wait for the list to empty since an abort and get status

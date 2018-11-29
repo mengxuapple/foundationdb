@@ -48,8 +48,12 @@ struct applyMutationsData {
 static void applyMetadataMutations(UID const& dbgid, Arena &arena, VectorRef<MutationRef> const& mutations, IKeyValueStore* txnStateStore, LogPushData* toCommit, bool *confChange, Reference<ILogSystem> logSystem = Reference<ILogSystem>(), Version popVersion = 0,
 	KeyRangeMap<std::set<Key> >* vecBackupKeys = NULL, KeyRangeMap<ServerCacheInfo>* keyInfo = NULL, std::map<Key, applyMutationsData>* uid_applyMutationsData = NULL, RequestStream<CommitTransactionRequest> commit = RequestStream<CommitTransactionRequest>(),
 	Database cx = Database(), NotifiedVersion* commitVersion = NULL, std::map<UID, Reference<StorageInfo>>* storageCache = NULL, std::map<Tag, Version>* tag_popped = NULL, bool initialCommit = false ) {
+	TraceEvent("ApplyMetadataMutations_MX").detail("MutationSize", mutations.size());
+			//.detail("ApplyMutationsEndRangeBegin", applyMutationsEndRange.begin.printable())
+			//.detail("ApplyMutationsEndRangeEnd", applyMutationsEndRange.end.printable());;
 	for (auto const& m : mutations) {
 		//TraceEvent("MetadataMutation", dbgid).detail("M", m.toString());
+//		TraceEvent("MetadataMutation_MX", dbgid).detail("M", m.toString());
 
 		if (m.param1.size() && m.param1[0] == systemKeys.begin[0] && m.type == MutationRef::SetValue) {
 			if(m.param1.startsWith(keyServersPrefix)) {
@@ -183,6 +187,9 @@ static void applyMetadataMutations(UID const& dbgid, Arena &arena, VectorRef<Mut
 				if(!initialCommit) txnStateStore->set(KeyValueRef(m.param1, m.param2));
 			}
 			else if (m.param1.startsWith(applyMutationsEndRange.begin)) {
+//				TraceEvent("ApplyMetadataMutationRecovery_MX").detail("M", m.toString())
+//					.detail("ApplyMutationsEndRangeBegin", applyMutationsEndRange.begin.printable())
+//					.detail("ApplyMutationsEndRangeEnd", applyMutationsEndRange.end.printable());
 				if(!initialCommit) txnStateStore->set(KeyValueRef(m.param1, m.param2));
 				if(uid_applyMutationsData != NULL) {
 					Key uid = m.param1.removePrefix(applyMutationsEndRange.begin);

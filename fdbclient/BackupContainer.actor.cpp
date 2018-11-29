@@ -217,7 +217,11 @@ public:
 	}
 
 	Future<Reference<IBackupFile>> writeLogFile(Version beginVersion, Version endVersion, int blockSize) {
-		return writeFile(logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize));
+		std::string fileName = logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize);
+		printf("---Log---WriteLogFilename:%s\n", fileName.c_str());
+		TraceEvent("WriteLogFile").detail("Filename", fileName);
+		return writeFile(fileName);
+		//return writeFile(logVersionFolderString(beginVersion) + format("log,%lld,%lld,%s,%d", beginVersion, endVersion, g_random->randomUniqueID().toString().c_str(), blockSize));
 	}
 
 	Future<Reference<IBackupFile>> writeRangeFile(Version version, int blockSize) {
@@ -900,6 +904,8 @@ public:
 		// can't be used because backup files are read-only.  Cached mode can only help during restore task retries handled
 		// by the same process that failed the first task execution anyway, which is a very rare case.
 		#endif
+		printf("readfile %s\n", fullPath.c_str());
+		TraceEvent("ReadFile").detail("FileFullPath", fullPath);
 		return IAsyncFileSystem::filesystem()->open(fullPath, flags, 0644);
 	}
 

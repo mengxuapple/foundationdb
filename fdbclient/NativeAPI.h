@@ -57,7 +57,6 @@ struct NetworkOptions {
 	{ }
 };
 
-
 class Database {
 public:
 	Database() {}  // an uninitialized database can be destructed or reassigned safely; that's it
@@ -167,10 +166,11 @@ struct TransactionOptions {
 };
 
 struct TransactionInfo {
-	Optional<UID> debugID;
+	Optional<UID> debugID; //MX: debug transaction
 	int taskID;
 
 	explicit TransactionInfo( int taskID ) : taskID( taskID ) {}
+	//explicit TransactionInfo( int taskID ) : taskID( taskID ) {debugID = UID();}
 };
 
 struct TransactionLogInfo : public ReferenceCounted<TransactionLogInfo>, NonCopyable {

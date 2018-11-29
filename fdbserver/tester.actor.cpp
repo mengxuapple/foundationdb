@@ -35,7 +35,9 @@
 #include "fdbclient/FailureMonitorClient.h"
 #include "CoordinationInterface.h"
 #include "fdbclient/ManagementAPI.h"
+#include "RestoreInterface.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
+
 
 using namespace std;
 
@@ -678,11 +680,13 @@ ACTOR Future<DistributedTestResults> runWorkload( Database cx, std::vector< Test
 
 		state std::vector< Future<bool> > checks;
 		TraceEvent("CheckingResults");
-		printf("checking tests...\n");
+		printf("checking tests... num_workloads:%d\n", workloads.size());
 		for(int i= 0; i < workloads.size(); i++)
 			checks.push_back( workloads[i].check.template getReply<bool>() );
 		wait( waitForAll( checks ) );
-		
+		printf("checking tests DONE num_workloads:%d\n", workloads.size());
+
+
 		for(int i = 0; i < checks.size(); i++) {
 			if(checks[i].get())
 				success++;
@@ -994,6 +998,7 @@ vector<TestSpec> readTests( ifstream& ifs ) {
 	return result;
 }
 
+//MX: The function that invokes the test cases
 ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControllerFullInterface>>> cc, Reference<AsyncVar<Optional<struct ClusterInterface>>> ci, vector< TesterInterface > testers, vector<TestSpec> tests, StringRef startingConfiguration, LocalityData locality ) {
 	state Database cx;
 	state Reference<AsyncVar<ServerDBInfo>> dbInfo( new AsyncVar<ServerDBInfo> );
@@ -1034,6 +1039,22 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 		cx = _cx;
 	}
 
+	//MX: invoke our restore simple example
+//	Future<Optional<Void>> f;
+//	if ( useDB ) {
+		//f = stopAfter( restoreAgent(cx, locality) );
+//		TraceEvent("RestoreAgentTesterStart").detail("AgentsNumber", "2");
+//		printf("RestoreAgentTesterStart, AgentNum:%d\n", 2);
+//		restoreAgentDB(cx, locality);
+//		restoreAgentDB(cx, locality);
+//		TraceEvent("RestoreAgentTesterEnd").detail("AgentsNumber", "2");
+//		printf("RestoreAgentTesterEnd, AgentNum:%d\n", 2);
+//		if(f.isValid() && f.isReady() && !f.isError() && !f.get().present()) {
+//			//rc = FDB_EXIT_ERROR;
+//			TraceEvent(SevError, "RestoreAgentError").detail("ReturnValue", "Following").detail("IsValid", f.isValid());
+//		}
+//	}
+
 	state Future<Void> disabler = disableConnectionFailuresAfter(450, "Tester");
 
 	//Change the configuration (and/or create the database) if necessary
@@ -1060,7 +1081,9 @@ ACTOR Future<Void> runTests( Reference<AsyncVar<Optional<struct ClusterControlle
 	TraceEvent("TestsExpectedToPass").detail("Count", tests.size());
 	state int idx = 0;
 	for(; idx < tests.size(); idx++ ) {
+		printf("Run test:%s start\n", tests[idx].title.toString().c_str());
 		bool ok = wait( runTest( cx, testers, tests[idx], dbInfo ) );
+		printf("Run test:%s Done. ok:%d\n", tests[idx].title.toString().c_str(), ok);
 		// do we handle a failure here?
 	}
 
@@ -1155,6 +1178,7 @@ ACTOR Future<Void> runTests( Reference<ClusterConnectionFile> connFile, test_typ
 		ifs.close();
 	}
 
+	//MX: Run test from here
 	Future<Void> tests;
 	if (at == TEST_HERE) {
 		Reference<AsyncVar<ServerDBInfo>> db( new AsyncVar<ServerDBInfo> );

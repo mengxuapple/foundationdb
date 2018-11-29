@@ -259,7 +259,13 @@ ACTOR Future<ISimulator::KillType> simulatedFDBDRebooter(
 				Future<Void> fd = fdbd( connFile, localities, processClass, *dataFolder, *coordFolder, 500e6, "", "");
 				Future<Void> backup = runBackupAgents ? runBackup(connFile) : Future<Void>(Never());
 				Future<Void> dr = runBackupAgents ? runDr(connFile) : Future<Void>(Never());
+				//MX: minic backup
+//
+//				TraceEvent("RestoreAgent").detail("CreatedInSimluatedClusterActor", "MX");
+//				printf("ClusterFile: %s\n", connFile->getFilename().c_str());
+//				Future<Void> restore1 = runBackupAgents ? restoreAgent(connFile, localities) : Future<Void>(Never());
 
+				//wait(listen || fd || success(onShutdown) || backup || dr || restore1);
 				wait(listen || fd || success(onShutdown) || backup || dr);
 			} catch (Error& e) {
 				// If in simulation, if we make it here with an error other than io_timeout but enASIOTimedOut is set then somewhere an io_timeout was converted to a different error.
@@ -370,6 +376,7 @@ ACTOR Future<Void> simulatedMachine(
 		bool useSeedFile,
 		bool runBackupAgents)
 {
+	//MX: runBackupAgents is set true in caller: setupSimulatedSystem
 	state int bootCount = 0;
 	state std::vector<std::string> myFolders;
 	state std::vector<std::string> coordFolders;
