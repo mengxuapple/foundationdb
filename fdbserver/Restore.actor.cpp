@@ -41,6 +41,7 @@
 #include <algorithm>
 
 const int min_num_workers = 10; //10; // TODO: This can become a configuration param later
+const int ratio_loader_to_applier = 1; // the ratio of loader over applier. The loader number = total worker * (ratio /  (ratio + 1) )
 
 class RestoreConfig;
 struct RestoreData; // Only declare the struct exist but we cannot use its field
@@ -113,7 +114,6 @@ std::vector<MutationRef> mOps;
 
 
 void printGlobalNodeStatus(Reference<RestoreData>);
-
 
 
 std::vector<std::string> RestoreRoleStr = {"Invalid", "Master", "Loader", "Applier"};
@@ -513,6 +513,61 @@ namespace parallelFileRestore {
 
 }
 
+// CMDUID implementation
+void CMDUID::initPhase(RestoreCommandEnum phase) {
+	part[0] = (uint64_t) phase;
+	part[1] = 0;
+}
+
+void CMDUID::nextPhase() {
+	part[0]++;
+	part[1] = 0;
+}
+
+void CMDUID::nextCmd() {
+	part[1]++;
+}
+
+RestoreCommandEnum CMDUID::getPhase() {
+	return (RestoreCommandEnum) part[0];
+}
+
+
+uint64_t CMDUID::getIndex() {
+	return part[1];
+}
+
+std::string CMDUID::toString() const {
+	// part[0] is phase id, part[1] is index id in that phase
+	return format("%016llx||%016llx", part[0], part[1]);
+}
+
+
+// TODO: Use switch case to get Previous Cmd
+RestoreCommandEnum getPreviousCmd(RestoreCommandEnum curCmd) {
+	return (RestoreCommandEnum) ((int) curCmd - 1);
+}
+
+// Log error message when the command is unexpected
+void logUnexpectedCmd(RestoreCommandEnum expected, RestoreCommandEnum received, CMDUID &cmdId) {
+	fprintf(stderr, "[Warning] Expected cmd:%d(%s), Received cmd:%d(%s) Received CmdUID:%s\n",
+			expected, "[TODO]", received, "[TODO]", cmdId.toString().c_str());
+}
+
+// Log  message when we receive a command from the old phase
+void logExpectedOldCmd(RestoreCommandEnum current, RestoreCommandEnum received, CMDUID &cmdId) {
+	fprintf(stdout, "[Warning] Current cmd:%d(%s), Received old cmd:%d(%s) Received CmdUID:%s\n",
+			current, "[TODO]", received, "[TODO]", cmdId.toString().c_str());
+}
+
+#define DEBUG_FAST_RESTORE 1
+
+#ifdef DEBUG_FAST_RESTORE
+#define dbprintf_rs(fmt, args...)	printf(fmt, ## args);
+#else
+#define dbprintf_rs(fmt, args...)
+#endif
+
 // TODO: RestoreData
 // RestoreData is the context for each restore process (worker and master)
 struct RestoreData : NonCopyable, public ReferenceCounted<RestoreData>  {
@@ -577,12 +632,20 @@ struct RestoreData : NonCopyable, public ReferenceCounted<RestoreData>  {
 	std::map<Standalone<StringRef>, Standalone<StringRef>> mutationMap; //key is the unique identifier for a batch of mutation logs at the same version
 	std::map<Standalone<StringRef>, uint32_t> mutationPartMap; //Record the most recent
 
+	// Command id to record the progress
+	CMDUID cmdID;
+
 	std::string getRole() {
 		return getRoleStr(localNodeStatus.role);
 	}
 
 	std::string getNodeID() {
 		return localNodeStatus.nodeID.toString();
+	}
+
+	// Describe the node information
+	std::string describeNode() {
+		return "[Role:" + getRoleStr(localNodeStatus.role) + " NodeID:" + localNodeStatus.nodeID.toString() + "]";
 	}
 
 	void resetPerVersionBatch() {
@@ -593,6 +656,10 @@ struct RestoreData : NonCopyable, public ReferenceCounted<RestoreData>  {
 		kvOps.clear();
 		mutationMap.clear();
 		mutationPartMap.clear();
+	}
+
+	RestoreData() {
+		cmdID.initPhase(RestoreCommandEnum::Init);
 	}
 
 	~RestoreData() {
@@ -1370,11 +1437,11 @@ ACTOR static Future<Void> prepareRestoreFilesV2(Reference<RestoreData> restoreDa
  	return Void();
 }
 
-ACTOR Future<Void> setWorkerInterface(Reference<RestoreData> restoreData, Database cx) {
+ACTOR Future<Void> setWorkerInterface(Reference<RestoreData> rd, Database cx) {
  	state Transaction tr(cx);
 
 	state vector<RestoreCommandInterface> agents; // agents is cmdsInterf
-	printf("[INFO][Worker] Node:%s Get the interface for all workers\n", restoreData->getNodeID().c_str());
+	printf("[INFO][Worker] Node:%s Get the interface for all workers\n", rd->describeNode().c_str());
 	loop {
 		try {
 			tr.reset();
@@ -1392,10 +1459,10 @@ ACTOR Future<Void> setWorkerInterface(Reference<RestoreData> restoreData, Databa
 			}
 			wait( delay(5.0) );
 		} catch( Error &e ) {
-			printf("[WARNING] Node:%s setWorkerInterface() transaction error:%s\n", restoreData->getNodeID().c_str(), e.what());
+			printf("[WARNING] Node:%s setWorkerInterface() transaction error:%s\n", rd->describeNode().c_str(), e.what());
 			wait( tr.onError(e) );
 		}
-		printf("[WARNING] setWorkerInterface should always succeeed in the first loop! Something goes wrong!\n");
+		printf("[WARNING] Node:%s setWorkerInterface should always succeed in the first loop! Something goes wrong!\n", rd->describeNode().c_str());
 	};
 
 	return Void();
@@ -1403,13 +1470,14 @@ ACTOR Future<Void> setWorkerInterface(Reference<RestoreData> restoreData, Databa
 
 
 ////--- Restore Functions for the master role
+//// --- Configure roles
 // Set roles (Loader or Applier) for workers
 // The master node's localNodeStatus has been set outside of this function
-ACTOR Future<Void> configureRoles(Reference<RestoreData> restoreData, Database cx)  { //, VectorRef<RestoreInterface> ret_agents
+ACTOR Future<Void> configureRoles(Reference<RestoreData> rd, Database cx)  { //, VectorRef<RestoreInterface> ret_agents
 	state Transaction tr(cx);
 
 	state vector<RestoreCommandInterface> agents; // agents is cmdsInterf
-	printf("[INFO][Master] Start configuring roles for workers\n");
+	printf("%s:Start configuring roles for workers\n", rd->describeNode().c_str());
 	loop {
 		try {
 			tr.reset();
@@ -1422,64 +1490,85 @@ ACTOR Future<Void> configureRoles(Reference<RestoreData> restoreData, Database c
 				for(auto& it : agentValues) {
 					agents.push_back(BinaryReader::fromStringRef<RestoreCommandInterface>(it.value, IncludeVersion()));
 					// Save the RestoreCommandInterface for the later operations
-					restoreData->workers_interface.insert(std::make_pair(agents.back().id(), agents.back()));
+					rd->workers_interface.insert(std::make_pair(agents.back().id(), agents.back()));
 				}
 				break;
 			}
-			printf("Wait for enough workers. Current num_workers:%d target num_workers:%d\n", agentValues.size(), min_num_workers);
+			printf("%s:Wait for enough workers. Current num_workers:%d target num_workers:%d\n",
+					rd->describeNode().c_str(), agentValues.size(), min_num_workers);
 			wait( delay(5.0) );
 		} catch( Error &e ) {
-			printf("[WARNING] configureRoles transaction error:%s\n", e.what());
+			printf("[WARNING]%s: configureRoles transaction error:%s\n", rd->describeNode().c_str(), e.what());
 			wait( tr.onError(e) );
 		}
 	}
 	ASSERT(agents.size() >= min_num_workers); // ASSUMPTION: We must have at least 1 loader and 1 applier
 	// Set up the role, and the global status for each node
 	int numNodes = agents.size();
-	int numLoader = numNodes / 2;
+	int numLoader = numNodes * ratio_loader_to_applier / (ratio_loader_to_applier + 1);
 	int numApplier = numNodes - numLoader;
 	if (numLoader <= 0 || numApplier <= 0) {
 		ASSERT( numLoader > 0 ); // Quick check in correctness
 		ASSERT( numApplier > 0 );
-		fprintf(stderr, "[ERROR] not enough nodes for loader and applier. numLoader:%d, numApplier:%d\n", numLoader, numApplier);
+		fprintf(stderr, "[ERROR] not enough nodes for loader and applier. numLoader:%d, numApplier:%d, ratio_loader_to_applier:%d, numAgents:%d\n", numLoader, numApplier, ratio_loader_to_applier, numNodes);
 	} else {
-		printf("[INFO][Master] Configure roles numWorkders:%d numLoader:%d numApplier:%d\n", numNodes, numLoader, numApplier);
+		printf("[INFO]%s: Configure roles numWorkders:%d numLoader:%d numApplier:%d\n", rd->describeNode().c_str(), numNodes, numLoader, numApplier);
 	}
+
 	// The first numLoader nodes will be loader, and the rest nodes will be applier
+	int index = 0;
 	for (int i = 0; i < numLoader; ++i) {
-		restoreData->globalNodeStatus.push_back(RestoreNodeStatus());
-		restoreData->globalNodeStatus.back().init(RestoreRole::Loader);
-		restoreData->globalNodeStatus.back().nodeID = agents[i].id();
+		rd->globalNodeStatus.push_back(RestoreNodeStatus());
+		rd->globalNodeStatus.back().init(RestoreRole::Loader);
+		rd->globalNodeStatus.back().nodeID = agents[i].id();
+		rd->globalNodeStatus.back().index = index;
+		index++;
 	}
 
 	for (int i = numLoader; i < numNodes; ++i) {
-		restoreData->globalNodeStatus.push_back(RestoreNodeStatus());
-		restoreData->globalNodeStatus.back().init(RestoreRole::Applier);
-		restoreData->globalNodeStatus.back().nodeID = agents[i].id();
+		rd->globalNodeStatus.push_back(RestoreNodeStatus());
+		rd->globalNodeStatus.back().init(RestoreRole::Applier);
+		rd->globalNodeStatus.back().nodeID = agents[i].id();
+		rd->globalNodeStatus.back().index = index;
+		index++;
 	}
+
 	// Set the last Applier as the master applier
-	restoreData->masterApplier = restoreData->globalNodeStatus.back().nodeID;
-	printf("[INFO][Master] masterApplier ID:%s\n", restoreData->masterApplier.toString().c_str());
+	rd->masterApplier = rd->globalNodeStatus.back().nodeID;
+	printf("[INFO][Master] masterApplier ID:%s\n", rd->masterApplier.toString().c_str());
 
 	state int index = 0;
 	state RestoreRole role;
 	state UID nodeID;
 	printf("[INFO][Master] Start configuring roles for workers\n");
+	rd->cmdID.initPhase(RestoreCommandEnum::Set_Role);
+
 	loop {
-		wait(delay(1.0));
-		std::vector<Future<RestoreCommandReply>> cmdReplies;
-		for(auto& cmdInterf : agents) {
-			role = restoreData->globalNodeStatus[index].role;
-			nodeID = restoreData->globalNodeStatus[index].nodeID;
-			printf("[CMD] Set role (%s) to node (index=%d uid=%s)\n",
-					getRoleStr(role).c_str(), index, nodeID.toString().c_str());
-			cmdReplies.push_back( cmdInterf.cmd.getReply(RestoreCommand(RestoreCommandEnum::Set_Role, nodeID, role, restoreData->masterApplier)));
-			index++;
-		}
-		std::vector<RestoreCommandReply> reps = wait( getAll(cmdReplies ));
-		for (int i = 0; i < reps.size(); ++i) {
-			printf("[INFO] Get restoreCommandReply value:%s\n",
-					reps[i].id.toString().c_str());
+		try {
+			wait(delay(1.0));
+			std::vector<Future<RestoreCommandReply>> cmdReplies;
+			for(auto& cmdInterf : agents) {
+				role = rd->globalNodeStatus[index].role;
+				nodeID = rd->globalNodeStatus[index].nodeID;
+				printf("[CMD:%s] Set role (%s) to node (index=%d uid=%s)\n", rd->cmdID.toString().c_str(),
+						getRoleStr(role).c_str(), index, nodeID.toString().c_str());
+				cmdReplies.push_back( cmdInterf.cmd.getReply(RestoreCommand(RestoreCommandEnum::Set_Role, rd->cmdId, nodeID, index, role, rd->masterApplier)));
+				index++;
+				rd->cmdId.nextCmd();
+			}
+			std::vector<RestoreCommandReply> reps = wait(timeoutError(getAll(cmdReplies), FastRestore_Failure_Timeout));
+			for (int i = 0; i < reps.size(); ++i) {
+				printf("[INFO] CMDReply for CMD:%s, node:%s\n", reps[i].cmdId.toString().c_str(),
+						reps[i].id.toString().c_str());
+			}
+		} catch (Error e) {
+			// TODO: Handle the command reply timeout error
+			if (e.code() != error_code_io_timeout) {
+				printf(stderr, "[ERROR] Commands before cmdID:%s timeout\n", rd->cmdId.toString().c_str());
+			} else {
+				printf(stderr, "[ERROR] Commands before cmdID:%s error. error code:%d, error message:%s\n",
+						rd->cmdId.toString().c_str(), e.code(), e.what());
+			}
 		}
 
 		break;
@@ -1487,77 +1576,98 @@ ACTOR Future<Void> configureRoles(Reference<RestoreData> restoreData, Database c
 
 	// Notify node that all nodes' roles have been set
 	printf("[INFO][Master] Notify all workers their roles have been set\n");
+	rd->cmdId.nextPhase();
+	ASSERT( rd->cmdId.getPhase() = RestoreCommandEnum::Set_Role_Done );
+	ASSERT( rd->cmdId.getIndex() = 0 );
+
 	index = 0;
 	loop {
-		wait(delay(1.0));
+		try {
 
-		std::vector<Future<RestoreCommandReply>> cmdReplies;
-		for(auto& cmdInterf : agents) {
-			role = restoreData->globalNodeStatus[index].role;
-			nodeID = restoreData->globalNodeStatus[index].nodeID;
-			printf("[CMD] Notify the finish of set role (%s) to node (index=%d uid=%s)\n",
-					getRoleStr(role).c_str(), index, nodeID.toString().c_str());
-			cmdReplies.push_back( cmdInterf.cmd.getReply(RestoreCommand(RestoreCommandEnum::Set_Role_Done, nodeID, role)));
-			index++;
-		}
-		std::vector<RestoreCommandReply> reps = wait( getAll(cmdReplies ));
-		for (int i = 0; i < reps.size(); ++i) {
-			printf("[INFO] Get restoreCommandReply value:%s for Set_Role_Done\n",
-					reps[i].id.toString().c_str());
-		}
+			wait(delay(1.0));
 
-		break;
+			std::vector<Future<RestoreCommandReply>> cmdReplies;
+			for(auto& cmdInterf : agents) {
+				role = rd->globalNodeStatus[index].role;
+				nodeID = rd->globalNodeStatus[index].nodeID;
+				rd->cmdId.nextIndex();
+				printf("[CMD:%s] Notify the finish of set role (%s) to node (index=%d uid=%s)\n", rd->cmdId.toString().c_str()
+						getRoleStr(role).c_str(), index, nodeID.toString().c_str());
+				cmdReplies.push_back( cmdInterf.cmd.getReply(RestoreCommand(RestoreCommandEnum::Set_Role_Done, rd->cmdId, nodeID, index, role)));
+				index++;
+			}
+			std::vector<RestoreCommandReply> reps = wait( timeoutError( getAll(cmdReplies), FastRestore_Failure_Timeout ) );
+			for (int i = 0; i < reps.size(); ++i) {
+				printf("[INFO] CMDReply for CMD:%s, node:%s for Set_Role_Done\n", reps[i].cmdId.toString().c_str()
+						reps[i].id.toString().c_str());
+			}
+
+			// TODO: Write to DB the worker's roles
+
+			break;
+
+		} catch (Error e) {
+			// TODO: Handle the command reply timeout error
+			if (e.code() != error_code_io_timeout) {
+				printf(stderr, "[ERROR] Commands before cmdID:%s timeout\n", rd->cmdId.toString().c_str());
+			} else {
+				printf(stderr, "[ERROR] Commands before cmdID:%s error. error code:%d, error message:%s\n",
+						rd->cmdId.toString().c_str(), e.code(), e.what());
+			}
+		}
 	}
 
-	//Sanity check roles configuration
-	std::pair<int, int> numWorkers = getNumLoaderAndApplier(restoreData);
+	// Sanity check roles configuration
+	std::pair<int, int> numWorkers = getNumLoaderAndApplier(rd);
 	int numLoaders = numWorkers.first;
 	int numAppliers = numWorkers.second;
-	ASSERT( restoreData->globalNodeStatus.size() > 0 );
+	ASSERT( rd->globalNodeStatus.size() > 0 );
 	ASSERT( numLoaders > 0 );
 	ASSERT( numAppliers > 0 );
 
-	printf("Role:%s finish configure roles\n", getRoleStr(restoreData->localNodeStatus.role).c_str());
+	printf("Role:%s finish configure roles\n", getRoleStr(rd->localNodeStatus.role).c_str());
 	return Void();
-
 }
+
 
 // Handle restore command request on workers
 //ACTOR Future<Void> configureRolesHandler(Reference<RestoreData> restoreData, RestoreCommandInterface interf, Promise<Void> setRoleDone) {
-ACTOR Future<Void> configureRolesHandler(Reference<RestoreData> restoreData, RestoreCommandInterface interf) {
+ACTOR Future<Void> configureRolesHandler(Reference<RestoreData> rd, RestoreCommandInterface interf) {
 	printf("[INFO][Worker] Node: ID_unset yet, starts configureRolesHandler\n");
 	loop {
 		choose {
 			when(RestoreCommand req = waitNext(interf.cmd.getFuture())) {
-				printf("[INFO][Worker] Got Restore Command: cmd:%d UID:%s Role:%d(%s) localNodeStatus.role:%d\n",
-						req.cmd, req.id.toString().c_str(), (int) req.role, getRoleStr(req.role).c_str(),
+				printf("[INFO][Worker][Node:%s] Got Restore Command: CMDId:%s, cmd:%d nodeUID:%s Role:%d(%s) localNodeStatus.role:%d\n",
+						rd->describeNode().c_str(), req.cmdId.toString().c_str(), req.cmd,
+						req.id.toString().c_str(), (int) req.role, getRoleStr(req.role).c_str(),
 						restoreData->localNodeStatus.role);
 				if ( interf.id() != req.id ) {
-						printf("[WARNING] node:%s receive request with a different id:%s\n",
-							restoreData->localNodeStatus.nodeID.toString().c_str(), req.id.toString().c_str());
+						printf("[WARNING] CMDID:%s node:%s receive request with a different id:%s\n", req.cmdId.toString().c_str(),
+							rd->localNodeStatus.nodeID.toString().c_str(), req.id.toString().c_str());
 				}
 
 				if ( req.cmd == RestoreCommandEnum::Set_Role ) {
-					restoreData->localNodeStatus.init(req.role);
-					restoreData->localNodeStatus.nodeID = interf.id();
-					restoreData->masterApplier = req.masterApplier;
-					printf("[INFO][Worker] Set_Role localNodeID to %s, set role to %s\n",
-							restoreData->localNodeStatus.nodeID.toString().c_str(), getRoleStr(restoreData->localNodeStatus.role).c_str());
+					rd->localNodeStatus.init(req.role);
+					rd->localNodeStatus.nodeID = interf.id();
+					rd->localNodeStatus.nodeIndex = req.nodeIndex;
+					rd->masterApplier = req.masterApplier;
+					printf("[INFO][Worker][Node:%s] Set_Role to %s, nodeIndex:%d\n", rd->describeNode().c_str(),
+							getRoleStr(restoreData->localNodeStatus.role).c_str(), rd->localNodeStatus.nodeIndex);
 					req.reply.send(RestoreCommandReply(interf.id()));
 				} else if (req.cmd == RestoreCommandEnum::Set_Role_Done) {
-					printf("[INFO][Worker] Set_Role_Done NodeID:%s (interf ID:%s) set to role:%s Done.\n",
-							restoreData->localNodeStatus.nodeID.toString().c_str(),
+					printf("[INFO][Worker][Node:%s] Set_Role_Done (node interf ID:%s) current_role:%s.\n",
+							rd->describeNode().c_str(),
 							interf.id().toString().c_str(),
 							getRoleStr(restoreData->localNodeStatus.role).c_str());
 					req.reply.send(RestoreCommandReply(interf.id())); // master node is waiting
 					break;
-//					if (setRoleDone.canBeSet()) {
-//						setRoleDone.send(Void());
-//					}
 				} else {
-					printf("[WARNING] configureRolesHandler() master is wating on cmd:%d for node:%s due to message lost, we reply to it.\n", req.cmd, restoreData->getNodeID().c_str());
+					if ( getPreviousCmd(RestoreCommandEnum::Set_Role_Done) == req.cmd ) {
+						logExpectedOldCmd(RestoreCommandEnum::Set_Role_Done, req.cmd, req.cmdId);
+					} else {
+						logUnexpectedCmd(RestoreCommandEnum::Set_Role_Done, req.cmd, req.cmdId);
+					}
 					req.reply.send(RestoreCommandReply(interf.id())); // master node is waiting
-					printf("[WARNING] configureRolesHandler() Restore command %d is invalid. Master will be stuck IF we don't send the reply\n", req.cmd);
 				}
 			}
 		}
@@ -1566,6 +1676,11 @@ ACTOR Future<Void> configureRolesHandler(Reference<RestoreData> restoreData, Res
 	// This actor never returns. You may cancel it in master
 	return Void();
 }
+
+
+
+
+
 
 void printApplierKeyRangeInfo(std::map<UID, Standalone<KeyRangeRef>>  appliers) {
 	printf("[INFO] appliers num:%d\n", appliers.size());
@@ -3254,7 +3369,7 @@ ACTOR Future<Void> _restoreWorker(Database cx_input, LocalityData locality) {
 	interf.initEndpoints();
 	state Optional<RestoreCommandInterface> leaderInterf;
 	//Global data for the worker
-	state Reference<RestoreData> restoreData = Reference<RestoreData>(new RestoreData());
+	state Reference<RestoreData> rd = Reference<RestoreData>(new RestoreData());
 
 	state Transaction tr(cx);
 	loop {
@@ -3299,74 +3414,59 @@ ACTOR Future<Void> _restoreWorker(Database cx_input, LocalityData locality) {
 
 	//we are not the leader, so put our interface in the agent list
 	if(leaderInterf.present()) {
-		// Writing the restoreWorkerKeyFor must in the same transaction with reading the leaderInter.
-		// The transaction may fail!
-//		loop {
-//			try {
-//				tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-//				tr.setOption(FDBTransactionOptions::LOCK_AWARE);
-//				//tr.set(restoreWorkerKeyFor(interf.id()), BinaryWriter::toValue(interf, IncludeVersion()));
-//				printf("[Worker] Worker restore interface id:%s\n", interf.id().toString().c_str());
-//				tr.set(restoreWorkerKeyFor(interf.id()), restoreCommandInterfaceValue(interf));
-//				wait(tr.commit());
-//				break;
-//			} catch( Error &e ) {
-//				printf("[WARNING][Worker] Transaction of register worker interface fails for worker:%s\n", interf.id().toString().c_str());
-//				wait( tr.onError(e) );
-//			}
-//		}
-
 		// Step: configure its role
 		printf("[INFO][Worker] NodeID:%s Configure its role\n", interf.id().toString().c_str());
-		state Promise<Void> setRoleDone;
-//		state Future<Void> roleHandler = configureRolesHandler(restoreData, interf, setRoleDone);
+//		state Promise<Void> setRoleDone;
+//		state Future<Void> roleHandler = configureRolesHandler(rd, interf, setRoleDone);
 //		wait(setRoleDone.getFuture());
-		wait( configureRolesHandler(restoreData, interf));
+		wait( configureRolesHandler(rd, interf));
+
+		//TODO: Log restore status to DB
 
 		printf("[INFO][Worker] NodeID:%s is configure to %s\n",
-				restoreData->localNodeStatus.nodeID.toString().c_str(), getRoleStr(restoreData->localNodeStatus.role).c_str());
+				rd->localNodeStatus.nodeID.toString().c_str(), getRoleStr(rd->localNodeStatus.role).c_str());
 
 		// Step: Find other worker's interfaces
 		// NOTE: This must be after wait(configureRolesHandler()) because we must ensure all workers have registered their interfaces into DB before we can read the interface.
-		wait( setWorkerInterface(restoreData, cx) );
+		wait( setWorkerInterface(rd, cx) );
 
 		// Step: prepare restore info: applier waits for the responsible keyRange,
 		// loader waits for the info of backup block it needs to load
 		state int restoreBatch = 0;
 		loop {
-			printf("[Batch:%d] Start...\n", restoreBatch);
-			restoreData->resetPerVersionBatch();
-			if ( restoreData->localNodeStatus.role == RestoreRole::Applier ) {
-				if ( restoreData->masterApplier.toString() == restoreData->localNodeStatus.nodeID.toString() ) {
+			printf("[Batch:%d] Node:%s Start...\n", restoreBatch, rd->describeNode().c_str());
+			rd->resetPerVersionBatch();
+			if ( rd->localNodeStatus.role == RestoreRole::Applier ) {
+				if ( rd->masterApplier.toString() == rd->localNodeStatus.nodeID.toString() ) {
 					printf("[Batch:%d][INFO][Master Applier] Waits for the mutations from the sampled backup data\n", restoreBatch);
-					wait(receiveSampledMutations(restoreData, interf));
-					wait(calculateApplierKeyRange(restoreData, interf));
+					wait(receiveSampledMutations(rd, interf));
+					wait(calculateApplierKeyRange(rd, interf));
 				}
 
 				printf("[Batch:%d][INFO][Applier] Waits for the assignment of key range\n", restoreBatch);
-				wait( assignKeyRangeToAppliersHandler(restoreData, interf) );
+				wait( assignKeyRangeToAppliersHandler(rd, interf) );
 
 				printf("[Batch:%d][INFO][Applier] Waits for the mutations parsed from loaders\n", restoreBatch);
-				wait( receiveMutations(restoreData, interf) );
+				wait( receiveMutations(rd, interf) );
 
 				printf("[Batch:%d][INFO][Applier] Waits for the cmd to apply mutations\n", restoreBatch);
-				wait( applyMutationToDB(restoreData, interf, cx) );
-			} else if ( restoreData->localNodeStatus.role == RestoreRole::Loader ) {
+				wait( applyMutationToDB(rd, interf, cx) );
+			} else if ( rd->localNodeStatus.role == RestoreRole::Loader ) {
 				printf("[Batch:%d][INFO][Loader] Waits to sample backup data\n", restoreBatch);
-				wait( sampleHandler(restoreData, interf, leaderInterf.get()) );
+				wait( sampleHandler(rd, interf, leaderInterf.get()) );
 
 				printf("[Batch:%d][INFO][Loader] Waits for appliers' key range\n", restoreBatch);
-				wait( notifyAppliersKeyRangeToLoaderHandler(restoreData, interf) );
-				printAppliersKeyRange(restoreData);
+				wait( notifyAppliersKeyRangeToLoaderHandler(rd, interf) );
+				printAppliersKeyRange(rd);
 
 				printf("[Batch:%d][INFO][Loader] Waits for the backup file assignment after reset processedFiles\n", restoreBatch);
-				restoreData->processedFiles.clear();
-				wait( loadingHandler(restoreData, interf, leaderInterf.get()) );
+				rd->processedFiles.clear();
+				wait( loadingHandler(rd, interf, leaderInterf.get()) );
 
 				//printf("[INFO][Loader] Waits for the command to ask applier to apply mutations to DB\n");
-				//wait( applyToDBHandler(restoreData, interf, leaderInterf.get()) );
+				//wait( applyToDBHandler(rd, interf, leaderInterf.get()) );
 			} else {
-				printf("[Batch:%d][ERROR][Worker] In an invalid role:%d\n", restoreData->localNodeStatus.role, restoreBatch);
+				printf("[Batch:%d][ERROR][Worker] In an invalid role:%d\n", rd->localNodeStatus.role, restoreBatch);
 			}
 
 			restoreBatch++;
@@ -3374,13 +3474,12 @@ ACTOR Future<Void> _restoreWorker(Database cx_input, LocalityData locality) {
 
 		// The workers' logic ends here. Should not proceed
 //		printf("[INFO][Worker:%s] LocalNodeID:%s Role:%s will exit now\n", interf.id().toString().c_str(),
-//				restoreData->localNodeStatus.nodeID.toString().c_str(), getRoleStr(restoreData->localNodeStatus.role).c_str());
+//				rd->localNodeStatus.nodeID.toString().c_str(), getRoleStr(rd->localNodeStatus.role).c_str());
 //		return Void();
 	}
 
 	//we are the leader
 	// We must wait for enough time to make sure all restore workers have registered their interfaces into the DB
-
 	printf("[INFO][Master] NodeID:%s Restore master waits for agents to register their workerKeys\n",
 			interf.id().toString().c_str());
 	wait( delay(10.0) );
@@ -3388,31 +3487,28 @@ ACTOR Future<Void> _restoreWorker(Database cx_input, LocalityData locality) {
 	//state vector<RestoreInterface> agents;
 	state VectorRef<RestoreInterface> agents;
 
-	restoreData->localNodeStatus.init(RestoreRole::Master);
-	restoreData->localNodeStatus.nodeID = interf.id();
+	rd->localNodeStatus.init(RestoreRole::Master);
+	rd->localNodeStatus.nodeID = interf.id();
 	printf("[INFO][Master]  NodeID:%s starts configuring roles for workers\n", interf.id().toString().c_str());
-	wait( configureRoles(restoreData, cx) );
-
-
-//	ASSERT(agents.size() > 0);
+	wait( configureRoles(rd, cx) );
 
 
 	state int restoreId = 0;
 	state int checkNum = 0;
 	loop {
-		printf("[INFO][Master]---Wait on restore requests...---\n");
+		printf("[INFO][Master]Node:%s---Wait on restore requests...---\n", rd->describeNode().c_str());
 		state Standalone<VectorRef<RestoreRequest>> restoreRequests = wait( collectRestoreRequests(cx) );
 
-		printf("[INFO][Master] ---Received  restore requests as follows---\n");
+		printf("[INFO][Master]Node:%s ---Received  restore requests as follows---\n", rd->describeNode().c_str());
 		// Print out the requests info
 		for ( auto &it : restoreRequests ) {
-			printf("\t[INFO][Master]RestoreRequest info:%s\n", it.toString().c_str());
+			printf("\t[INFO][Master]Node:%s RestoreRequest info:%s\n", rd->describeNode().c_str(), it.toString().c_str());
 		}
 
 		// Step: Perform the restore requests
 		for ( auto &it : restoreRequests ) {
 			TraceEvent("LeaderGotRestoreRequest").detail("RestoreRequestInfo", it.toString());
-			Version ver = wait( restoreMX(interf, restoreData, cx, it) );
+			Version ver = wait( restoreMX(interf, rd, cx, it) );
 		}
 
 		// Step: Notify the finish of the restore by cleaning up the restore keys
@@ -3556,7 +3652,7 @@ int restoreStatusIndex = 0;
 
 
 
-ACTOR static Future<Version> restoreMX(RestoreCommandInterface interf, Reference<RestoreData> restoreData, Database cx, RestoreRequest request) {
+ACTOR static Future<Version> restoreMX(RestoreCommandInterface interf, Reference<RestoreData> rd, Database cx, RestoreRequest request) {
 	state Key tagName = request.tagName;
 	state Key url = request.url;
 	state bool waitForComplete = request.waitForComplete;
@@ -3609,47 +3705,47 @@ ACTOR static Future<Version> restoreMX(RestoreCommandInterface interf, Reference
 //			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 
 			printf("===========Restore request start!===========\n");
-			wait( collectBackupFiles(restoreData, cx, request) );
-			constructFilesWithVersionRange(restoreData);
-			restoreData->files.clear();
+			wait( collectBackupFiles(rd, cx, request) );
+			constructFilesWithVersionRange(rd);
+			rd->files.clear();
 
 			// Sort the backup files based on end version.
-			sort(restoreData->allFiles.begin(), restoreData->allFiles.end());
-			printAllBackupFilesInfo(restoreData);
+			sort(rd->allFiles.begin(), rd->allFiles.end());
+			printAllBackupFilesInfo(rd);
 
-			buildForbiddenVersionRange(restoreData);
-			printForbiddenVersionRange(restoreData);
-			if ( isForbiddenVersionRangeOverlapped(restoreData) ) {
+			buildForbiddenVersionRange(rd);
+			printForbiddenVersionRange(rd);
+			if ( isForbiddenVersionRangeOverlapped(rd) ) {
 				printf("[ERROR] forbidden version ranges are overlapped! Check out the forbidden version range above\n");
 				ASSERT( 0 );
 			}
 
-			while ( curBackupFilesBeginIndex < restoreData->allFiles.size() ) {
+			while ( curBackupFilesBeginIndex < rd->allFiles.size() ) {
 				// Find the curBackupFilesEndIndex, such that the to-be-loaded files size (curWorkloadSize) is as close to loadBatchSizeThresholdB as possible,
 				// and curBackupFilesEndIndex must not belong to the forbidden version range!
-				Version endVersion =  restoreData->allFiles[curBackupFilesEndIndex].endVersion;
-				bool isRange = restoreData->allFiles[curBackupFilesEndIndex].isRange;
-				bool validVersion = !isVersionInForbiddenRange(restoreData, endVersion, isRange);
-				curWorkloadSize += restoreData->allFiles[curBackupFilesEndIndex].fileSize;
+				Version endVersion =  rd->allFiles[curBackupFilesEndIndex].endVersion;
+				bool isRange = rd->allFiles[curBackupFilesEndIndex].isRange;
+				bool validVersion = !isVersionInForbiddenRange(rd, endVersion, isRange);
+				curWorkloadSize += rd->allFiles[curBackupFilesEndIndex].fileSize;
 				printf("[DEBUG] Calculate backup files for a version batch: endVersion:%lld isRange:%d validVersion:%d curWorkloadSize:%.2fB\n",
 						endVersion, isRange, validVersion, curWorkloadSize);
-				if ((validVersion && curWorkloadSize >= loadBatchSizeThresholdB) || curBackupFilesEndIndex >= restoreData->allFiles.size()-1)  {
+				if ((validVersion && curWorkloadSize >= loadBatchSizeThresholdB) || curBackupFilesEndIndex >= rd->allFiles.size()-1)  {
 					//TODO: Construct the files [curBackupFilesBeginIndex, curBackupFilesEndIndex]
-					restoreData->files.clear();
+					rd->files.clear();
 					if ( curBackupFilesBeginIndex != curBackupFilesEndIndex ) {
 						for (int fileIndex = curBackupFilesBeginIndex; fileIndex <= curBackupFilesEndIndex; fileIndex++) {
-							restoreData->files.push_back(restoreData->allFiles[fileIndex]);
+							rd->files.push_back(rd->allFiles[fileIndex]);
 						}
 					} else {
-						restoreData->files.push_back(restoreData->allFiles[curBackupFilesBeginIndex]);
+						rd->files.push_back(rd->allFiles[curBackupFilesBeginIndex]);
 					}
-					printBackupFilesInfo(restoreData);
+					printBackupFilesInfo(rd);
 
 					curStartTime = now();
 
 					printf("------[Progress] restoreBatchIndex:%d, curWorkloadSize:%.2f------\n", restoreBatchIndex++, curWorkloadSize);
-					restoreData->resetPerVersionBatch();
-					wait( distributeWorkload(interf, restoreData, cx, request, restoreConfig) );
+					rd->resetPerVersionBatch();
+					wait( distributeWorkload(interf, rd, cx, request, restoreConfig) );
 
 					curEndTime = now();
 					curRunningTime = curEndTime - curStartTime;
@@ -3709,14 +3805,6 @@ ACTOR static Future<Version> restoreMX(RestoreCommandInterface interf, Reference
 
 	return targetVersion;
 }
-
-struct cmpForKVOps {
-	bool operator()(const Version& a, const Version& b) const {
-		return a < b;
-	}
-};
-
-
 
 //-------Helper functions
 std::string getHexString(StringRef input) {
