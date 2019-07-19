@@ -132,7 +132,7 @@ ACTOR Future<Void> updateServerMetrics( Reference<TCServerInfo> server ) {
 	return Void();
 }
 
-// Machine team information
+// TeamCollection's machine team information
 class TCMachineTeamInfo : public ReferenceCounted<TCMachineTeamInfo> {
 public:
 	vector<Reference<TCMachineInfo>> machines;
@@ -167,6 +167,7 @@ public:
 	bool operator==(TCMachineTeamInfo& rhs) const { return this->machineIDs == rhs.machineIDs; }
 };
 
+// TeamCollection's server team info.
 class TCTeamInfo : public ReferenceCounted<TCTeamInfo>, public IDataDistributionTeam {
 private:
 	vector< Reference<TCServerInfo> > servers;
@@ -3456,6 +3457,7 @@ ACTOR Future<Void> initializeStorage( DDTeamCollection* self, RecruitStorageRepl
 	return Void();
 }
 
+// Recruit a worker as a storage server
 ACTOR Future<Void> storageRecruiter( DDTeamCollection* self, Reference<AsyncVar<struct ServerDBInfo>> db ) {
 	state Future<RecruitStorageReply> fCandidateWorker;
 	state RecruitStorageRequest lastRequest;
@@ -3618,6 +3620,7 @@ ACTOR Future<Void> dataDistributionTeamCollection(
 			self->addActor.send(updateReplicasKey(self, self->includedDCs[0]));
 		}
 
+		// Q: Why doesn't storageRecruiter actor need to be assigned to a future as serverTeamRemover?
 		self->addActor.send(storageRecruiter( self, db ));
 		self->addActor.send(monitorStorageServerRecruitment( self ));
 		self->addActor.send(waitServerListChange( self, serverRemoved.getFuture() ));
