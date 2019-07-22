@@ -142,8 +142,10 @@ struct ShardInfo : ReferenceCounted<ShardInfo>, NonCopyable {
 		delete adding;
 	}
 
+	// newNotAssigned specifies the keys as a shard to be removed
 	static ShardInfo* newNotAssigned(KeyRange keys) { return new ShardInfo(keys, NULL, NULL); }
 	static ShardInfo* newReadWrite(KeyRange keys, StorageServer* data) { return new ShardInfo(keys, NULL, data); }
+	// newAdding adds keys to the storage server by fetchKeys
 	static ShardInfo* newAdding(StorageServer* data, KeyRange keys) { return new ShardInfo(keys, new AddingShard(data, keys), NULL); }
 	static ShardInfo* addingSplitLeft( KeyRange keys, AddingShard* oldShard) { return new ShardInfo(keys, new AddingShard(oldShard, keys), NULL); }
 
@@ -1769,20 +1771,24 @@ void applyMutation( StorageServer *self, MutationRef const& m, Arena& arena, Sto
 
 }
 
+// Remove range at version mLV from the storage server ss.
 void removeDataRange( StorageServer *ss, Standalone<VersionUpdateRef> &mLV, KeyRangeMap<Reference<ShardInfo>>& shards, KeyRangeRef range ) {
 	// modify the latest version of data to remove all sets and trim all clears to exclude range.
 	// Add a clear to mLV (mutationLog[data.getLatestVersion()]) that ensures all keys in range are removed from the disk when this latest version becomes durable
 	// mLV is also modified if necessary to ensure that split clears can be forgotten
 
 	MutationRef clearRange( MutationRef::ClearRange, range.begin, range.end );
+	// Q: Does addMutationToMutationLog() put the clearRange to tLog? In order to ensure data in the range on other servers are removed at the version mLV? 
 	clearRange = ss->addMutationToMutationLog( mLV, clearRange );
 
 	auto& data = ss->mutableData();
 
 	// Expand the range to the right to include other shards not in versionedData
+	// Q: Why was a shard not in versionedData? Why do we need to do this?
 	for( auto r = shards.rangeContaining(range.end); r != shards.ranges().end() && !r->value()->isInVersionedData(); ++r )
 		range = KeyRangeRef(range.begin, r->end());
 
+	// Q: Why do we need to create the endClear and beginClear? what is range.end and range.begin not engough?
 	auto endClear = data.atLatest().lastLess( range.end );
 	if (endClear && endClear->isClearTo() && endClear->getEndKey() > range.end ) {
 		// This clear has been bumped up to insertVersion==data.getLatestVersion and needs a corresponding mutation log entry to forget
@@ -1836,6 +1842,7 @@ void coalesceShards(StorageServer *data, KeyRangeRef keys) {
 	}
 }
 
+// Read DB (similar as a client) to get value in keys range at version.
 ACTOR Future<Standalone<RangeResultRef>> tryGetRange( Database cx, Version version, KeyRangeRef keys, GetRangeLimits limits, bool* isTooOld ) {
 	state Transaction tr( cx );
 	state Standalone<RangeResultRef> output;
@@ -1977,6 +1984,9 @@ snapHelper(StorageServer* data, MutationRef m, Version ver)
 	return Void();
 }
 
+// Read value in shard->keys range through transaction;
+// Set the read KV into data->storage.
+// The process is similar to that when a client reads a range from DB, except that fetchKeys has already got GRV.
 ACTOR Future<Void> fetchKeys( StorageServer *data, AddingShard* shard ) {
 	state TraceInterval interval("FetchKeys");
 	state KeyRange keys = shard->keys;
@@ -2024,6 +2034,7 @@ ACTOR Future<Void> fetchKeys( StorageServer *data, AddingShard* shard ) {
 		// Fetch keys gets called while the update actor is processing mutations. data->version will not be updated until all mutations for a version
 		// have been processed. We need to take the durableVersionLock to ensure data->version is greater than the version of the mutation which caused
 		// the fetch to be initiated.
+		// Q: Why do we need to "data->version is greater than the version of the mutation which caused the fetch to be initiated."?
 		wait( data->durableVersionLock.take() );
 
 		shard->phase = AddingShard::Fetching;
@@ -2308,6 +2319,9 @@ void ShardInfo::addMutation(Version version, MutationRef const& mutation) {
 enum ChangeServerKeysContext { CSK_UPDATE, CSK_RESTORE };
 const char* changeServerKeysContextName[] = { "Update", "Restore" };
 
+// Change keys the server (data) is responsible for.
+// For newly added shard to the server, the server will use fetchKeys() to move the data.
+// nowAssigned indicates if the keys are added to or removed from the server.
 void changeServerKeys( StorageServer* data, const KeyRangeRef& keys, bool nowAssigned, Version version, ChangeServerKeysContext context ) {
 	ASSERT( !keys.empty() );
 
@@ -2395,8 +2409,10 @@ void changeServerKeys( StorageServer* data, const KeyRangeRef& keys, bool nowAss
 				setAvailableStatus(data, range, true);
 			} else {
 				auto& shard = data->shards[range.begin];
-				if( !shard->assigned() || shard->keys != range )
+				if( !shard->assigned() || shard->keys != range ) {
+					// Add the shard to the server by fetchKeys asynchronously
 					data->addShard( ShardInfo::newAdding(data, range) );
+				}
 			}
 		} else {
 			changeNewestAvailable.emplace_back(range, latestVersion);
@@ -2413,8 +2429,9 @@ void changeServerKeys( StorageServer* data, const KeyRangeRef& keys, bool nowAss
 	coalesceShards( data, KeyRangeRef(ranges[0].begin, ranges[ranges.size()-1].end) );
 
 	// Now it is OK to do removeDataRanges, directly and through fetchKeys cancellation (and we have to do so before validate())
-	oldShards.clear();
+	oldShards.clear(); // Q: Does this cancel the oldShards' fetchKeys actors?
 	ranges.clear();
+	// Now remove the shards that are no longer assigned to the server.
 	for(auto r=removeRanges.begin(); r!=removeRanges.end(); ++r) {
 		removeDataRange( data, data->addVersionToMutationLog(data->data().getLatestVersion()), data->shards, *r );
 		setAvailableStatus(data, *r, false);
@@ -2527,6 +2544,8 @@ private:
 		TraceEvent(SevDebug, "SSPrivateMutation", data->thisServerID).detail("Mutation", m.toString());
 
 		if (processedStartKey) {
+			// Q: It seems that we will call StorageUpdater.applyPrivateData() twice. Why should we do that?
+			// Q: Why do we need processedStartKey to be false in the first place and set by the else-statement?
 			// Because of the implementation of the krm* functions, we expect changes in pairs, [begin,end)
 			// We can also ignore clearRanges, because they are always accompanied by such a pair of sets with the same keys
 			ASSERT (m.type == MutationRef::SetValue && m.param1.startsWith(data->sk));
@@ -2634,8 +2653,8 @@ ACTOR Future<Void> update( StorageServer* data, bool* pReceivedUpdate )
 			TraceEvent("SSSlowTakeLock1", data->thisServerID).detailf("From", "%016llx", debug_lastLoadBalanceResultEndpointToken).detail("Duration", now() - start).detail("Version", data->version.get());
 
 		start = now();
-		state UpdateEagerReadInfo eager;
-		state FetchInjectionInfo fii;
+		state UpdateEagerReadInfo eager; // Q: Why do we need eager read?
+		state FetchInjectionInfo fii;	// Q: What does FetchInjectionInfo do?
 		state Reference<ILogSystem::IPeekCursor> cloneCursor2;
 
 		loop{
@@ -2645,6 +2664,7 @@ ACTOR Future<Void> update( StorageServer* data, bool* pReceivedUpdate )
 			bool firstMutation = true;
 			bool dbgLastMessageWasProtocol = false;
 
+			// TODOMX: How is IPeekCursor implemented?
 			Reference<ILogSystem::IPeekCursor> cloneCursor1 = cursor->cloneNoMore();
 			cloneCursor2 = cursor->cloneNoMore();
 
@@ -2679,6 +2699,7 @@ ACTOR Future<Void> update( StorageServer* data, bool* pReceivedUpdate )
 
 			// Any fetchKeys which are ready to transition their shards to the adding,transferred state do so now.
 			// If there is an epoch end we skip this step, to increase testability and to prevent inserting a version in the middle of a rolled back version range.
+			// For privateData mutation, where 
 			while(!hasPrivateData && !epochEnd && !data->readyFetchKeys.empty()) {
 				auto fk = data->readyFetchKeys.back();
 				data->readyFetchKeys.pop_back();
@@ -2709,6 +2730,7 @@ ACTOR Future<Void> update( StorageServer* data, bool* pReceivedUpdate )
 		state bool injectedChanges = false;
 		state int changeNum = 0;
 		state int mutationBytes = 0;
+		// Q: How does fii include the privateMutation? fii is not assigned if hasPrivateData == true above.
 		for(; changeNum < fii.changes.size(); changeNum++) {
 			state int mutationNum = 0;
 			state VerUpdateRef* pUpdate = &fii.changes[changeNum];
@@ -2726,6 +2748,7 @@ ACTOR Future<Void> update( StorageServer* data, bool* pReceivedUpdate )
 			}
 		}
 
+		// Q: What is the difference between cloneCursor1 above and cloneCursor2 below?
 		state Version ver = invalidVersion;
 		cloneCursor2->setProtocolVersion(data->logProtocol);
 		//TraceEvent("SSUpdatePeeked", data->thisServerID).detail("FromEpoch", data->updateEpoch).detail("FromSeq", data->updateSequence).detail("ToEpoch", results.end_epoch).detail("ToSeq", results.end_seq).detail("MsgSize", results.messages.size());
@@ -3595,7 +3618,7 @@ ACTOR Future<Void> storageServerCore( StorageServer* self, StorageServerInterfac
 			}
 			when( wait(doUpdate) ) {
 				updateReceived = false;
-				if (!self->logSystem)
+				if (!self->logSystem) // Q: When will logSystem be NULL?
 					doUpdate = Never();
 				else
 					doUpdate = update( self, &updateReceived );
