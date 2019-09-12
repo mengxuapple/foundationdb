@@ -1327,8 +1327,10 @@ public:
 };
 
 typedef ContinuousMetric<int64_t> Int64Metric;
+typedef ContinuousMetric<__int128> Int128Metric;
 typedef ContinuousMetric<double> DoubleMetric;
 typedef Int64Metric VersionMetric;
+typedef Int128Metric DoubleVersionMetric;
 typedef ContinuousMetric<bool> BoolMetric;
 typedef ContinuousMetric<Standalone<StringRef>> StringMetric;
 
@@ -1413,6 +1415,7 @@ struct SpecialTraceMetricType<MetricHandle<T>> : SpecialTraceMetricType<typename
 
 typedef MetricHandle<Int64Metric> Int64MetricHandle;
 typedef MetricHandle<VersionMetric> VersionMetricHandle;
+typedef MetricHandle<DoubleVersionMetric> DoubleVersionMetricHandle;
 typedef MetricHandle<BoolMetric> BoolMetricHandle;
 typedef MetricHandle<StringMetric> StringMetricHandle;
 typedef MetricHandle<DoubleMetric> DoubleMetricHandle;

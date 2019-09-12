@@ -29,6 +29,7 @@
 #include "flow/flow.h"
 #include "fdbclient/Knobs.h"
 
+typedef __int128 DoubleVersion;
 typedef int64_t Version;
 typedef uint64_t LogEpoch;
 typedef uint64_t Sequence;
