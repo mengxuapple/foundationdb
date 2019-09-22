@@ -1013,7 +1013,12 @@ struct ActorSingleCallback : SingleCallback<ValueType> {
 	}
 };
 inline double now() { return g_network->now(); }
-inline Future<Void> delay(double seconds, TaskPriority taskID = TaskPriority::DefaultDelay) { return g_network->delay(seconds, taskID); }
+inline Future<Void> delay(double seconds, TaskPriority taskID = TaskPriority::DefaultDelay) {
+	if (g_network->isSimulated() && seconds > 0) {
+		seconds = deterministicRandom()->random01() + seconds; // Test if time is unreliable
+	}
+	return g_network->delay(seconds, taskID);
+	}
 inline Future<Void> delayUntil(double time, TaskPriority taskID = TaskPriority::DefaultDelay) { return g_network->delay(std::max(0.0, time - g_network->now()), taskID); }
 inline Future<Void> delayJittered(double seconds, TaskPriority taskID = TaskPriority::DefaultDelay) { return g_network->delay(seconds*(FLOW_KNOBS->DELAY_JITTER_OFFSET + FLOW_KNOBS->DELAY_JITTER_RANGE*deterministicRandom()->random01()), taskID); }
 inline Future<Void> yield(TaskPriority taskID = TaskPriority::DefaultYield) { return g_network->yield(taskID); }
