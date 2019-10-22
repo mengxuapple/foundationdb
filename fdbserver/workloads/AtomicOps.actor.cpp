@@ -24,6 +24,7 @@
 #include "fdbserver/workloads/BulkSetup.actor.h"
 #include "fdbclient/ReadYourWrites.h"
 #include "fdbserver/workloads/workloads.actor.h"
+#include "fdbserver/workloads/MemoryKeyValueStore.h"
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
 struct AtomicOpsWorkload : TestWorkload {
@@ -33,6 +34,9 @@ struct AtomicOpsWorkload : TestWorkload {
 
 	double testDuration, transactionsPerSecond;
 	vector<Future<Void>> clients;
+
+	//The in-memory representation of this client's key space
+	MemoryKeyValueStore store;
 
 	AtomicOpsWorkload(WorkloadContext const& wcx)
 		: TestWorkload(wcx), opNum(0)
@@ -142,6 +146,7 @@ struct AtomicOpsWorkload : TestWorkload {
 
 	ACTOR Future<Void> atomicOpWorker( Database cx, AtomicOpsWorkload* self, double delay ) {
 		state double lastTime = now();
+		self->store.clear(normalKeys);
 		loop {
 			wait( poisson( &lastTime, delay ) );
 			state ReadYourWritesTransaction tr(cx);
@@ -162,7 +167,30 @@ struct AtomicOpsWorkload : TestWorkload {
 					//     .detail("Value", val)
 					//     .detail("ValueInt", intValue)
 					//     .detail("AtomicOp", self->opType);
+					if (self->opType == MutationRef::AddValue) { // Add operation
+						Optional<Value> oldValue = self->store.get(self->logKey(group));
+						Optional<Value> oldOpsValue = self->store.get(StringRef(format("ops%08x%08x", group, nodeIndex)));
+						int oldIntVal;
+						int oldOpsIntValue;
+						if (!oldValue.present()) {
+							oldIntVal = 0;
+						} else {
+							memcpy(&oldIntVal, oldValue.get().begin(), oldValue.get().size());
+						}
+						if (!oldOpsValue.present()) {
+							oldOpsIntValue = 0;
+						} else {
+							memcpy(&oldOpsIntValue, oldOpsValue.get().begin(), oldOpsValue.get().size());
+						}
+						int newIntVal = intValue + oldIntVal;
+						int newOpsIntValue = intValue + oldOpsIntValue;
+						Key newVal = StringRef((const uint8_t*) &newIntVal, sizeof(newIntVal));
+						Key newOpsVal =  StringRef((const uint8_t*) &newOpsIntValue, sizeof(newOpsIntValue));
+						self->store.set(self->logKey(group), newVal);
+						self->store.set(StringRef(format("ops%08x%08x", group, nodeIndex)), newOpsVal);
+					}
 					wait( tr.commit() );
+					
 					break;
 				} catch( Error &e ) {
 					wait( tr.onError(e) );
@@ -191,6 +219,21 @@ struct AtomicOpsWorkload : TestWorkload {
 							uint64_t intValue = 0;
 							memcpy(&intValue, kv.value.begin(), kv.value.size());
 							tr.atomicOp(LiteralStringRef("xlogResult"), kv.value, self->opType);
+							// Pair-wise compare each ops value
+							if (self->opType == MutationRef::AddValue) {
+								Optional<Value> storeValue = self->store.get(kv.key);
+								uint64_t intStoreValue = 0;
+								if (storeValue.present()) {
+									memcpy(&intStoreValue, storeValue.get().begin(), storeValue.get().size());
+								} else { 
+									// This should never happen because we always record the log operation even when the txn has error
+									TraceEvent(SevError, "LogValueMayBeIncorrect").detail("Key", kv.key).detail("LogValue", intValue);
+								}
+								if (intValue != intStoreValue) {
+									// intStoreValue must >= intValue when opType is ADD
+									TraceEvent(SevWarn, "LogValueMayBeIncorrect").detail("Key", kv.key).detail("LogValue", intValue).detail("StoreValue", intStoreValue);
+								}
+							}
 						}
 					}
 
@@ -204,6 +247,21 @@ struct AtomicOpsWorkload : TestWorkload {
 							uint64_t intValue = 0;
 							memcpy(&intValue, kv.value.begin(), kv.value.size());
 							tr.atomicOp(LiteralStringRef("xopsResult"), kv.value, self->opType);
+							// Pair-wise compare each ops value
+							if (self->opType == MutationRef::AddValue) {
+								Optional<Value> storeValue = self->store.get(kv.key);
+								uint64_t intStoreValue = 0;
+								if (storeValue.present()) {
+									memcpy(&intStoreValue, storeValue.get().begin(), storeValue.get().size());
+								} else { 
+									// This should never happen because we always record the log operation even when the txn has error
+									TraceEvent(SevError, "OpsValueMayBeIncorrect").detail("Key", kv.key).detail("OpsValue", intValue);
+								}
+								if (intValue != intStoreValue) {
+									// intStoreValue must >= intValue when opType is ADD
+									TraceEvent(SevWarn, "OpsValueMayBeIncorrect").detail("Key", kv.key).detail("OpsValue", intValue).detail("StoreValue", intStoreValue);
+								}
+							}
 						}
 
 						if(tr.get(LiteralStringRef("xlogResult")).get() != tr.get(LiteralStringRef("xopsResult")).get()) {

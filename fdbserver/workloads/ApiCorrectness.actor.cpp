@@ -393,6 +393,9 @@ public:
 		//Get the values from the memory store and compare them
 		for(int i = 0; i < keys.size(); i++) {
 			if(values[i] != self->store.get(keys[i])) {
+				printf("Get %s value:%s != memoryStore value:%s\n", keys[i].toString().c_str(),
+				       values[i].present() ? values[i].get().toString().c_str() : "[not exist]",
+				       self->store.get(keys[i]).get().toString().c_str());
 				result = false;
 				break;
 			}
