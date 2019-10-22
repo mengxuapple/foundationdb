@@ -206,7 +206,7 @@ struct AtomicOpsWorkload : TestWorkload {
 	ACTOR Future<bool> _check( Database cx, AtomicOpsWorkload* self ) {
 		state int g = 0;
 		state bool ret = true;
-		self->store.printContents();
+		//self->store.printContents();
 
 		for(; g < 100; g++) {
 			state ReadYourWritesTransaction tr(cx);
