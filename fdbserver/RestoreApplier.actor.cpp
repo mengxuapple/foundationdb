@@ -220,7 +220,7 @@ struct DBApplyProgress {
 	bool shouldCommit() {
 		// TODO: Change transactionSize > 0 to transactionSize > opConfig.transactionBatchSizeThreshold to batch
 		// mutations in a txn
-		return (!lastTxnHasError && (startNextVersion || transactionSize > 0 || curItInCurTxn == self->kvOps.end()));
+		return (!lastTxnHasError && (startNextVersion || transactionSize > opConfig.transactionBatchSizeThreshold || curItInCurTxn == self->kvOps.end()));
 	}
 
 	bool hasError() { return lastTxnHasError; }
