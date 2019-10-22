@@ -1,0 +1,60 @@
+testTitle=BackupAndParallelRestoreWithApiCorrectness
+    testName=ApiCorrectness
+    runSetup=true
+    clearAfterTest=true
+    numKeys=2000
+    onlyLowerCase=true
+    shortKeysRatio=0.5
+    minShortKeyLength=1
+    maxShortKeyLength=3
+    minLongKeyLength=1
+    maxLongKeyLength=128
+    minValueLength=1
+    maxValueLength=1000
+    numGets=400
+    numGetRanges=40
+    numGetRangeSelectors=40
+    numGetKeys=40
+    numClears=40
+    numClearRanges=10
+    maxTransactionBytes=500000
+    randomTestDuration=60
+    timeout=2100
+
+; Each testName=RunRestoreWorkerWorkload creates a restore worker
+; We need at least 3 restore workers: master, loader, and applier
+    testName=RunRestoreWorkerWorkload
+
+; Test case for parallel restore
+    testName=BackupAndParallelRestoreCorrectness
+    backupAfter=10.0
+    restoreAfter=60.0
+    clearAfterTest=false
+    simBackupAgents=BackupToFile
+    backupRangesCount=-1
+
+    testName=RandomClogging
+    testDuration=90.0
+	
+;    testName=Rollback
+;    meanDelay=90.0
+;    testDuration=90.0
+
+; Do NOT consider machine crash yet
+;    testName=Attrition
+;    machinesToKill=10
+;    machinesToLeave=3
+;    reboot=true
+;    testDuration=90.0
+
+;    testName=Attrition
+;    machinesToKill=10
+;    machinesToLeave=3
+;    reboot=true
+;    testDuration=90.0
+
+; Disable buggify for parallel restore
+buggify=off
+;testDuration=360000 ;not work
+;timeout is in seconds
+timeout=360000
