@@ -106,10 +106,12 @@ struct AtomicOpsWorkload : TestWorkload {
 	}
 
 	virtual Future<Void> start( Database const& cx ) {
-		for(int c=0; c<actorCount; c++)
-		clients.push_back(
+		for(int c=0; c<actorCount; c++) {
+			clients.push_back(
 			timeout(
 				atomicOpWorker( cx->clone(), this, actorCount / transactionsPerSecond ), testDuration, Void()) );
+		}
+		
 		return delay(testDuration);
 	}
 
@@ -155,7 +157,8 @@ struct AtomicOpsWorkload : TestWorkload {
 					int group = deterministicRandom()->randomInt(0,100);
 					uint64_t intValue = deterministicRandom()->randomInt( 0, 10000000 );
 					Key val = StringRef((const uint8_t*) &intValue, sizeof(intValue));
-					tr.set(self->logKey(group), val);
+					Key logKey = self->logKey(group);
+					tr.set(logKey, val);
 					int nodeIndex = deterministicRandom()->randomInt(0, self->nodeCount / 100);
 					tr.atomicOp(StringRef(format("ops%08x%08x", group, nodeIndex)), val, self->opType);
 					// TraceEvent(SevDebug, "AtomicOpWorker")
@@ -168,7 +171,7 @@ struct AtomicOpsWorkload : TestWorkload {
 					//     .detail("ValueInt", intValue)
 					//     .detail("AtomicOp", self->opType);
 					if (self->opType == MutationRef::AddValue) { // Add operation
-						Optional<Value> oldValue = self->store.get(self->logKey(group));
+						Optional<Value> oldValue = self->store.get(logKey);
 						Optional<Value> oldOpsValue = self->store.get(StringRef(format("ops%08x%08x", group, nodeIndex)));
 						int oldIntVal;
 						int oldOpsIntValue;
@@ -186,7 +189,7 @@ struct AtomicOpsWorkload : TestWorkload {
 						int newOpsIntValue = intValue + oldOpsIntValue;
 						Key newVal = StringRef((const uint8_t*) &newIntVal, sizeof(newIntVal));
 						Key newOpsVal =  StringRef((const uint8_t*) &newOpsIntValue, sizeof(newOpsIntValue));
-						self->store.set(self->logKey(group), newVal);
+						self->store.set(logKey, newVal);
 						self->store.set(StringRef(format("ops%08x%08x", group, nodeIndex)), newOpsVal);
 					}
 					wait( tr.commit() );
@@ -203,6 +206,8 @@ struct AtomicOpsWorkload : TestWorkload {
 	ACTOR Future<bool> _check( Database cx, AtomicOpsWorkload* self ) {
 		state int g = 0;
 		state bool ret = true;
+		self->store.printContents();
+
 		for(; g < 100; g++) {
 			state ReadYourWritesTransaction tr(cx);
 			state Standalone<RangeResultRef> log;
