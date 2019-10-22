@@ -232,7 +232,7 @@ struct AtomicOpsWorkload : TestWorkload {
 									memcpy(&intStoreValue, storeValue.get().begin(), storeValue.get().size());
 								} else { 
 									// This should never happen because we always record the log operation even when the txn has error
-									TraceEvent(SevError, "LogValueMayBeIncorrect").detail("Key", kv.key).detail("LogValue", intValue);
+									TraceEvent(SevWarnAlways, "LogValueMayBeIncorrect").detail("Key", kv.key).detail("LogValue", intValue);
 								}
 								if (intValue != intStoreValue) {
 									// intStoreValue must >= intValue when opType is ADD
@@ -260,7 +260,7 @@ struct AtomicOpsWorkload : TestWorkload {
 									memcpy(&intStoreValue, storeValue.get().begin(), storeValue.get().size());
 								} else { 
 									// This should never happen because we always record the log operation even when the txn has error
-									TraceEvent(SevError, "OpsValueMayBeIncorrect").detail("Key", kv.key).detail("OpsValue", intValue);
+									TraceEvent(SevWarnAlways, "OpsValueMayBeIncorrect").detail("Key", kv.key).detail("OpsValue", intValue);
 								}
 								if (intValue != intStoreValue) {
 									// intStoreValue must >= intValue when opType is ADD
