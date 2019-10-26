@@ -253,8 +253,8 @@ ACTOR Future<Void> sendMutationsToApplier(Reference<RestoreLoaderData> self, Ver
 				for (splitMutationIndex = 0; splitMutationIndex < mvector.size(); splitMutationIndex++) {
 					MutationRef mutation = mvector[splitMutationIndex];
 					UID applierID = nodeIDs[splitMutationIndex];
-					// printf("SPLITTED MUTATION: %d: mutation:%s applierID:%s\n", splitMutationIndex,
-					// mutation.toString().c_str(), applierID.toString().c_str());
+					printf("SPLITTED MUTATION: %d: mutation:%s applierID:%s\n", splitMutationIndex,
+							mutation.toString().c_str(), applierID.toString().c_str());
 					applierMutationsBuffer[applierID].push_back_deep(applierMutationsBuffer[applierID].arena(), mutation);
 					applierMutationsSize[applierID] += mutation.expectedSize();
 

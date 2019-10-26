@@ -78,7 +78,7 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 		rangeToApplier.clear();
 		keyOpsCount.clear();
 		numSampledMutations = 0;
-		processedFileParams.clear();
+		processedFileParams.clear(); // We may not need to clear this; What if the request in previous batch is delayed a lot and arrives at the next batch
 		phase = RestorePhase::UNSET;
 	}
 

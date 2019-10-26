@@ -228,7 +228,9 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreMasterData> 
 
 	state std::map<Version, VersionBatch>::iterator versionBatch;
 	for (versionBatch = self->versionBatches.begin(); versionBatch != self->versionBatches.end(); versionBatch++) {
+		wait(delay(30));
 		wait(initializeVersionBatch(self));
+		wait(delay(30));
 		wait(distributeWorkloadPerVersionBatch(self, cx, request, versionBatch->second));
 		self->batchIndex++;
 	}
@@ -317,12 +319,16 @@ ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreMas
 
 	dummySampleWorkload(self);
 	wait(notifyLoaderAppliersKeyRange(self));
+	wait(delay(30));
 
 	// Parse log files and send mutations to appliers before we parse range files
 	wait(loadFilesOnLoaders(self, cx, request, versionBatch, false));
+	wait(delay(30));
 	wait(loadFilesOnLoaders(self, cx, request, versionBatch, true));
 
+	wait(delay(30));
 	wait(notifyApplierToApplyMutations(self));
+	wait(delay(30));
 
 	return Void();
 }
