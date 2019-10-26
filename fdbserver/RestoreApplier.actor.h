@@ -86,6 +86,7 @@ struct RestoreApplierData : RestoreRoleData, public ReferenceCounted<RestoreAppl
 		inProgressApplyToDB = false;
 		kvOps.clear();
 		dbApplier = Optional<Future<Void>>();
+		phase = RestorePhase::UNSET;
 	}
 
 	void sanityCheckMutationOps() {

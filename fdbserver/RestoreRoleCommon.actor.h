@@ -104,6 +104,18 @@ struct StringRefReaderMX {
 	Error failure_error;
 };
 
+// Restore Phase in each version batch
+enum class RestorePhase {
+	UNSET = 0,
+	INIT,
+	// setApplierKeyRangeVectorRequest
+	SET_APPLIER_KEYRANGE,
+	LOAD_LOG_FILE,
+	LOAD_RANGE_FILE,
+	APPLY_TO_DB,
+	FINISH_RESTORE
+};
+
 struct RestoreRoleData : NonCopyable, public ReferenceCounted<RestoreRoleData> {
 public:
 	RestoreRole role;
@@ -114,11 +126,14 @@ public:
 	std::map<UID, RestoreApplierInterface> appliersInterf;
 	RestoreApplierInterface masterApplierInterf;
 
+	int versionBatchId;
+	RestorePhase phase;
+
 	bool versionBatchStart = false;
 
 	uint32_t inProgressFlag = 0;
 
-	RestoreRoleData() : role(RestoreRole::Invalid){};
+	RestoreRoleData() : role(RestoreRole::Invalid), phase(RestorePhase::UNSET){};
 
 	virtual ~RestoreRoleData() {}
 

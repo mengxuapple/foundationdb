@@ -104,6 +104,14 @@ ACTOR static Future<Void> handleSendMutationVectorRequest(RestoreSendMutationVec
 	    .detail("ProcessedFileVersion", curFilePos.get())
 	    .detail("Request", req.toString());
 
+	if (self->phase == RestorePhase::APPLY_TO_DB) {
+		TraceEvent(SevError, "RaceConditionOnApplier")
+		    .detail("Reason", "HandleSendMutationVectorRequest executes when applier is applying to DB");
+		// Uncomment the reply to fix the bug when the error is triggered
+		// req.reply.send(RestoreCommonReply(self->id()));
+		// return Void();
+	}
+
 	wait(curFilePos.whenAtLeast(req.prevVersion));
 
 	if (curFilePos.get() == req.prevVersion) {
@@ -401,6 +409,7 @@ ACTOR static Future<Void> handleApplyToDBRequest(RestoreVersionBatchRequest req,
 	TraceEvent("FastRestore")
 	    .detail("ApplierApplyToDB", self->id())
 	    .detail("DBApplierPresent", self->dbApplier.present());
+	self->phase = RestorePhase::APPLY_TO_DB;
 	if (!self->dbApplier.present()) {
 		self->dbApplier = applyToDB(self, cx);
 	}

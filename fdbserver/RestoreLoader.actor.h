@@ -79,6 +79,7 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 		keyOpsCount.clear();
 		numSampledMutations = 0;
 		processedFileParams.clear();
+		phase = RestorePhase::UNSET;
 	}
 
 	// Only get the appliers that are responsible for a range
