@@ -124,12 +124,13 @@ ACTOR static Future<Void> handleSendMutationVectorRequest(RestoreSendMutationVec
 		state int mIndex = 0;
 		for (mIndex = 0; mIndex < mutations.size(); mIndex++) {
 			MutationRef mutation = mutations[mIndex];
-			TraceEvent(SevDebug, "FastRestore")
-			    .detail("ApplierNode", self->id())
-			    .detail("FileUID", req.fileIndex)
-			    .detail("Version", commitVersion)
-			    .detail("Index", mIndex)
-			    .detail("MutationReceived", mutation.toString());
+			// TODO: Make this trace event debug tunable
+			// TraceEvent(SevDebug, "FastRestore")
+			//     .detail("ApplierNode", self->id())
+			//     .detail("FileUID", req.fileIndex)
+			//     .detail("Version", commitVersion)
+			//     .detail("Index", mIndex)
+			//     .detail("MutationReceived", mutation.toString());
 			self->kvOps[commitVersion].push_back_deep(self->kvOps[commitVersion].arena(), mutation);
 		}
 		curFilePos.set(req.version);
