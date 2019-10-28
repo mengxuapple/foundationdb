@@ -127,6 +127,7 @@ void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<Res
 
 void handleSetApplierKeyRangeVectorRequest(const RestoreSetApplierKeyRangeVectorRequest& req,
                                            Reference<RestoreLoaderData> self) {
+    TraceEvent("FastRestore").detail("Loader", self->id()).detail("SetApplierKeyRangeVector", req.rangeToApplier.size());
 	// Idempodent operation. OK to re-execute the duplicate cmd
 	if (self->rangeToApplier.empty()) {
 		self->rangeToApplier = req.rangeToApplier;
@@ -187,6 +188,8 @@ ACTOR Future<Void> handleLoadFileRequest(RestoreLoadFileRequest req, Reference<R
 		TraceEvent("FastRestore").detail("Loader", self->id()).detail("ProcessLoadParam", req.param.toString());
 		self->processedFileParams[req.param] = Never();
 		self->processedFileParams[req.param] = _processLoadingParam(req.param, self);
+	} else {
+		TraceEvent("FastRestore").detail("Loader", self->id()).detail("WaitOnProcessLoadParam", req.param.toString());
 	}
 	ASSERT(self->processedFileParams.find(req.param) != self->processedFileParams.end());
 	wait(self->processedFileParams[req.param]); // wait on the processing of the req.param.
