@@ -130,6 +130,8 @@ void handleSetApplierKeyRangeVectorRequest(const RestoreSetApplierKeyRangeVector
 	// Idempodent operation. OK to re-execute the duplicate cmd
 	if (self->rangeToApplier.empty()) {
 		self->rangeToApplier = req.rangeToApplier;
+	} else {
+		ASSERT_WE_THINK(self->rangeToApplier == req.rangeToApplier);
 	}
 	req.reply.send(RestoreCommonReply(self->id()));
 }

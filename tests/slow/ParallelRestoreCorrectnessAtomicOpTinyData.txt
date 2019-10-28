@@ -41,8 +41,8 @@ testTitle=BackupAndParallelRestoreWithAtomicOp
     backupRangesCount=-1
 
 ; TODO: Enable random clogging to make network delivery out of order
-;    testName=RandomClogging
-;    testDuration=90.0
+    testName=RandomClogging
+    testDuration=90.0
 	
 ;    testName=Rollback
 ;    meanDelay=90.0
