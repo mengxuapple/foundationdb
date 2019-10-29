@@ -395,7 +395,7 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 			tr->clear(KeyRangeRef(restoreApplierKeyFor(self->id(), 0),
-			                      restoreApplierKeyFor(self->id(), progress.curTxnId + 1)));
+			                      restoreApplierKeyFor(self->id(), progress.curTxnId + 100)));
 			wait(tr->commit());
 			break;
 		} catch (Error& e) {
