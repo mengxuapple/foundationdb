@@ -141,6 +141,7 @@ struct AtomicAddWorkload : TestWorkload {
 	ACTOR Future<Void> atomicAddWorker( Database cx, AtomicAddWorkload* self, double delay ) {
 		state double lastTime = now();
 		state int64_t counter = 0;
+		state Version version;
 		loop {
 			wait( poisson( &lastTime, delay ) );
 			state ReadYourWritesTransaction tr(cx);
@@ -159,9 +160,10 @@ struct AtomicAddWorkload : TestWorkload {
 						TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("KeyNotExist", key.toString());
 					}
 					tr.atomicOp(key, val, self->opType);
-					tr.set(StringRef(format("sum%08x", self->clientId)), tmpSumVal);
+					tr.set(StringRef(format("sum/%08x/%08x", self->clientId, counter)), tmpSumVal);
 					wait( tr.commit() );
-					TraceEvent("AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Max", self->max).detail("Sum", self->sum).detail("Key", key);
+					version = tr.getCommittedVersion();
+					TraceEvent("AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Max", self->max).detail("Sum", self->sum).detail("Key", key).detail("Version", version);
 					self->max = std::max(self->max, counter);
 					self->sum += counter;
 					counter++;
@@ -195,20 +197,29 @@ struct AtomicAddWorkload : TestWorkload {
 	ACTOR Future<bool> _check( Database cx, AtomicAddWorkload* self ) {
 		state int counter = 0;
 		state bool ret = true;
+		state bool keepChecking = true;
 		TraceEvent("AtomicAddCheck").detail("Max", self->max).detail("Sum", self->sum);
-		for(; counter <= self->max; counter++) {
+		for(; keepChecking && counter <= self->max; counter++) {
 			state ReadYourWritesTransaction tr(cx);
 			loop {
 				try {
 					// Check each key-value is correct
 					state Key key(format("ops/%08x/%08x", self->clientId, counter));
-					Optional<Value> val = wait( tr.get(key) );
-					if (!val.present()) {
-						TraceEvent(SevError, "AtomicAddMissKey").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString()).detail("Value", "Not exist");
+					state Key sumkey(format("sum/%08x/%08x", self->clientId, counter));
+					state Optional<Value> val = wait( tr.get(key) );
+					state Optional<Value> sumval = wait( tr.get(sumkey) );
+					if (!val.present() && !sumval.present()) {
+						TraceEvent("AtomicAddCheck").detail("ClietID", self->clientId).detail("Counter", counter).detail("Key", key).detail("KeyStr", key.toString());
+						keepChecking = false;
+						break;
+					}
+					if (!val.present() || !sumval.present()) {
+						TraceEvent(SevError, "AtomicAddMissKey").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString()).detail("ValueExist", val.present()).detail("SumExist", sumval.present());
 						ret = false;
 					} else {
 						uint64_t intValue = 0;
 						memcpy(&intValue, val.get().begin(), val.get().size());
+						TraceEvent("AtomicAddCheck").detail("Key", key.toString()).detail("Val", val.get().toString()).detail("ValInt", intValue);
 						if (intValue != counter) {
 							TraceEvent(SevError, "AtomicAddMismatchedKey").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString()).detail("Value", intValue);
 							ret = false;
