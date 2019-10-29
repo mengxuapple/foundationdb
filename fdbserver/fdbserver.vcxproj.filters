@@ -225,6 +225,9 @@
     <ActorCompiler Include="workloads\AtomicOps.actor.cpp">
       <Filter>workloads</Filter>
     </ActorCompiler>
+     <ActorCompiler Include="workloads\AtomicAdd.actor.cpp">
+      <Filter>workloads</Filter>
+    </ActorCompiler>
     <ActorCompiler Include="workloads\AtomicOpsApiCorrectness.actor.cpp">
       <Filter>workloads</Filter>
     </ActorCompiler>
