@@ -307,12 +307,12 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 				tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 				tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 				// TODO: Make this trace event debug tunable
-				// TraceEvent("FastRestore_ApplierTxn")
-				//     .detail("ApplierApplyToDB", self->id())
-				//     .detail("TxnId", progress.curTxnId)
-				//     .detail("CurrentIndexInCurrentTxn", progress.curIndexInCurTxn)
-				//     .detail("CurrentIteratorMutations", progress.curItInCurTxn->second.size())
-				//     .detail("Version", progress.curItInCurTxn->first);
+				TraceEvent("FastRestore_ApplierTxn")
+				    .detail("ApplierApplyToDB", self->id())
+				    .detail("TxnId", progress.curTxnId)
+				    .detail("CurrentIndexInCurrentTxn", progress.curIndexInCurTxn)
+				    .detail("CurrentIteratorMutations", progress.curItInCurTxn->second.size())
+				    .detail("Version", progress.curItInCurTxn->first);
 
 				// restoreApplierKeyFor(self->id(), curTxnId) to tell if txn succeeds at an unknown error
 				tr->set(restoreApplierKeyFor(self->id(), progress.curTxnId), restoreApplierTxnValue);
@@ -326,14 +326,14 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 						TraceEvent(SevError, "FastRestore").detail("InvalidMutationType", m.type);
 					}
 
-					// TODO: Make this trace event debug tunable
-					// TraceEvent(SevDebug, "FastRestore_Debug")
-					//     .detail("ApplierApplyToDB", self->describeNode())
-					//     .detail("Version", progress.curItInCurTxn->first)
-					//     .detail("Index", progress.curIndexInCurTxn)
-					//     .detail("Mutation", m.toString())
-					//     .detail("MutationSize", m.expectedSize())
-					//     .detail("TxnSize", progress.transactionSize);
+					//TODO: Make this trace event debug tunable
+					TraceEvent(SevDebug, "FastRestore_Debug")
+					    .detail("ApplierApplyToDB", self->describeNode())
+					    .detail("Version", progress.curItInCurTxn->first)
+					    .detail("Index", progress.curIndexInCurTxn)
+					    .detail("Mutation", m.toString())
+					    .detail("MutationSize", m.expectedSize())
+					    .detail("TxnSize", progress.transactionSize);
 					if (m.type == MutationRef::SetValue) {
 						tr->set(m.param1, m.param2);
 					} else if (m.type == MutationRef::ClearRange) {

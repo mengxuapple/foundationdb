@@ -161,6 +161,7 @@ struct AtomicAddWorkload : TestWorkload {
 					tr.atomicOp(key, val, self->opType);
 					tr.set(StringRef(format("sum%08x", self->clientId)), tmpSumVal);
 					wait( tr.commit() );
+					TraceEvent("AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Max", self->max).detail("Sum", self->sum).detail("Key", key);
 					self->max = std::max(self->max, counter);
 					self->sum += counter;
 					counter++;
@@ -176,7 +177,7 @@ struct AtomicAddWorkload : TestWorkload {
 								Key key(format("ops/%08x/%08x", self->clientId, counter));
 								Optional<Value> txnSucceeded = wait(tr1.get(key));
 								if (txnSucceeded.present()) {
-									self->max = counter;
+									self->max = std::max(self->max, counter);
 									self->sum += counter;
 									counter++;
 								}
@@ -204,11 +205,13 @@ struct AtomicAddWorkload : TestWorkload {
 					Optional<Value> val = wait( tr.get(key) );
 					if (!val.present()) {
 						TraceEvent(SevError, "AtomicAddMissKey").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString()).detail("Value", "Not exist");
+						ret = false;
 					} else {
 						uint64_t intValue = 0;
 						memcpy(&intValue, val.get().begin(), val.get().size());
 						if (intValue != counter) {
 							TraceEvent(SevError, "AtomicAddMismatchedKey").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString()).detail("Value", intValue);
+							ret = false;
 						}
 					}
 					break;
