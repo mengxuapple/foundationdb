@@ -41,6 +41,7 @@ struct AtomicAddWorkload : TestWorkload {
 	double testDuration, transactionsPerSecond;
 	vector<Future<Void>> clients;
 
+	int64_t maxCount;
 	int64_t sum;
 	int64_t max;
 
@@ -54,6 +55,8 @@ struct AtomicAddWorkload : TestWorkload {
 		actorCount = 1; // The current implementation assumes actorCount is always 1.
 		opType = MutationRef::AddValue;
 		nodeCount = getOption( options, LiteralStringRef("nodeCount"), 1000 );
+		maxCount = getOption( options, LiteralStringRef("maxCount"), 1000000 );
+
 		// We follows AtomicOps.actor.cpp to assume the same apiVersion requirement although it is not a must.
 		// Atomic OPs Min and And have modified behavior from api version 510. Hence allowing testing for older version (500) with a 10% probability
 		// Actual change of api Version happens in setup
@@ -121,20 +124,21 @@ struct AtomicAddWorkload : TestWorkload {
 			}
 		}
 
-		// state int counter = 0;
-		// for(; counter < std::numeric_limits<int>::max(); counter++) {
-		// 	state ReadYourWritesTransaction tr(cx);
-		// 	loop {
-		// 		try {
-		// 			uint64_t intValue = 0;
-		// 			tr.set(StringRef(format("ops%08x%08x",clientId,counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
-		// 			wait( tr.commit() );
-		// 			break;
-		// 		} catch( Error &e ) {
-		// 			wait( tr.onError(e) );
-		// 		}
-		// 	}
-		// }
+		state int counter = 0;
+		for(; counter < self->maxCount; counter++) {
+			state ReadYourWritesTransaction tr(cx);
+			loop {
+				try {
+					uint64_t intValue = 0;
+					tr.set(StringRef(format("ops/%08x/%08x",clientId,counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
+					wait( tr.commit() );
+					break;
+				} catch( Error &e ) {
+					wait( tr.onError(e) );
+				}
+			}
+		}
+
 		return Void();
 	}
 
@@ -143,6 +147,9 @@ struct AtomicAddWorkload : TestWorkload {
 		state int64_t counter = 0;
 		state Version version;
 		loop {
+			if (counter >= self->maxCount) {
+				break;
+			}
 			wait( poisson( &lastTime, delay ) );
 			state ReadYourWritesTransaction tr(cx);
 			loop {
@@ -153,12 +160,13 @@ struct AtomicAddWorkload : TestWorkload {
 					int64_t zero = 0;
 					state Key zeroVal = StringRef((const uint8_t*) &zero, sizeof(zero));
 					state Key key(format("ops/%08x/%08x", self->clientId, counter));
-					Optional<Value> readVal = wait( tr.get(key) );
-					if (!readVal.present()) {
-						tr.set(key, zeroVal);
-					} else {
-						TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("KeyNotExist", key.toString());
-					}
+					//Optional<Value> readVal = wait( tr.get(key) );
+					// if (!readVal.present()) {
+					// 	tr.set(key, zeroVal);
+					// } else {
+					// 	TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("KeyNotExist", key.toString());
+					// }
+					TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString());
 					tr.atomicOp(key, val, self->opType);
 					tr.set(StringRef(format("sum/%08x/%08x", self->clientId, counter)), tmpSumVal);
 					wait( tr.commit() );
@@ -192,6 +200,8 @@ struct AtomicAddWorkload : TestWorkload {
 				}
 			}
 		}
+
+		return Void();
 	}
 
 	ACTOR Future<bool> _check( Database cx, AtomicAddWorkload* self ) {

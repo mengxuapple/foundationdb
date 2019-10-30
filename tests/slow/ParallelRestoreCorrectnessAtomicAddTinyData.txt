@@ -10,6 +10,7 @@ testTitle=BackupAndParallelRestoreWithAtomicOp
 ;    transactionsPerSecond=250.0
     testDuration=30.0
     clearAfterTest=false
+    maxCount=1000000
 ; Specify a type of atomicOp
 ;	opType=0
 ;	actorsPerClient=1
