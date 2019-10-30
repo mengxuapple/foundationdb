@@ -207,8 +207,13 @@ struct AtomicOpsWorkload : TestWorkload {
 		Key begin(format("log%08x", g));
 		Standalone<RangeResultRef> log_ = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
 		log = log_;
+		state uint64_t sum = 0;
 		for(auto& kv : log) {
-			TraceEvent("AtomicOpLog").detail("Key", kv.key).detail("Val", kv.value);
+			uint64_t intValue = 0;
+			memcpy(&intValue, kv.value.begin(), kv.value.size());
+			sum += intValue;
+			TraceEvent("AtomicOpLog").detail("Key", kv.key).detail("Val", kv.value).detail("IntValue", intValue).detail("CurSum", sum);
+			
 		}
 		return Void();
 	}
@@ -231,7 +236,36 @@ struct AtomicOpsWorkload : TestWorkload {
 		Key begin(format("ops%08x", g));
 		Standalone<RangeResultRef> ops = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
 		for(auto& kv : ops) {
-			TraceEvent("AtomicOpOps").detail("Key", kv.key).detail("Val", kv.value);
+			uint64_t intValue = 0;
+			memcpy(&intValue, kv.value.begin(), kv.value.size());
+			TraceEvent("AtomicOpOps").detail("Key", kv.key).detail("Val", kv.value).detail("IntVal", intValue);
+		}
+		return Void();
+	}
+
+	ACTOR Future<Void> validateOpsKey(Database cx, int g) {
+		state ReadYourWritesTransaction tr1(cx);
+		state Standalone<RangeResultRef> log;
+		Key begin(format("debug%08x", g));
+		Standalone<RangeResultRef> log_ = wait( tr1.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		log = log_;
+		state std::map<Key, Key> records; // ops, debugKey
+		for(auto& kv : log) {
+			records[kv.value] = kv.key;
+		}
+
+		state ReadYourWritesTransaction tr(cx);
+		state Standalone<RangeResultRef> ops;
+		Key begin(format("ops%08x", g));
+		Standalone<RangeResultRef> ops = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		for(auto& kv : ops) {
+			bool inRecord = records.find(kv.key) != records.end();
+			uint64_t intValue = 0;
+			memcpy(&intValue, kv.value.begin(), kv.value.size());
+			if (inRecord && intValue == 0) {
+				TraceEvent(SevError, "ValidateOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]);
+			}
+			
 		}
 		return Void();
 	}
@@ -297,6 +331,7 @@ struct AtomicOpsWorkload : TestWorkload {
 								wait( self->dumpLogKV(cx, g) );
 								wait( self->dumpDebugKV(cx, g) );
 								wait( self->dumpOpsKV(cx, g) );
+								wait( self->validateOpsKey(cx, g) );
 							}
 						}
 						break;
