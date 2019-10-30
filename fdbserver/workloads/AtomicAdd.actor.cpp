@@ -166,7 +166,7 @@ struct AtomicAddWorkload : TestWorkload {
 					// } else {
 					// 	TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("KeyNotExist", key.toString());
 					// }
-					TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString());
+					TraceEvent("AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString());
 					tr.atomicOp(key, val, self->opType);
 					tr.set(StringRef(format("sum/%08x/%08x", self->clientId, counter)), tmpSumVal);
 					wait( tr.commit() );
