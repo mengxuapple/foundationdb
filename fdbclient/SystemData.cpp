@@ -641,8 +641,9 @@ const KeyRangeRef restoreApplierKeys(LiteralStringRef("\xff\x02/restoreApplier/"
 const KeyRef restoreApplierTxnValue = LiteralStringRef("1");
 
 // restoreApplierKeys: track atomic transaction progress to ensure applying atomicOp exactly once
+// Must convert version to bigEndian to make sure the actual key k1 < k2 when k1.v1 < k2.v2 
 const Key restoreApplierKeyFor(UID const& applierID, Version version) {
-	ASSERT_WE_THINK(version >= 0);
+	//ASSERT_WE_THINK(version >= 0);
 	BinaryWriter wr(Unversioned());
 	wr.serializeBytes(restoreApplierKeys.begin);
 	wr << applierID << version;

@@ -287,8 +287,9 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 			tr->reset();
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			Key begin = restoreApplierKeyFor(self->id(), 0);
-			Standalone<RangeResultRef> txnIds = wait( tr->getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+			Key begin = restoreApplierKeyFor(self->id(), bigEndian64(0));
+			Key end = restoreApplierKeyFor(self->id(), bigEndian64(std::numeric_limits<int64_t>::max()));
+			Standalone<RangeResultRef> txnIds = wait( tr->getRange(KeyRangeRef(begin, end), CLIENT_KNOBS->TOO_MANY) );
 			if (txnIds.size() > 0) {
 				TraceEvent(SevError, "FastRestore_ApplyTxnStateNotClean").detail("TxnIds", txnIds.size());
 				for(auto& kv : txnIds) {
@@ -310,7 +311,7 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 				tr->reset();
 				tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 				tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-				Optional<Value> txnSucceeded = wait(tr->get(restoreApplierKeyFor(self->id(), progress.curTxnId)));
+				Optional<Value> txnSucceeded = wait(tr->get(restoreApplierKeyFor(self->id(), bigEndian64(progress.curTxnId))));
 				if (!txnSucceeded.present()) {
 					progress.rollback();
 					continue;
@@ -337,7 +338,7 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 				    .detail("Version", progress.curItInCurTxn->first);
 
 				// restoreApplierKeyFor(self->id(), curTxnId) to tell if txn succeeds at an unknown error
-				tr->set(restoreApplierKeyFor(self->id(), progress.curTxnId), restoreApplierTxnValue);
+				tr->set(restoreApplierKeyFor(self->id(), bigEndian64(progress.curTxnId)), restoreApplierTxnValue);
 
 				while (1) { // Loop: Accumulate mutations in a transaction
 					MutationRef m = progress.getCurrentMutation();
@@ -416,8 +417,8 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 			tr->reset();
 			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-			tr->clear(KeyRangeRef(restoreApplierKeyFor(self->id(), 0),
-			                      restoreApplierKeyFor(self->id(), progress.curTxnId + 100)));
+			tr->clear(KeyRangeRef(restoreApplierKeyFor(self->id(), bigEndian64(0)),
+			                      restoreApplierKeyFor(self->id(), bigEndian64(progress.curTxnId + 100))));
 			wait(tr->commit());
 			break;
 		} catch (Error& e) {
