@@ -33,7 +33,7 @@ struct AtomicOpsWorkload : TestWorkload {
 
 	double testDuration, transactionsPerSecond;
 	vector<Future<Void>> clients;
-	float lbsum, ubsum;
+	uint64_t lbsum, ubsum;
 
 	AtomicOpsWorkload(WorkloadContext const& wcx)
 		: TestWorkload(wcx), opNum(0)
@@ -181,12 +181,12 @@ struct AtomicOpsWorkload : TestWorkload {
 					int nodeIndex = deterministicRandom()->randomInt(0, self->nodeCount / 100);
 					tr.atomicOp(StringRef(format("ops%08x%08x", group, nodeIndex)), val, self->opType);
 					wait( tr.commit() );
-					lbsum += intValue;
-					ubsum += intValue;
+					self->lbsum += intValue;
+					self->ubsum += intValue;
 					break;
 				} catch( Error &e ) {
 					wait( tr.onError(e) );
-					ubsum += intValue;
+					self->ubsum += intValue;
 				}
 			}
 		}
@@ -249,7 +249,7 @@ struct AtomicOpsWorkload : TestWorkload {
 							}
 							if(logResult != opsResult) {
 								TraceEvent(SevError, "LogAddMismatch").detail("LogResult", logResult).detail("OpResult", opsResult).detail("OpsResultStr", printable(opsResultStr)).detail("Size", opsResultStr.size())
-									.detail("LowerBoundSum", seft->lbsum).detail("UperBoundSum", self->ubsum);
+									.detail("LowerBoundSum", self->lbsum).detail("UperBoundSum", self->ubsum);
 							}
 						}
 						break;
