@@ -33,6 +33,7 @@ struct AtomicOpsWorkload : TestWorkload {
 
 	double testDuration, transactionsPerSecond;
 	vector<Future<Void>> clients;
+	float lbsum, ubsum;
 
 	AtomicOpsWorkload(WorkloadContext const& wcx)
 		: TestWorkload(wcx), opNum(0)
@@ -46,6 +47,8 @@ struct AtomicOpsWorkload : TestWorkload {
 		// Actual change of api Version happens in setup
 		apiVersion500 = ((sharedRandomNumber % 10) == 0);
 		TraceEvent("AtomicOpsApiVersion500").detail("ApiVersion500", apiVersion500);
+		lbsum = 0;
+		ubsum = 0;
 
 		int64_t randNum = sharedRandomNumber / 10;
 		if(opType == -1)
@@ -172,24 +175,18 @@ struct AtomicOpsWorkload : TestWorkload {
 			loop {
 				try {
 					int group = deterministicRandom()->randomInt(0,100);
-					uint64_t intValue = deterministicRandom()->randomInt( 0, 10000000 );
+					state uint64_t intValue = deterministicRandom()->randomInt( 0, 10000000 );
 					Key val = StringRef((const uint8_t*) &intValue, sizeof(intValue));
 					tr.set(self->logKey(group), val);
 					int nodeIndex = deterministicRandom()->randomInt(0, self->nodeCount / 100);
 					tr.atomicOp(StringRef(format("ops%08x%08x", group, nodeIndex)), val, self->opType);
-					// TraceEvent(SevDebug, "AtomicOpWorker")
-					//     .detail("LogKey", self->logKey(group))
-					//     .detail("Value", val)
-					//     .detail("ValueInt", intValue);
-					// TraceEvent(SevDebug, "AtomicOpWorker")
-					//     .detail("OpKey", format("ops%08x%08x", group, nodeIndex))
-					//     .detail("Value", val)
-					//     .detail("ValueInt", intValue)
-					//     .detail("AtomicOp", self->opType);
 					wait( tr.commit() );
+					lbsum += intValue;
+					ubsum += intValue;
 					break;
 				} catch( Error &e ) {
 					wait( tr.onError(e) );
+					ubsum += intValue;
 				}
 			}
 		}
@@ -251,7 +248,8 @@ struct AtomicOpsWorkload : TestWorkload {
 								logResult += intValue;
 							}
 							if(logResult != opsResult) {
-								TraceEvent(SevError, "LogAddMismatch").detail("LogResult", logResult).detail("OpResult", opsResult).detail("OpsResultStr", printable(opsResultStr)).detail("Size", opsResultStr.size());
+								TraceEvent(SevError, "LogAddMismatch").detail("LogResult", logResult).detail("OpResult", opsResult).detail("OpsResultStr", printable(opsResultStr)).detail("Size", opsResultStr.size())
+									.detail("LowerBoundSum", seft->lbsum).detail("UperBoundSum", self->ubsum);
 							}
 						}
 						break;
