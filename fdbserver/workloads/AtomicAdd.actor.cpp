@@ -130,7 +130,7 @@ struct AtomicAddWorkload : TestWorkload {
 			loop {
 				try {
 					uint64_t intValue = 0;
-					tr.set(StringRef(format("ops/%08x/%08x",clientId,counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
+					tr.set(StringRef(format("ops/%08x/%08x",self->clientId, counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
 					wait( tr.commit() );
 					break;
 				} catch( Error &e ) {
