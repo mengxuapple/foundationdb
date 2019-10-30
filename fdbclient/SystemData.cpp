@@ -649,6 +649,14 @@ const Key restoreApplierKeyFor(UID const& applierID, Version version) {
 	return wr.toValue();
 }
 
+std::pair<UID, Version> decodeRestoreApplierKey(ValueRef const& key) {
+	BinaryReader rd( key, Unversioned() );
+	UID applierID;
+	Version version;
+	rd >> applierID >> version;
+	return std::make_pair(applierID, version);
+}
+
 // Encode restore worker key for workerID
 const Key restoreWorkerKeyFor(UID const& workerID) {
 	BinaryWriter wr(Unversioned());

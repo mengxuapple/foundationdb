@@ -281,6 +281,27 @@ ACTOR Future<Void> applyToDB(Reference<RestoreApplierData> self, Database cx) {
 	}
 
 	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+	// Sanity check the restoreApplierKeys, which should be empty at this point
+	loop {
+		try {
+			tr->reset();
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			Key begin = restoreApplierKeyFor(self->id(), 0);
+			Standalone<RangeResultRef> txnIds = wait( tr->getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+			if (txnIds.size() > 0) {
+				TraceEvent(SevError, "FastRestore_ApplyTxnStateNotClean").detail("TxnIds", txnIds.size());
+				for(auto& kv : txnIds) {
+					std::pair<UID, Version> applierInfo = decodeRestoreApplierKey(kv.key);
+					TraceEvent(SevError, "FastRestore_ApplyTxnStateNotClean").detail("Applier", applierInfo.first).detail("ResidueTxnID", applierInfo.second);
+				}
+			}
+			break;
+		} catch (Error& e) {
+			wait(tr->onError(e));
+		}
+	}
+
 
 	loop { // Transaction retry loop
 		try {
