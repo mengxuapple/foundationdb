@@ -270,19 +270,28 @@ struct AtomicOpsWorkload : TestWorkload {
 
 		state ReadYourWritesTransaction tr(cx);
 		state Standalone<RangeResultRef> ops;
+		state std::map<Key, int64_t> opsVal; // ops key, ops value
 		Key begin(format("ops%08x", g));
 		Standalone<RangeResultRef> ops = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
 		for(auto& kv : ops) {
 			bool inRecord = records.find(kv.key) != records.end();
 			uint64_t intValue = 0;
 			memcpy(&intValue, kv.value.begin(), kv.value.size());
+			opsVal[kv.key] = intValue;
 			if (inRecord && intValue == 0) {
-				TraceEvent(SevError, "ValidateOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]);
+				TraceEvent(SevError, "MissingOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]);
 			}
 			if (inRecord && intValue != logVal[records[kv.key]]) {
-				TraceEvent(SevError, "ValidateOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]).detail("LogValue", logVal[records[kv.key]]).detail("OpValue", intValue);
+				TraceEvent(SevError, "InconsistentOpsKeyValue").detail("Key", kv.key).detail("DebugKey", records[kv.key]).detail("LogValue", logVal[records[kv.key]]).detail("OpValue", intValue);
 			}
-			
+		}
+
+		// Validate if there is any ops key missing
+		for(auto& kv : records) {
+			uint64_t intValue = opsVal[kv.first];
+			if (intValue <= 0) {
+				TraceEvent(SevError, "MissingOpsKey").detail("OpsKey", kv.first).detail("OpsVal", intValue).detail("DebugKey", kv.second);
+			}
 		}
 		return Void();
 	}
