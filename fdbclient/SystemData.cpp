@@ -644,7 +644,7 @@ const KeyRef restoreApplierTxnValue = LiteralStringRef("1");
 const Key restoreApplierKeyFor(UID const& applierID, Version version) {
 	ASSERT_WE_THINK(version >= 0);
 	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(restoreWorkersKeys.begin);
+	wr.serializeBytes(restoreApplierKeys.begin);
 	wr << applierID << version;
 	return wr.toValue();
 }
