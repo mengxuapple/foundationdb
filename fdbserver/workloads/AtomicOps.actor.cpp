@@ -192,6 +192,29 @@ struct AtomicOpsWorkload : TestWorkload {
 		}
 	}
 
+	ACTOR Future<Void> dumpLogKV(Database cx, int g) {
+		state ReadYourWritesTransaction tr(cx);
+		state Standalone<RangeResultRef> log;
+		Key begin(format("log%08x", g));
+		Standalone<RangeResultRef> log_ = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		log = log_;
+		for(auto& kv : log) {
+			TraceEvent("AtomicOpLog").detail("Key", kv.key).detail("Val", kv.value);
+		}
+		return Void();
+	}
+
+	ACTOR Future<Void> dumpOpsKV(Database cx, int g) {
+		state ReadYourWritesTransaction tr(cx);
+		state Standalone<RangeResultRef> ops;
+		Key begin(format("ops%08x", g));
+		Standalone<RangeResultRef> ops = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		for(auto& kv : ops) {
+			TraceEvent("AtomicOpOps").detail("Key", kv.key).detail("Val", kv.value);
+		}
+		return Void();
+	}
+
 	ACTOR Future<bool> _check( Database cx, AtomicOpsWorkload* self ) {
 		state int g = 0;
 		state bool ret = true;
@@ -250,6 +273,8 @@ struct AtomicOpsWorkload : TestWorkload {
 							if(logResult != opsResult) {
 								TraceEvent(SevError, "LogAddMismatch").detail("LogResult", logResult).detail("OpResult", opsResult).detail("OpsResultStr", printable(opsResultStr)).detail("Size", opsResultStr.size())
 									.detail("LowerBoundSum", self->lbsum).detail("UperBoundSum", self->ubsum);
+								wait( self->dumpLogKV(cx, g) );
+								wait( self->dumpOpsKV(cx, g) );
 							}
 						}
 						break;
