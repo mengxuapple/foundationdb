@@ -233,12 +233,14 @@ struct AtomicOpsWorkload : TestWorkload {
 	ACTOR Future<Void> dumpOpsKV(Database cx, int g) {
 		state ReadYourWritesTransaction tr(cx);
 		state Standalone<RangeResultRef> ops;
+		state uint64_t sum = 0;
 		Key begin(format("ops%08x", g));
 		Standalone<RangeResultRef> ops = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
 		for(auto& kv : ops) {
 			uint64_t intValue = 0;
 			memcpy(&intValue, kv.value.begin(), kv.value.size());
-			TraceEvent("AtomicOpOps").detail("Key", kv.key).detail("Val", kv.value).detail("IntVal", intValue);
+			sum += intValue;
+			TraceEvent("AtomicOpOps").detail("Key", kv.key).detail("Val", kv.value).detail("IntVal", intValue).detail("CurSum", sum);
 		}
 		return Void();
 	}
@@ -254,6 +256,18 @@ struct AtomicOpsWorkload : TestWorkload {
 			records[kv.value] = kv.key;
 		}
 
+		// Get log key value
+		state ReadYourWritesTransaction tr2(cx);
+		Key begin(format("log%08x", g));
+		Standalone<RangeResultRef> log_ = wait( tr2.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		log = log_;
+		state std::map<Key, int64_t> logVal; // debugKey, log's value
+		for(auto& kv : log) {
+			uint64_t intValue = 0;
+			memcpy(&intValue, kv.value.begin(), kv.value.size());
+			logVal[kv.key.removePrefix(LiteralStringRef("log")).withPrefix(LiteralStringRef("debug"))] = intValue;
+		}
+
 		state ReadYourWritesTransaction tr(cx);
 		state Standalone<RangeResultRef> ops;
 		Key begin(format("ops%08x", g));
@@ -264,6 +278,9 @@ struct AtomicOpsWorkload : TestWorkload {
 			memcpy(&intValue, kv.value.begin(), kv.value.size());
 			if (inRecord && intValue == 0) {
 				TraceEvent(SevError, "ValidateOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]);
+			}
+			if (inRecord && intValue != logVal[records[kv.key]]) {
+				TraceEvent(SevError, "ValidateOpsKey").detail("Key", kv.key).detail("DebugKey", records[kv.key]).detail("LogValue", logVal[records[kv.key]]).detail("OpValue", intValue);
 			}
 			
 		}
