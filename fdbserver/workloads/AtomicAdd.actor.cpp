@@ -124,20 +124,20 @@ struct AtomicAddWorkload : TestWorkload {
 			}
 		}
 
-		state int counter = 0;
-		for(; counter < self->maxCount; counter++) {
-			state ReadYourWritesTransaction tr(cx);
-			loop {
-				try {
-					uint64_t intValue = 0;
-					tr.set(StringRef(format("ops/%08x/%08x",self->clientId, counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
-					wait( tr.commit() );
-					break;
-				} catch( Error &e ) {
-					wait( tr.onError(e) );
-				}
-			}
-		}
+		// state int counter = 0;
+		// for(; counter < self->maxCount; counter++) {
+		// 	state ReadYourWritesTransaction tr(cx);
+		// 	loop {
+		// 		try {
+		// 			uint64_t intValue = 0;
+		// 			tr.set(StringRef(format("ops/%08x/%08x",self->clientId, counter)), StringRef((const uint8_t*) &intValue, sizeof(intValue)));
+		// 			wait( tr.commit() );
+		// 			break;
+		// 		} catch( Error &e ) {
+		// 			wait( tr.onError(e) );
+		// 		}
+		// 	}
+		// }
 
 		return Void();
 	}
@@ -166,6 +166,7 @@ struct AtomicAddWorkload : TestWorkload {
 					// } else {
 					// 	TraceEvent(SevError, "AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("KeyNotExist", key.toString());
 					// }
+					tr.set(key, zeroVal);
 					TraceEvent("AtomicAddWorker").detail("ClientID", self->clientId).detail("Counter", counter).detail("Key", key.toString());
 					tr.atomicOp(key, val, self->opType);
 					tr.set(StringRef(format("sum/%08x/%08x", self->clientId, counter)), tmpSumVal);
