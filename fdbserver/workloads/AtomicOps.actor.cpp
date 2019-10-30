@@ -122,7 +122,13 @@ struct AtomicOpsWorkload : TestWorkload {
 	virtual void getMetrics( vector<PerfMetric>& m ) {
 	}
 
-	Key logKey( int group ) { return StringRef(format("log%08x%08x%08x",group,clientId,opNum++));}
+	//Key logKey( int group ) { return StringRef(format("log%08x%08x%08x",group,clientId,opNum++));}
+	std::pair<Key, Key> logDebugKey(int group) {
+		Key logKey(format("log%08x%08x%08x",group,clientId,opNum));
+		Key debugKey(format("debug%08x%08x%08x",group,clientId,opNum));
+		opNum++;
+		return std::make_pair(logKey, debugKey);
+	}
 
 	ACTOR Future<Void> _setup( Database cx, AtomicOpsWorkload* self ) {
 		// Sanity check if log keyspace has elements
@@ -177,9 +183,12 @@ struct AtomicOpsWorkload : TestWorkload {
 					int group = deterministicRandom()->randomInt(0,100);
 					state uint64_t intValue = deterministicRandom()->randomInt( 0, 10000000 );
 					Key val = StringRef((const uint8_t*) &intValue, sizeof(intValue));
-					tr.set(self->logKey(group), val);
+					std::pair<Key, Key> logDebugKey = self->logDebugKey(group);
 					int nodeIndex = deterministicRandom()->randomInt(0, self->nodeCount / 100);
-					tr.atomicOp(StringRef(format("ops%08x%08x", group, nodeIndex)), val, self->opType);
+					Key opsKey(format("ops%08x%08x", group, nodeIndex));
+					tr.set(logDebugKey.first, val);
+					tr.set(logDebugKey.second, opsKey);
+					tr.atomicOp(opsKey, val, self->opType);
 					wait( tr.commit() );
 					self->lbsum += intValue;
 					self->ubsum += intValue;
@@ -200,6 +209,18 @@ struct AtomicOpsWorkload : TestWorkload {
 		log = log_;
 		for(auto& kv : log) {
 			TraceEvent("AtomicOpLog").detail("Key", kv.key).detail("Val", kv.value);
+		}
+		return Void();
+	}
+
+	ACTOR Future<Void> dumpDebugKV(Database cx, int g) {
+		state ReadYourWritesTransaction tr(cx);
+		state Standalone<RangeResultRef> log;
+		Key begin(format("debug%08x", g));
+		Standalone<RangeResultRef> log_ = wait( tr.getRange(KeyRangeRef(begin, strinc(begin)), CLIENT_KNOBS->TOO_MANY) );
+		log = log_;
+		for(auto& kv : log) {
+			TraceEvent("AtomicOpDebug").detail("Key", kv.key).detail("Val", kv.value);
 		}
 		return Void();
 	}
@@ -274,6 +295,7 @@ struct AtomicOpsWorkload : TestWorkload {
 								TraceEvent(SevError, "LogAddMismatch").detail("LogResult", logResult).detail("OpResult", opsResult).detail("OpsResultStr", printable(opsResultStr)).detail("Size", opsResultStr.size())
 									.detail("LowerBoundSum", self->lbsum).detail("UperBoundSum", self->ubsum);
 								wait( self->dumpLogKV(cx, g) );
+								wait( self->dumpDebugKV(cx, g) );
 								wait( self->dumpOpsKV(cx, g) );
 							}
 						}
