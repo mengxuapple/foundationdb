@@ -642,6 +642,8 @@ const KeyRef restoreApplierTxnValue = LiteralStringRef("1");
 
 // restoreApplierKeys: track atomic transaction progress to ensure applying atomicOp exactly once
 // Must convert version to bigEndian to make sure the actual key k1 < k2 when k1.v1 < k2.v2 
+// Version is passed in as BigEndian64
+// TODO: Change Version to TxnIDType which hold the littleEndian Versoin. You do the serialization inside the struct
 const Key restoreApplierKeyFor(UID const& applierID, Version version) {
 	//ASSERT_WE_THINK(version >= 0);
 	BinaryWriter wr(Unversioned());
