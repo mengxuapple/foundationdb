@@ -5016,3 +5016,28 @@ TEST_CASE("/DataDistribution/AddTeamsBestOf/NotEnoughServers") {
 
 	return Void();
 }
+
+TEST_CASE("/DataDistribution/TestUIDCompare") {
+	// create 600K  UID
+	printf("Start /DataDistribution/TestUIDCompare\n");
+	bool exists = false;
+	long target = 600 * 1000;
+	for (long target = 600 * 1000; target < 6000 * 1000; target += 600 * 1000) {
+		vector<UID> uids;
+		for(long i = 0; i < target; i++) {
+			uids.push_back(deterministicRandom()->randomUniqueID());
+		}
+		double start = timer();
+		printf("Start at:%.6f\n", start);
+		for(long j = 0; j < 1000; j++) {
+			exists = std::count(uids.begin(), uids.end(), uids[deterministicRandom()->random01() * target]);
+		}
+		double end = timer();
+		printf("End at:%.6f\n", start);
+		printf("Array size:%ld, 1000 find:%.6fs, 1 find:%.6f\n", target, end - start, (end - start) / 1000);
+	}
+
+	printf("%d\n", (int) exists);
+
+	return Void();
+}
