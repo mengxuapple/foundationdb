@@ -42,17 +42,18 @@ inline int fastrand() {
 //inline static bool TRACE_SAMPLE() { return fastrand()<16; }
 inline static bool TRACE_SAMPLE() { return false; }
 
-extern int g_trace_depth;
+extern thread_local int g_trace_depth;
 
 enum Severity {
-	SevSample=1,
-	SevDebug=5,
-	SevInfo=10,
-	SevWarn=20,
-	SevWarnAlways=30,
-	SevError=40,
-	SevMaxUsed=SevError,
-	SevMax=1000000
+	SevVerbose = 0,
+	SevSample = 1,
+	SevDebug = 5,
+	SevInfo = 10,
+	SevWarn = 20,
+	SevWarnAlways = 30,
+	SevError = 40,
+	SevMaxUsed = SevError,
+	SevMax = 1000000
 };
 
 class TraceEventFields {
@@ -564,7 +565,10 @@ void addTraceRole(std::string role);
 void removeTraceRole(std::string role);
 
 enum trace_clock_t { TRACE_CLOCK_NOW, TRACE_CLOCK_REALTIME };
-extern trace_clock_t g_trace_clock;
+extern thread_local trace_clock_t g_trace_clock;
 extern TraceBatch g_traceBatch;
+
+#define DUMPTOKEN(name)                                                                                                \
+	TraceEvent("DumpToken", recruited.id()).detail("Name", #name).detail("Token", name.getEndpoint().token)
 
 #endif

@@ -24,8 +24,6 @@ set(FDBSERVER_SRCS
   IKeyValueStore.h
   IPager.h
   IVersionedStore.h
-  IndirectShadowPager.actor.cpp
-  IndirectShadowPager.h
   KeyValueStoreCompressTestData.actor.cpp
   KeyValueStoreMemory.actor.cpp
   KeyValueStoreSQLite.actor.cpp
@@ -45,14 +43,13 @@ set(FDBSERVER_SRCS
   MasterInterface.h
   MasterProxyServer.actor.cpp
   masterserver.actor.cpp
-  MemoryPager.actor.cpp
-  MemoryPager.h
   MoveKeys.actor.cpp
   MoveKeys.actor.h
   networktest.actor.cpp
   NetworkTest.h
   OldTLogServer_4_6.actor.cpp
   OldTLogServer_6_0.actor.cpp
+  OldTLogServer_6_2.actor.cpp
   Orderer.actor.h
   pubsub.actor.cpp
   pubsub.h
@@ -61,8 +58,20 @@ set(FDBSERVER_SRCS
   Ratekeeper.actor.cpp
   RatekeeperInterface.h
   RecoveryState.h
-  Restore.actor.cpp
-  RestoreInterface.h
+  RestoreCommon.actor.h
+  RestoreCommon.actor.cpp
+  RestoreUtil.h
+  RestoreUtil.actor.cpp
+  RestoreRoleCommon.actor.h
+  RestoreRoleCommon.actor.cpp
+  RestoreMaster.actor.h
+  RestoreMaster.actor.cpp
+  RestoreApplier.actor.h
+  RestoreApplier.actor.cpp
+  RestoreLoader.actor.h
+  RestoreLoader.actor.cpp
+  RestoreWorker.actor.h
+  RestoreWorker.actor.cpp
   Resolver.actor.cpp
   ResolverInterface.h
   ServerDBInfo.h
@@ -71,6 +80,7 @@ set(FDBSERVER_SRCS
   SkipList.cpp
   Status.actor.cpp
   Status.h
+  StorageCache.actor.cpp
   StorageMetrics.actor.h
   StorageMetrics.h
   storageserver.actor.cpp
@@ -100,6 +110,8 @@ set(FDBSERVER_SRCS
   workloads/AtomicSwitchover.actor.cpp
   workloads/BackgroundSelectors.actor.cpp
   workloads/BackupCorrectness.actor.cpp
+  workloads/BackupAndParallelRestoreCorrectness.actor.cpp
+  workloads/ParallelRestore.actor.cpp
   workloads/BackupToDBAbort.actor.cpp
   workloads/BackupToDBCorrectness.actor.cpp
   workloads/BackupToDBUpgrade.actor.cpp
@@ -169,6 +181,7 @@ set(FDBSERVER_SRCS
   workloads/Throttling.actor.cpp
   workloads/Throughput.actor.cpp
   workloads/TimeKeeperCorrectness.actor.cpp
+  workloads/DifferentClustersSameRV.actor.cpp
   workloads/UnitPerf.actor.cpp
   workloads/UnitTests.actor.cpp
   workloads/Unreadable.actor.cpp

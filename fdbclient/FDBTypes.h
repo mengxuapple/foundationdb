@@ -93,7 +93,7 @@ struct struct_like_traits<Tag> : std::true_type {
 	}
 
 	template <int i, class Type, class Context>
-	static const void assign(Member& m, const Type& t, Context&) {
+	static void assign(Member& m, const Type& t, Context&) {
 		if constexpr (i == 0) {
 			m.id = t;
 		} else {
@@ -105,15 +105,47 @@ struct struct_like_traits<Tag> : std::true_type {
 
 static const Tag invalidTag {tagLocalitySpecial, 0};
 static const Tag txsTag {tagLocalitySpecial, 1};
+static const Tag cacheTag {tagLocalitySpecial, 2};
 
 enum { txsTagOld = -1, invalidTagOld = -100 };
 
 struct TagsAndMessage {
 	StringRef message;
-	std::vector<Tag> tags;
+	VectorRef<Tag> tags;
 
 	TagsAndMessage() {}
-	TagsAndMessage(StringRef message, const std::vector<Tag>& tags) : message(message), tags(tags) {}
+	TagsAndMessage(StringRef message, VectorRef<Tag> tags) : message(message), tags(tags) {}
+
+	// Loads tags and message from a serialized buffer. "rd" is checkpointed at
+	// its begining position to allow the caller to rewind if needed.
+	// T can be ArenaReader or BinaryReader.
+	template <class T>
+	void loadFromArena(T* rd, uint32_t* messageVersionSub) {
+		int32_t messageLength;
+		uint16_t tagCount;
+		uint32_t sub;
+
+		rd->checkpoint();
+		*rd >> messageLength >> sub >> tagCount;
+		if (messageVersionSub) *messageVersionSub = sub;
+		tags = VectorRef<Tag>((Tag*)rd->readBytes(tagCount*sizeof(Tag)), tagCount);
+		const int32_t rawLength = messageLength + sizeof(messageLength);
+		rd->rewind();
+		rd->checkpoint();
+		message = StringRef((const uint8_t*)rd->readBytes(rawLength), rawLength);
+	}
+
+	// Returns the size of the header, including: msg_length, version.sub, tag_count, tags.
+	int32_t getHeaderSize() const {
+		return sizeof(int32_t) + sizeof(uint32_t) + sizeof(uint16_t) + tags.size() * sizeof(Tag);
+	}
+
+	StringRef getMessageWithoutTags() const {
+		return message.substr(getHeaderSize());
+	}
+
+	// Returns the message with the header.
+	StringRef getRawMessage() const { return message; }
 };
 
 struct KeyRangeRef;
@@ -131,6 +163,11 @@ static std::string describe( const Tag item ) {
 
 static std::string describe( const int item ) {
 	return format("%d", item);
+}
+
+// Allows describeList to work on a vector of std::string
+static std::string describe(const std::string& s) {
+	return s;
 }
 
 template <class T>
@@ -253,6 +290,8 @@ struct KeyRangeRef {
 			return a.end < b.end;
 		}
 	};
+
+	std::string toString() const { return "Begin:" + begin.printable() + "End:" + end.printable(); }
 };
 
 template<>
@@ -331,12 +370,12 @@ struct string_serialized_traits<KeyValueRef> : std::true_type {
 	uint32_t save(uint8_t* out, const KeyValueRef& item) const {
 		auto begin = out;
 		uint32_t sz = item.key.size();
-		memcpy(out, &sz, sizeof(sz));
+		*reinterpret_cast<decltype(sz)*>(out) = sz;
 		out += sizeof(sz);
 		memcpy(out, item.key.begin(), sz);
 		out += sz;
 		sz = item.value.size();
-		memcpy(out, &sz, sizeof(sz));
+		*reinterpret_cast<decltype(sz)*>(out) = sz;
 		out += sizeof(sz);
 		memcpy(out, item.value.begin(), sz);
 		out += sz;
@@ -516,6 +555,10 @@ inline KeySelectorRef operator + (const KeySelectorRef& s, int off) {
 inline KeySelectorRef operator - (const KeySelectorRef& s, int off) {
 	return KeySelectorRef(s.getKey(), s.orEqual, s.offset-off);
 }
+inline bool selectorInRange( KeySelectorRef const& sel, KeyRangeRef const& range ) {
+	// Returns true if the given range suffices to at least begin to resolve the given KeySelectorRef
+	return sel.getKey() >= range.begin && (sel.isBackward() ? sel.getKey() <= range.end : sel.getKey() < range.end);
+}
 
 template <class Val>
 struct KeyRangeWith : KeyRange {
@@ -580,6 +623,12 @@ struct RangeResultRef : VectorRef<KeyValueRef> {
 	void serialize( Ar& ar ) {
 		serializer(ar, ((VectorRef<KeyValueRef>&)*this), more, readThrough, readToBegin, readThroughEnd);
 	}
+
+	std::string toString() const {
+		return "more:" + std::to_string(more) +
+		       " readThrough:" + (readThrough.present() ? readThrough.get().toString() : "[unset]") +
+		       " readToBegin:" + std::to_string(readToBegin) + " readThroughEnd:" + std::to_string(readThroughEnd);
+	}
 };
 
 template<>
@@ -591,7 +640,9 @@ struct Traceable<RangeResultRef> : std::true_type {
 
 struct KeyValueStoreType {
 	constexpr static FileIdentifier file_identifier = 6560359;
-	// These enumerated values are stored in the database configuration, so can NEVER be changed.  Only add new ones just before END.
+	// These enumerated values are stored in the database configuration, so should NEVER be changed.
+	// Only add new ones just before END.
+	// SS storeType is END before the storageServerInterface is initialized.
 	enum StoreType {
 		SSD_BTREE_V1,
 		MEMORY,
@@ -640,10 +691,11 @@ struct TLogVersion {
 		V2 = 2, // 6.0
 		V3 = 3, // 6.1
 		V4 = 4, // 6.2
+		V5 = 5, // 7.0
 		MIN_SUPPORTED = V2,
-		MAX_SUPPORTED = V4,
-		MIN_RECRUITABLE = V2,
-		DEFAULT = V3,
+		MAX_SUPPORTED = V5,
+		MIN_RECRUITABLE = V3,
+		DEFAULT = V4,
 	} version;
 
 	TLogVersion() : version(UNSET) {}
@@ -664,6 +716,7 @@ struct TLogVersion {
 		if (s == LiteralStringRef("2")) return V2;
 		if (s == LiteralStringRef("3")) return V3;
 		if (s == LiteralStringRef("4")) return V4;
+		if (s == LiteralStringRef("5")) return V5;
 		return default_error_or();
 	}
 };
@@ -712,7 +765,6 @@ struct TLogSpillType {
 		return default_error_or();
 	}
 
-private:
 	uint32_t type;
 };
 
@@ -837,6 +889,8 @@ struct ClusterControllerPriorityInfo {
 		serializer(ar, processClassFitness, isExcluded, dcFitness);
 	}
 };
+
+class Database;
 
 struct HealthMetrics {
 	struct StorageStats {

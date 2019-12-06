@@ -73,7 +73,7 @@ struct struct_like_traits<std::tuple<Ts...>> : std::true_type {
 	}
 
 	template <int i, class Type, class Context>
-	static const void assign(Member& m, const Type& t, Context&) {
+	static void assign(Member& m, const Type& t, Context&) {
 		std::get<i>(m) = t;
 	}
 };
@@ -512,7 +512,12 @@ void for_each(F&& f, Members&&... members) {
 }
 
 struct VTableSet {
-	std::map<const VTable*, int> offsets;
+	// Precondition: vtable is in offsets
+	int getOffset(const VTable* vtable) const {
+		return std::lower_bound(offsets.begin(), offsets.end(), std::make_pair(vtable, -1))->second;
+	}
+	// Sorted map
+	std::vector<std::pair<const VTable*, int>> offsets;
 	std::vector<uint8_t> packed_tables;
 };
 
@@ -601,11 +606,12 @@ VTableSet get_vtableset_impl(const Root& root, const Context& context) {
 	}
 	std::vector<uint8_t> packed_tables(size);
 	int i = 0;
-	std::map<const VTable*, int> offsets;
+	std::vector<std::pair<const VTable*, int>> offsets;
+	offsets.reserve(vtables.size());
 	for (const auto* vtable : vtables) {
 		memcpy(&packed_tables[i], reinterpret_cast<const uint8_t*>(&(*vtable)[0]),
 		       vec_bytes(vtable->begin(), vtable->end()));
-		offsets[vtable] = i;
+		offsets.push_back({ vtable, i });
 		i += vec_bytes(vtable->begin(), vtable->end());
 	}
 	return VTableSet{ offsets, packed_tables };
@@ -777,7 +783,7 @@ struct SaveVisitorLambda : Context {
 			    }
 		    },
 		    members...);
-		int vtable_offset = writer.vtable_start - vtableset->offsets.at(&vtable);
+		int vtable_offset = writer.vtable_start - vtableset->getOffset(&vtable);
 		int padding = 0;
 		int start =
 		    RightAlign(writer.current_buffer_size + vtable[1] - 4, std::max({ 4, fb_align<Members>... }), &padding) + 4;
@@ -1104,7 +1110,7 @@ uint8_t* save(Context& context, const Root& root, FileIdentifier file_identifier
 	save_with_vtables(root, vtableset, precompute_size, &vtable_start, file_identifier, context);
 	uint8_t* out = context.allocate(precompute_size.current_buffer_size);
 	WriteToBuffer writeToBuffer{ context, precompute_size.current_buffer_size, vtable_start, out,
-		                         precompute_size.writeToOffsets.begin() };
+														precompute_size.writeToOffsets.begin() };
 	save_with_vtables(root, vtableset, writeToBuffer, &vtable_start, file_identifier, context);
 	return out;
 }
@@ -1116,10 +1122,15 @@ void load(Root& root, const uint8_t* in, Context& context) {
 
 } // namespace detail
 
-template <class Context, class... Members>
-uint8_t* save_members(Context& context, FileIdentifier file_identifier, Members&... members) {
-	const auto& root = detail::fake_root(members...);
-	return detail::save(context, root, file_identifier);
+template <class Context, class FirstMember, class... Members>
+uint8_t* save_members(Context& context, FileIdentifier file_identifier, const FirstMember& first,
+                      const Members&... members) {
+	if constexpr (serialize_raw<FirstMember>::value) {
+		return serialize_raw<FirstMember>::save_raw(context, first);
+	} else {
+		const auto& root = detail::fake_root(const_cast<FirstMember&>(first), const_cast<Members&>(members)...);
+		return detail::save(context, root, file_identifier);
+	}
 }
 
 template <class Context, class... Members>
@@ -1134,17 +1145,25 @@ inline FileIdentifier read_file_identifier(const uint8_t* in) {
 	return result;
 }
 
+namespace detail {
+template <class T>
+struct YesFileIdentifier {
+	constexpr static FileIdentifier file_identifier = FileIdentifierFor<T>::value;
+};
+struct NoFileIdentifier {};
+}; // namespace detail
+
 // members of unions must be tables in flatbuffers, so you can use this to
 // introduce the indirection only when necessary.
 template <class T>
-struct EnsureTable {
-	static_assert(HasFileIdentifier<T>::value);
-	constexpr static FileIdentifier file_identifier = FileIdentifierFor<T>::value;
+struct EnsureTable
+  : std::conditional_t<HasFileIdentifier<T>::value, detail::YesFileIdentifier<T>, detail::NoFileIdentifier> {
 	EnsureTable() = default;
 	EnsureTable(const T& t) : t(t) {}
 	template <class Archive>
 	void serialize(Archive& ar) {
 		if constexpr (is_fb_function<Archive>) {
+			// This is only for vtable collection. Load and save use the LoadSaveHelper specialization below
 			if constexpr (detail::expect_serialize_member<T>) {
 				if constexpr (serializable_traits<T>::value) {
 					serializable_traits<T>::serialize(ar, t);
@@ -1159,7 +1178,41 @@ struct EnsureTable {
 		}
 	}
 	T& asUnderlyingType() { return t; }
+	const T& asUnderlyingType() const { return t; }
 
 private:
 	T t;
 };
+
+namespace detail {
+
+// Ensure if there's a LoadSaveHelper specialization available for T it gets used.
+template <class T, class Context>
+struct LoadSaveHelper<EnsureTable<T>, Context> : Context {
+	LoadSaveHelper(const Context& context) : Context(context), alreadyATable(context), wrapInTable(context) {}
+
+	void load(EnsureTable<T>& member, const uint8_t* current) {
+		if constexpr (expect_serialize_member<T>) {
+			alreadyATable.load(member.asUnderlyingType(), current);
+		} else {
+			FakeRoot<T> t{ member.asUnderlyingType() };
+			wrapInTable.load(t, current);
+		}
+	}
+
+	template <class Writer>
+	RelativeOffset save(const EnsureTable<T>& member, Writer& writer, const VTableSet* vtables) {
+		if constexpr (expect_serialize_member<T>) {
+			return alreadyATable.save(member.asUnderlyingType(), writer, vtables);
+		} else {
+			FakeRoot<T> t{ const_cast<T&>(member.asUnderlyingType()) };
+			return wrapInTable.save(t, writer, vtables);
+		}
+	}
+
+private:
+	LoadSaveHelper<T, Context> alreadyATable;
+	LoadSaveHelper<FakeRoot<T>, Context> wrapInTable;
+};
+
+} // namespace detail

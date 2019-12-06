@@ -98,6 +98,7 @@ public:
 				case ProcessClass::ClusterControllerClass: return false;
 				case ProcessClass::DataDistributorClass: return false;
 				case ProcessClass::RatekeeperClass: return false;
+				case ProcessClass::StorageCacheClass: return false;
 				default: return false;
 			}
 		}
@@ -155,7 +156,6 @@ public:
 	virtual bool isAvailable() const = 0;
 	virtual bool datacenterDead(Optional<Standalone<StringRef>> dcId) const = 0;
 	virtual void displayWorkers() const;
-	virtual bool useObjectSerializer() const = 0;
 
 	virtual void addRole(NetworkAddress const& address, std::string const& role) {
 		roleAddresses[address][role] ++;
@@ -341,7 +341,7 @@ private:
 extern ISimulator* g_pSimulator;
 #define g_simulator (*g_pSimulator)
 
-void startNewSimulator(bool useObjectSerializer);
+void startNewSimulator();
 
 //Parameters used to simulate disk performance
 struct DiskParameters : ReferenceCounted<DiskParameters> {

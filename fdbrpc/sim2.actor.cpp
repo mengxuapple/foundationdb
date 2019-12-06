@@ -293,6 +293,7 @@ private:
 	void closeInternal() {
 		if(peer) {
 			peer->peerClosed();
+			stopReceive = delay(1.0);
 		}
 		leakedConnectionTracker.cancel();
 		peer.clear();
@@ -369,7 +370,13 @@ private:
 			g_simulator.lastConnectionFailure = now();
 			double a = deterministicRandom()->random01(), b = deterministicRandom()->random01();
 			TEST(true);  // Simulated connection failure
-			TraceEvent("ConnectionFailure", dbgid).detail("MyAddr", process->address).detail("PeerAddr", peerProcess->address).detail("SendClosed", a > .33).detail("RecvClosed", a < .66).detail("Explicit", b < .3);
+			TraceEvent("ConnectionFailure", dbgid)
+			    .detail("MyAddr", process->address)
+			    .detail("PeerAddr", peerProcess->address)
+			    .detail("PeerIsValid", peer.isValid())
+			    .detail("SendClosed", a > .33)
+			    .detail("RecvClosed", a < .66)
+			    .detail("Explicit", b < .3);
 			if (a < .66 && peer) peer->closeInternal();
 			if (a > .33) closeInternal();
 			// At the moment, we occasionally notice the connection failed immediately.  In principle, this could happen but only after a delay.
@@ -381,7 +388,8 @@ private:
 	ACTOR static Future<Void> trackLeakedConnection( Sim2Conn* self ) {
 		wait( g_simulator.onProcess( self->process ) );
 		if (self->process->address.isPublic()) {
-			wait( delay( FLOW_KNOBS->CONNECTION_MONITOR_IDLE_TIMEOUT * FLOW_KNOBS->CONNECTION_MONITOR_IDLE_TIMEOUT * 1.5 ) );
+			wait(delay(FLOW_KNOBS->CONNECTION_MONITOR_IDLE_TIMEOUT * FLOW_KNOBS->CONNECTION_MONITOR_IDLE_TIMEOUT * 1.5 +
+			           FLOW_KNOBS->CONNECTION_MONITOR_LOOP_TIME * 2.1 + FLOW_KNOBS->CONNECTION_MONITOR_TIMEOUT));
 		} else {
 			wait( delay( FLOW_KNOBS->CONNECTION_MONITOR_IDLE_TIMEOUT * 1.5 ) );
 		}
@@ -828,8 +836,11 @@ public:
 	}
 	ACTOR static Future<Reference<IConnection>> onConnect( Future<Void> ready, Reference<Sim2Conn> conn ) {
 		wait(ready);
-		if (conn->isPeerGone() && deterministicRandom()->random01()<0.5) {
+		if (conn->isPeerGone()) {
 			conn.clear();
+			if(FLOW_KNOBS->SIM_CONNECT_ERROR_MODE == 1 || (FLOW_KNOBS->SIM_CONNECT_ERROR_MODE == 2 && deterministicRandom()->random01() > 0.5)) {
+				throw connection_failed();
+			}
 			wait(Never());
 		}
 		conn->opened = true;
@@ -980,16 +991,10 @@ public:
 		return Void();
 	}
 
-	ACTOR Future<Void> _run(Sim2 *self) {
-		Future<Void> loopFuture = self->runLoop(self);
-		self->net2->run();
-		wait( loopFuture );
-		return Void();
-	}
-
 	// Implement ISimulator interface
 	virtual void run() {
-		_run(this);
+		Future<Void> loopFuture = runLoop(this);
+		net2->run();
 	}
 	virtual ProcessInfo* newProcess(const char* name, IPAddress ip, uint16_t port, uint16_t listenPerProcess,
 	                                LocalityData locality, ProcessClass startingClass, const char* dataFolder,
@@ -1090,10 +1095,6 @@ public:
 		}
 
 		return primaryTLogsDead || primaryProcessesDead.validate(storagePolicy);
-	}
-
-	virtual bool useObjectSerializer() const {
-		return net2->useObjectSerializer();
 	}
 
 	// The following function will determine if the specified configuration of available and dead processes can allow the cluster to survive
@@ -1588,10 +1589,10 @@ public:
 		machines.erase(machineId);
 	}
 
-	Sim2(bool objSerializer) : time(0.0), taskCount(0), yielded(false), yield_limit(0), currentTaskID(TaskPriority::Zero) {
+	Sim2() : time(0.0), taskCount(0), yielded(false), yield_limit(0), currentTaskID(TaskPriority::Zero) {
 		// Not letting currentProcess be NULL eliminates some annoying special cases
 		currentProcess = new ProcessInfo("NoMachine", LocalityData(Optional<Standalone<StringRef>>(), StringRef(), StringRef(), StringRef()), ProcessClass(), {NetworkAddress()}, this, "", "");
-		g_network = net2 = newNet2(false, true, objSerializer);
+		g_network = net2 = newNet2(false, true);
 		Net2FileSystem::newFileSystem();
 		check_yield(TaskPriority::Zero);
 	}
@@ -1699,9 +1700,9 @@ public:
 	int yield_limit;  // how many more times yield may return false before next returning true
 };
 
-void startNewSimulator(bool objSerializer) {
+void startNewSimulator() {
 	ASSERT( !g_network );
-	g_network = g_pSimulator = new Sim2(objSerializer);
+	g_network = g_pSimulator = new Sim2();
 	g_simulator.connectionFailuresDisableDuration = deterministicRandom()->random01() < 0.5 ? 0 : 1e6;
 }
 

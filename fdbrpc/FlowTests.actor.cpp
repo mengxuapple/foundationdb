@@ -31,6 +31,48 @@ void forceLinkFlowTests() {}
 
 using std::vector;
 
+constexpr int firstLine = __LINE__;
+TEST_CASE("/flow/actorcompiler/lineNumbers") {
+	loop {
+		try {
+			ASSERT(__LINE__ == firstLine + 4);
+			wait(Future<Void>(Void()));
+			ASSERT(__LINE__ == firstLine + 6);
+			throw success();
+		} catch (Error& e) {
+			ASSERT(__LINE__ == firstLine + 9);
+			wait(Future<Void>(Void()));
+			ASSERT(__LINE__ == firstLine + 11);
+		}
+		break;
+	}
+	ASSERT(LiteralStringRef(__FILE__).endsWith(LiteralStringRef("FlowTests.actor.cpp")));
+	return Void();
+}
+
+TEST_CASE("/flow/buggifiedDelay") {
+	if (FLOW_KNOBS->MAX_BUGGIFIED_DELAY == 0) {
+		return Void();
+	}
+	loop {
+		state double x = deterministicRandom()->random01();
+		state int last = 0;
+		state Future<Void> f1 = map(delay(x), [last = &last](const Void&) {
+			*last = 1;
+			return Void();
+		});
+		state Future<Void> f2 = map(delay(x), [last = &last](const Void&) {
+			*last = 2;
+			return Void();
+		});
+		wait(f1 && f2);
+		if (last == 1) {
+			TEST(true); // Delays can become ready out of order
+			return Void();
+		}
+	}
+}
+
 template <class T, class Func, class ErrFunc, class CallbackType>
 class LambdaCallback : public CallbackType, public FastAllocated<LambdaCallback<T,Func,ErrFunc,CallbackType>> {
 	Func func;
@@ -70,7 +112,7 @@ void onReady(FutureStream<T>&& f, Func&& func, ErrFunc&& errFunc) {
 ACTOR static void emptyVoidActor() {
 }
 
-ACTOR static Future<Void> emptyActor() {
+ACTOR [[flow_allow_discard]] static Future<Void> emptyActor() {
 	return Void();
 }
 
@@ -201,7 +243,6 @@ struct YieldMockNetwork : INetwork, ReferenceCounted<YieldMockNetwork> {
 	virtual void run() { return baseNetwork->run(); }
 	virtual void getDiskBytes(std::string const& directory, int64_t& free, int64_t& total)  { return baseNetwork->getDiskBytes(directory,free,total); }
 	virtual bool isAddressOnThisHost(NetworkAddress const& addr) { return baseNetwork->isAddressOnThisHost(addr); }
-	virtual bool useObjectSerializer() const { return baseNetwork->useObjectSerializer(); }
 };
 
 struct NonserializableThing {};
@@ -269,6 +310,20 @@ TEST_CASE("/flow/flow/cancel2")
 	return Void();
 }
 
+namespace {
+// Simple message for flatbuffers unittests
+struct Int {
+	constexpr static FileIdentifier file_identifier = 12345;
+	uint32_t value;
+	Int() = default;
+	Int(uint32_t value) : value(value) {}
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, value);
+	}
+};
+} // namespace
+
 TEST_CASE("/flow/flow/nonserializable futures")
 {
 	// Types no longer need to be statically serializable to make futures, promises, actors
@@ -284,20 +339,20 @@ TEST_CASE("/flow/flow/nonserializable futures")
 
 	// ReplyPromise can be used like a normal promise
 	{
-		ReplyPromise<int> rpInt;
-		Future<int> f = rpInt.getFuture();
+		ReplyPromise<Int> rpInt;
+		Future<Int> f = rpInt.getFuture();
 		ASSERT(!f.isReady());
 		rpInt.send(123);
-		ASSERT(f.get() == 123);
+		ASSERT(f.get().value == 123);
 	}
 
 	{
-		RequestStream<int> rsInt;
-		FutureStream<int> f = rsInt.getFuture();
+		RequestStream<Int> rsInt;
+		FutureStream<Int> f = rsInt.getFuture();
 		rsInt.send(1);
 		rsInt.send(2);
-		ASSERT(f.pop() == 1);
-		ASSERT(f.pop() == 2);
+		ASSERT(f.pop().value == 1);
+		ASSERT(f.pop().value == 2);
 	}
 
 	return Void();
@@ -307,14 +362,14 @@ TEST_CASE("/flow/flow/networked futures")
 {
 	// RequestStream can be serialized
 	{
-		RequestStream<int> locInt;
+		RequestStream<Int> locInt;
 		BinaryWriter wr(IncludeVersion());
 		wr << locInt;
 
 		ASSERT(locInt.getEndpoint().isValid() && locInt.getEndpoint().isLocal() && locInt.getEndpoint().getPrimaryAddress() == FlowTransport::transport().getLocalAddress());
 
 		BinaryReader rd(wr.toValue(), IncludeVersion());
-		RequestStream<int> remoteInt;
+		RequestStream<Int> remoteInt;
 		rd >> remoteInt;
 
 		ASSERT(remoteInt.getEndpoint() == locInt.getEndpoint());
@@ -324,14 +379,14 @@ TEST_CASE("/flow/flow/networked futures")
 	// ReplyPromise can be serialized
 	// TODO: This needs to fiddle with g_currentDeliveryPeerAddress
 	if (0) {
-		ReplyPromise<int> locInt;
+		ReplyPromise<Int> locInt;
 		BinaryWriter wr(IncludeVersion());
 		wr << locInt;
 
 		ASSERT(locInt.getEndpoint().isValid() && locInt.getEndpoint().isLocal());
 
 		BinaryReader rd(wr.toValue(), IncludeVersion());
-		ReplyPromise<int> remoteInt;
+		ReplyPromise<Int> remoteInt;
 		rd >> remoteInt;
 
 		ASSERT(remoteInt.getEndpoint() == locInt.getEndpoint());
