@@ -494,6 +494,8 @@ public class AsyncStackTester {
 				db.options().setTransactionMaxRetryDelay(100);
 				db.options().setTransactionRetryLimit(10);
 				db.options().setTransactionRetryLimit(-1);
+				db.options().setTransactionCausalReadRisky();
+				db.options().setTransactionIncludePortInAddress();
 
 				tr.options().setPrioritySystemImmediate();
 				tr.options().setPriorityBatch();
@@ -511,6 +513,7 @@ public class AsyncStackTester {
 				tr.options().setLogTransaction();
 				tr.options().setReadLockAware();
 				tr.options().setLockAware();
+				tr.options().setIncludePortInAddress();
 
 				if(!(new FDBException("Fake", 1020)).isRetryable() ||
 						(new FDBException("Fake", 10)).isRetryable())

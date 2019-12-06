@@ -32,6 +32,7 @@
 
 enum class TaskPriority {
 	Max = 1000000,
+	ASIOReactor = 20001,
 	RunCycleFunction = 20000,
 	FlushTrace = 10500,
 	WriteSocket = 10000,
@@ -43,7 +44,9 @@ enum class TaskPriority {
 	Coordination = 8800,
 	FailureMonitor = 8700,
 	ResolutionMetrics = 8700,
+	Worker = 8660,
 	ClusterController = 8650,
+	MasterTLogRejoin = 8646,
 	ProxyStorageRejoin = 8645,
 	ProxyCommitDispatcher = 8640,
 	TLogQueuingMetrics = 8620,
@@ -73,6 +76,7 @@ enum class TaskPriority {
 	DataDistribution = 3500,
 	DiskWrite = 3010,
 	UpdateStorage = 3000,
+	CompactCache = 2900,
 	TLogSpilledPeekReply = 2800,
 	FetchKeys = 2500,
 	Low = 2000,
@@ -304,6 +308,7 @@ struct NetworkMetrics {
 
 	double oldestAlternativesFailure;
 	double newestAlternativesFailure;
+	double lastAlternativesFailureSkipDelay;
 	double lastSync;
 
 	double secSquaredSubmit;
@@ -371,7 +376,7 @@ typedef NetworkAddressList (*NetworkAddressesFuncPtr)();
 
 class INetwork;
 extern INetwork* g_network;
-extern INetwork* newNet2(bool useThreadPool = false, bool useMetrics = false, bool useObjectSerializer = false);
+extern INetwork* newNet2(bool useThreadPool = false, bool useMetrics = false);
 
 class INetwork {
 public:
@@ -445,9 +450,6 @@ public:
 
 	virtual bool isAddressOnThisHost( NetworkAddress const& addr ) = 0;
 	// Returns true if it is reasonably certain that a connection to the given address would be a fast loopback connection
-
-	virtual bool useObjectSerializer() const = 0;
-	// Whether or not the object serializer should be used when sending packets
 
 	// Shorthand for transport().getLocalAddress()
 	static NetworkAddress getLocalAddress()

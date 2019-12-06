@@ -111,7 +111,7 @@ thread_local INetwork* thread_network = 0;
 class Net2 sealed : public INetwork, public INetworkConnections {
 
 public:
-	Net2(bool useThreadPool, bool useMetrics, bool useObjectSerializer);
+	Net2(bool useThreadPool, bool useMetrics);
 	void run();
 	void initMetrics();
 
@@ -148,11 +148,9 @@ public:
 
 	virtual flowGlobalType global(int id) { return (globals.size() > id) ? globals[id] : NULL; }
 	virtual void setGlobal(size_t id, flowGlobalType v) { globals.resize(std::max(globals.size(),id+1)); globals[id] = v; }
-	virtual bool useObjectSerializer() const { return _useObjectSerializer; }
 	std::vector<flowGlobalType>		globals;
 
 	bool useThreadPool;
-	bool _useObjectSerializer = false;
 //private:
 
 	ASIOReactor reactor;
@@ -211,6 +209,8 @@ public:
 	Int64MetricHandle countASIOEvents;
 	Int64MetricHandle countSlowTaskSignals;
 	Int64MetricHandle priorityMetric;
+	DoubleMetricHandle countLaunchTime;
+	DoubleMetricHandle countReactTime;
 	BoolMetricHandle awakeMetric;
 
 	EventMetricHandle<SlowTask> slowTaskMetric;
@@ -409,7 +409,16 @@ private:
 	void init() {
 		// Socket settings that have to be set after connect or accept succeeds
 		socket.non_blocking(true);
-		socket.set_option(boost::asio::ip::tcp::no_delay(true));
+		if (FLOW_KNOBS->FLOW_TCP_NODELAY & 1) {
+		  socket.set_option(boost::asio::ip::tcp::no_delay(true));
+		}
+		if (FLOW_KNOBS->FLOW_TCP_QUICKACK & 1) {
+#ifdef __linux__
+		  socket.set_option(boost::asio::detail::socket_option::boolean<IPPROTO_TCP, TCP_QUICKACK>(true));
+#else
+		  TraceEvent(SevWarn, "N2_InitWarn").detail("Message", "TCP_QUICKACK not supported");
+#endif
+		}
 		platform::setCloseOnExec(socket.native_handle());
 	}
 
@@ -483,9 +492,8 @@ struct PromiseTask : public Task, public FastAllocated<PromiseTask> {
 	}
 };
 
-Net2::Net2(bool useThreadPool, bool useMetrics, bool useObjectSerializer)
+Net2::Net2(bool useThreadPool, bool useMetrics)
 	: useThreadPool(useThreadPool),
-	  _useObjectSerializer(useObjectSerializer),
 	  network(this),
 	  reactor(this),
 	  stopped(false),
@@ -548,6 +556,8 @@ void Net2::initMetrics() {
 	priorityMetric.init(LiteralStringRef("Net2.Priority"));
 	awakeMetric.init(LiteralStringRef("Net2.Awake"));
 	slowTaskMetric.init(LiteralStringRef("Net2.SlowTask"));
+	countLaunchTime.init(LiteralStringRef("Net2.CountLaunchTime"));
+	countReactTime.init(LiteralStringRef("Net2.CountReactTime"));
 }
 
 void Net2::run() {
@@ -575,6 +585,7 @@ void Net2::run() {
 	double nnow = timer_monotonic();
 
 	while(!stopped) {
+		FDB_TRACE_PROBE(run_loop_begin);
 		++countRunLoop;
 
 		if (runFunc) {
@@ -582,7 +593,9 @@ void Net2::run() {
 			taskBegin = nnow;
 			trackMinPriority(TaskPriority::RunCycleFunction, taskBegin);
 			runFunc();
-			checkForSlowTask(tsc_begin, __rdtsc(), timer_monotonic() - taskBegin, TaskPriority::RunCycleFunction);
+			double taskEnd = timer_monotonic();
+			countLaunchTime += taskEnd - taskBegin;
+			checkForSlowTask(tsc_begin, __rdtsc(), taskEnd - taskBegin, TaskPriority::RunCycleFunction);
 		}
 
 		double sleepTime = 0;
@@ -598,26 +611,38 @@ void Net2::run() {
 			if (!timers.empty()) {
 				sleepTime = timers.top().at - sleepStart;  // + 500e-6?
 			}
-			trackMinPriority(TaskPriority::Zero, sleepStart);
+			if (sleepTime > 0) {
+				trackMinPriority(TaskPriority::Zero, sleepStart);
+				awakeMetric = false;
+				priorityMetric = 0;
+				reactor.sleep(sleepTime);
+				awakeMetric = true;
+			}
 		}
 
-		awakeMetric = false;
-		if( sleepTime > 0 )
-			priorityMetric = 0;
-		reactor.sleepAndReact(sleepTime);
-		awakeMetric = true;
-
+		tsc_begin = __rdtsc();
+		taskBegin = timer_monotonic();
+		trackMinPriority(TaskPriority::ASIOReactor, taskBegin);
+		reactor.react();
+		
 		updateNow();
 		double now = this->currentTime;
+
+		countReactTime += now - taskBegin;
+		checkForSlowTask(tsc_begin, __rdtsc(), now - taskBegin, TaskPriority::ASIOReactor);
 
 		if ((now-nnow) > FLOW_KNOBS->SLOW_LOOP_CUTOFF && nondeterministicRandom()->random01() < (now-nnow)*FLOW_KNOBS->SLOW_LOOP_SAMPLING_RATE)
 			TraceEvent("SomewhatSlowRunLoopTop").detail("Elapsed", now - nnow);
 
+		int numTimers = 0;
 		while (!timers.empty() && timers.top().at < now) {
+			++numTimers;
 			++countTimers;
 			ready.push( timers.top() );
 			timers.pop();
 		}
+		countTimers += numTimers;
+		FDB_TRACE_PROBE(run_loop_ready_timers, numTimers);
 
 		processThreadReady();
 
@@ -626,7 +651,9 @@ void Net2::run() {
 		taskBegin = timer_monotonic();
 		numYields = 0;
 		TaskPriority minTaskID = TaskPriority::Max;
+		int queueSize = ready.size();
 
+		FDB_TRACE_PROBE(run_loop_tasks_start, queueSize);
 		while (!ready.empty()) {
 			++countTasks;
 			currentTaskID = ready.top().taskID;
@@ -643,8 +670,14 @@ void Net2::run() {
 				TraceEvent(SevError, "TaskError").error(unknown_error());
 			}
 
-			if (check_yield(TaskPriority::Max, true)) { ++countYields; break; }
+			if (check_yield(TaskPriority::Max, true)) {
+				FDB_TRACE_PROBE(run_loop_yield);
+				++countYields;
+                break;
+			}
 		}
+		queueSize = ready.size();
+		FDB_TRACE_PROBE(run_loop_done, queueSize);
 
 		trackMinPriority(minTaskID, now);
 
@@ -723,13 +756,16 @@ void Net2::trackMinPriority( TaskPriority minTaskID, double now ) {
 }
 
 void Net2::processThreadReady() {
+	int numReady = 0;
 	while (true) {
 		Optional<OrderedTask> t = threadReady.pop();
 		if (!t.present()) break;
 		t.get().priority -= ++tasksIssued;
 		ASSERT( t.get().task != 0 );
 		ready.push( t.get() );
+		++numReady;
 	}
+	FDB_TRACE_PROBE(run_loop_thread_ready, numReady);
 }
 
 void Net2::checkForSlowTask(int64_t tscBegin, int64_t tscEnd, double duration, TaskPriority priority) {
@@ -975,7 +1011,7 @@ ASIOReactor::ASIOReactor(Net2* net)
 #endif
 }
 
-void ASIOReactor::sleepAndReact(double sleepTime) {
+void ASIOReactor::sleep(double sleepTime) {
 	if (sleepTime > FLOW_KNOBS->BUSY_WAIT_THRESHOLD) {
 		if (FLOW_KNOBS->REACTOR_FLAGS & 4) {
 #ifdef __linux
@@ -1002,6 +1038,9 @@ void ASIOReactor::sleepAndReact(double sleepTime) {
 		if (!(FLOW_KNOBS->REACTOR_FLAGS & 8))
 			threadYield();
 	}
+}
+
+void ASIOReactor::react() {
 	while (ios.poll_one()) ++network->countASIOEvents;  // Make this a task?
 }
 
@@ -1011,9 +1050,9 @@ void ASIOReactor::wake() {
 
 } // namespace net2
 
-INetwork* newNet2(bool useThreadPool, bool useMetrics, bool useObjectSerializer) {
+INetwork* newNet2(bool useThreadPool, bool useMetrics) {
 	try {
-		N2::g_net2 = new N2::Net2(useThreadPool, useMetrics, useObjectSerializer);
+		N2::g_net2 = new N2::Net2(useThreadPool, useMetrics);
 	}
 	catch(boost::system::system_error e) {
 		TraceEvent("Net2InitError").detail("Message", e.what());

@@ -25,6 +25,8 @@
 .. |timeout-database-option| replace:: :func:`Database.options.set_transaction_timeout`
 .. |max-retry-delay-database-option| replace:: :func:`Database.options.set_transaction_max_retry_delay`
 .. |transaction-size-limit-database-option| replace:: :func:`Database.options.set_transaction_size_limit`
+.. |causal-read-risky-database-option| replace:: :func:`Database.options.set_transaction_causal_read_risky`
+.. |include-port-in-address-database-option| replace:: :func:`Database.options.set_transaction_include_port_in_address`
 .. |transaction-logging-max-field-length-database-option| replace:: :func:`Database.options.set_transaction_logging_max_field_length`
 .. |snapshot-ryw-enable-database-option| replace:: :func:`Database.options.set_snapshot_ryw_enable`
 .. |snapshot-ryw-disable-database-option| replace:: :func:`Database.options.set_snapshot_ryw_disable`
@@ -36,6 +38,8 @@
 .. |size-limit-transaction-option| replace:: :func:`Transaction.options.set_size_limit`
 .. |snapshot-ryw-enable-transaction-option| replace:: :func:`Transaction.options.set_snapshot_ryw_enable`
 .. |snapshot-ryw-disable-transaction-option| replace:: :func:`Transaction.options.set_snapshot_ryw_disable`
+.. |causal-read-risky-transaction-option| replace:: :func:`Transaction.options.set_causal_read_risky`
+.. |include-port-in-address-transaction-option| replace:: :func:`Transaction.options.set_include_port_in_address`
 .. |transaction-logging-max-field-length-transaction-option| replace:: :func:`Transaction.options.set_transaction_logging_max_field_length`
 .. |lazy-iterator-object| replace:: generator
 .. |key-meth| replace:: :meth:`Subspace.key`
@@ -386,6 +390,14 @@ Database options
 
     |option-db-tr-size-limit-blurb|
 
+.. method:: Database.options.set_transaction_causal_read_risky()
+
+    |option-db-causal-read-risky-blurb|
+
+.. method:: Database.options.set_transaction_include_port_in_address()
+
+    |option-db-include-port-in-address-blurb|
+    
 .. method:: Database.options.set_transaction_logging_max_field_length(size_limit)
 
     |option-db-tr-transaction-logging-max-field-length-blurb|
@@ -802,6 +814,10 @@ Transaction options
 .. method:: Transaction.options.set_causal_read_risky
 
     |option-causal-read-risky-blurb|
+
+.. method:: Transaction.options.set_include_port_in_address
+
+    |option-include-port-in-address-blurb|
 
 .. method:: Transaction.options.set_causal_write_risky
 

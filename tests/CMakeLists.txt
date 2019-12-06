@@ -64,9 +64,11 @@ add_fdb_test(TEST_FILES ReadAbsent.txt IGNORE)
 add_fdb_test(TEST_FILES ReadHalfAbsent.txt IGNORE)
 add_fdb_test(TEST_FILES RedwoodCorrectnessUnits.txt IGNORE)
 add_fdb_test(TEST_FILES RedwoodCorrectnessBTree.txt IGNORE)
+add_fdb_test(TEST_FILES RedwoodCorrectnessPager.txt IGNORE)
 add_fdb_test(TEST_FILES fast/RedwoodCorrectnessBTree.txt IGNORE)
 add_fdb_test(TEST_FILES RedwoodCorrectness.txt IGNORE)
 add_fdb_test(TEST_FILES RedwoodPerfTests.txt IGNORE)
+add_fdb_test(TEST_FILES SampleNoSimAttrition.txt IGNORE)
 add_fdb_test(TEST_FILES SimpleExternalTest.txt)
 add_fdb_test(TEST_FILES SlowTask.txt IGNORE)
 add_fdb_test(TEST_FILES SpecificUnitTest.txt IGNORE)
@@ -114,7 +116,6 @@ add_fdb_test(TEST_FILES fast/RandomUnitTests.txt)
 add_fdb_test(TEST_FILES fast/SelectorCorrectness.txt)
 add_fdb_test(TEST_FILES fast/Sideband.txt)
 add_fdb_test(TEST_FILES fast/SidebandWithStatus.txt)
-add_fdb_test(TEST_FILES fast/SnapTestFailAndDisablePop.txt)
 add_fdb_test(TEST_FILES fast/SwizzledRollbackSideband.txt)
 add_fdb_test(TEST_FILES fast/SystemRebootTestCycle.txt)
 add_fdb_test(TEST_FILES fast/TaskBucketCorrectness.txt)
@@ -139,15 +140,20 @@ add_fdb_test(TEST_FILES rare/LargeApiCorrectnessStatus.txt)
 add_fdb_test(TEST_FILES rare/RYWDisable.txt)
 add_fdb_test(TEST_FILES rare/RandomReadWriteTest.txt)
 add_fdb_test(TEST_FILES rare/SwizzledLargeApiCorrectness.txt)
+add_fdb_test(TEST_FILES rare/RedwoodCorrectnessBTree.txt)
+
 add_fdb_test(
-  TEST_FILES restarting/ConfigureTestRestart-1.txt
-             restarting/ConfigureTestRestart-2.txt)
+  TEST_FILES restarting/from_7.0.0/ConfigureTestRestart-1.txt
+             restarting/from_7.0.0/ConfigureTestRestart-2.txt)
 add_fdb_test(
   TEST_FILES restarting/CycleTestRestart-1.txt
              restarting/CycleTestRestart-2.txt)
 add_fdb_test(
   TEST_FILES restarting/StorefrontTestRestart-1.txt
              restarting/StorefrontTestRestart-2.txt)
+add_fdb_test(
+  TEST_FILES restarting/from_6.2.0/SnapTestAttrition-1.txt
+             restarting/from_6.2.0/SnapTestAttrition-2.txt)
 add_fdb_test(
   TEST_FILES restarting/from_6.2.0/SnapTestSimpleRestart-1.txt
              restarting/from_6.2.0/SnapTestSimpleRestart-2.txt)
@@ -159,10 +165,10 @@ add_fdb_test(
              restarting/from_6.2.0/SnapCycleRestart-2.txt)
 add_fdb_test(
   TEST_FILES restarting/from_5.1.7/DrUpgradeRestart-1.txt
-             restarting/from_5.1.7/DrUpgradeRestart-2.txt IGNORE)
+             restarting/from_5.1.7/DrUpgradeRestart-2.txt)
 add_fdb_test(
   TEST_FILES restarting/from_5.2.0/ClientTransactionProfilingCorrectness-1.txt
-             restarting/from_5.2.0/ClientTransactionProfilingCorrectness-2.txt IGNORE)
+             restarting/from_5.2.0/ClientTransactionProfilingCorrectness-2.txt)
 add_fdb_test(TEST_FILES slow/ApiCorrectness.txt)
 add_fdb_test(TEST_FILES slow/ApiCorrectnessAtomicRestore.txt)
 add_fdb_test(TEST_FILES slow/ApiCorrectnessSwitchover.txt)
@@ -174,6 +180,7 @@ add_fdb_test(TEST_FILES slow/ConfigureTest.txt)
 add_fdb_test(TEST_FILES slow/CycleRollbackPlain.txt)
 add_fdb_test(TEST_FILES slow/DDBalanceAndRemove.txt)
 add_fdb_test(TEST_FILES slow/DDBalanceAndRemoveStatus.txt)
+add_fdb_test(TEST_FILES slow/DifferentClustersSameRV.txt)
 add_fdb_test(TEST_FILES slow/FastTriggeredWatches.txt)
 add_fdb_test(TEST_FILES slow/LowLatencyWithFailures.txt)
 add_fdb_test(TEST_FILES slow/MoveKeysClean.txt)
@@ -193,6 +200,8 @@ add_fdb_test(TEST_FILES slow/VersionStampSwitchover.txt)
 add_fdb_test(TEST_FILES slow/WriteDuringReadAtomicRestore.txt)
 add_fdb_test(TEST_FILES slow/WriteDuringReadSwitchover.txt)
 add_fdb_test(TEST_FILES slow/ddbalance.txt)
+add_fdb_test(TEST_FILES ParallelRestoreCorrectnessAtomicOpTinyData.txt)
+add_fdb_test(TEST_FILES ParallelRestoreCorrectnessCycle.txt)
 # Note that status tests are not deterministic.
 add_fdb_test(TEST_FILES status/invalid_proc_addresses.txt)
 add_fdb_test(TEST_FILES status/local_6_machine_no_replicas_remain.txt)
@@ -207,4 +216,6 @@ add_fdb_test(TEST_FILES status/separate_no_servers.txt)
 add_fdb_test(TEST_FILES status/separate_not_enough_servers.txt)
 add_fdb_test(TEST_FILES status/single_process_too_many_config_params.txt)
 
+
 verify_testing()
+create_test_package()

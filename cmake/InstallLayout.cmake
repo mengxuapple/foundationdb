@@ -96,7 +96,7 @@ set(install_destination_for_lib_deb "usr/lib")
 set(install_destination_for_lib_el6 "usr/lib64")
 set(install_destination_for_lib_el7 "usr/lib64")
 set(install_destination_for_lib_pm "lib")
-set(install_destination_for_fdbmonitor_tgz "libexec")
+set(install_destination_for_fdbmonitor_tgz "sbin")
 set(install_destination_for_fdbmonitor_deb "usr/lib/foundationdb")
 set(install_destination_for_fdbmonitor_el6 "usr/lib/foundationdb")
 set(install_destination_for_fdbmonitor_el7 "usr/lib/foundationdb")
@@ -406,15 +406,9 @@ if(NOT WIN32)
   fdb_install(FILES ${CMAKE_SOURCE_DIR}/packaging/foundationdb.conf
     DESTINATION etc
     COMPONENT server)
-  install(FILES ${CMAKE_SOURCE_DIR}/packaging/argparse.py
-    DESTINATION "usr/lib/foundationdb"
-    COMPONENT server-el6)
   install(FILES ${CMAKE_SOURCE_DIR}/packaging/make_public.py
     DESTINATION "usr/lib/foundationdb"
     COMPONENT server-el6)
-  install(FILES ${CMAKE_SOURCE_DIR}/packaging/argparse.py
-    DESTINATION "usr/lib/foundationdb"
-    COMPONENT server-deb)
   install(FILES ${CMAKE_SOURCE_DIR}/packaging/make_public.py
     DESTINATION "usr/lib/foundationdb"
     COMPONENT server-deb)
