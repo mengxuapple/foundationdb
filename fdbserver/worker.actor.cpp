@@ -902,8 +902,12 @@ ACTOR Future<Void> workerServer(
 		DUMPTOKEN(recruited.traceBatchDumpRequest);
 	}
 
+<<<<<<< HEAD
+	// Recovery roles that were on the worker.
+=======
 	state std::vector<Future<Void>> recoveries;
 
+>>>>>>> mengxu/DD-code-read
 	try {
 		std::vector<DiskStore> stores = getDiskStores( folder );
 		bool validateDataFiles = deleteFile(joinPath(folder, validationFilename));

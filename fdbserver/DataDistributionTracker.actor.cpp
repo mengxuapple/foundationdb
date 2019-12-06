@@ -399,14 +399,18 @@ ACTOR Future<Void> shardSplitter(
 
 	if( numShards > 1 ) {
 		int skipRange = deterministicRandom()->randomInt(0, numShards);
+		// Q: Why cannot "The queue can't deal with RelocateShard requests which split an existing shard into three pieces"?
 		// The queue can't deal with RelocateShard requests which split an existing shard into three pieces, so
 		// we have to send the unskipped ranges in this order (nibbling in from the edges of the old range)
+		// Recreate trackers for each of the numShards splitted shards
 		for( int i = 0; i < skipRange; i++ )
 			restartShardTrackers( self, KeyRangeRef(splitKeys[i], splitKeys[i+1]) );
 		restartShardTrackers( self, KeyRangeRef( splitKeys[skipRange], splitKeys[skipRange+1] ) );
 		for( int i = numShards-1; i > skipRange; i-- )
 			restartShardTrackers( self, KeyRangeRef(splitKeys[i], splitKeys[i+1]) );
 
+		// Relocate (numShards - 1) shards to other server teams,
+		// while keep the shard (splitKeys[skipRange], splitKeys[skipRange+1]) unmoved. 
 		for( int i = 0; i < skipRange; i++ ) {
 			KeyRangeRef r(splitKeys[i], splitKeys[i+1]);
 			self->shardsAffectedByTeamFailure->defineShard( r );

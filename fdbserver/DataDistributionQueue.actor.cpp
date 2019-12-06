@@ -375,7 +375,8 @@ struct DDQueueData {
 	std::set<RelocateData, std::greater<RelocateData>> fetchingSourcesQueue;
 	std::set<RelocateData, std::greater<RelocateData>> fetchKeysComplete;
 	KeyRangeActorMap getSourceActors;
-	std::map<UID, std::set<RelocateData, std::greater<RelocateData>>> queue; //Key UID is serverID, value is the serverID's set of RelocateData to relocate
+	// Key UID is serverID, value is the serverID's set of RelocateData to relocate
+	std::map<UID, std::set<RelocateData, std::greater<RelocateData>>> queue;
 
 	KeyRangeMap< RelocateData > inFlight;
 	// Track all actors that relocates specified keys to a good place; Key: keyRange; Value: actor
@@ -577,7 +578,7 @@ struct DDQueueData {
 				}
 
 				// If the size of keyServerEntries is large, then just assume we are using all storage servers
-				// Why the size can be large?
+				// Reason of why the size can be large:
 				// When a shard is inflight and DD crashes, some destination servers may have already got the data.
 				// The new DD will treat the destination servers as source servers. So the size can be large.
 				else {
@@ -827,8 +828,13 @@ struct DDQueueData {
 			}
 
 			// Data movement avoids overloading source servers in moving data.
+<<<<<<< HEAD
+			// SOMEDAY: the list of source servers may be outdated, 
+			// since they were fetched when the work was put in the queue.
+=======
 			// SOMEDAY: the list of source servers may be outdated since they were fetched when the work was put in the
 			// queue
+>>>>>>> master
 			// FIXME: we need spare capacity even when we're just going to be cancelling work via TEAM_HEALTHY
 			if( !canLaunch( rd, teamSize, busymap, cancellableRelocations ) ) {
 				//logRelocation( rd, "SkippingQueuedRelocation" );
@@ -1043,7 +1049,11 @@ ACTOR Future<Void> dataDistributionRelocator( DDQueueData *self, RelocateData rd
 
 			state Error error = success();
 			state Promise<Void> dataMovementComplete;
+<<<<<<< HEAD
+			// Move keys from source to destination by changing the serverKeyList and keyServerList system keys
+=======
 			// Move keys from source to destination by chaning the serverKeyList and keyServerList system keys
+>>>>>>> master
 			state Future<Void> doMoveKeys = moveKeys(self->cx, rd.keys, destIds, healthyIds, self->lock, dataMovementComplete, &self->startMoveKeysParallelismLock, &self->finishMoveKeysParallelismLock, self->teamCollections.size() > 1, relocateShardInterval.pairID );
 			state Future<Void> pollHealth = signalledTransferComplete ? Never() : delay( SERVER_KNOBS->HEALTH_POLL_TIME, TaskPriority::DataDistributionLaunch );
 			try {
@@ -1208,6 +1218,21 @@ ACTOR Future<Void> BgDDMountainChopper( DDQueueData* self, int teamCollectionInd
 	state double lastRead = 0;
 	state bool skipCurrentLoop = false;
 	loop {
+<<<<<<< HEAD
+		wait( delay(checkDelay, TaskPriority::DataDistributionLaunch) );
+		if (self->priority_relocations[PRIORITY_REBALANCE_OVERUTILIZED_TEAM] < SERVER_KNOBS->DD_REBALANCE_PARALLELISM) {
+			state Optional<Reference<IDataDistributionTeam>> randomTeam = wait( brokenPromiseToNever( self->teamCollections[teamCollectionIndex].getTeam.getReply( GetTeamRequest( true, false, true ) ) ) );
+			if( randomTeam.present() ) {
+				// The FREE_SPACE_RATIO_DD_CUTOFF prevents DD oscilatting in rebalancing shards
+				if( randomTeam.get()->getMinFreeSpaceRatio() > SERVER_KNOBS->FREE_SPACE_RATIO_DD_CUTOFF ) {
+					state Optional<Reference<IDataDistributionTeam>> loadedTeam = wait( brokenPromiseToNever( self->teamCollections[teamCollectionIndex].getTeam.getReply( GetTeamRequest( true, true, false ) ) ) );
+					if( loadedTeam.present() ) {
+						bool moved = wait( rebalanceTeams( self, PRIORITY_REBALANCE_OVERUTILIZED_TEAM, loadedTeam.get(), randomTeam.get(), teamCollectionIndex == 0 ) );
+						if(moved) {
+							resetCount = 0;
+						} else {
+							resetCount++;
+=======
 		try {
 			state Future<Void> delayF = delay(rebalancePollingInterval, TaskPriority::DataDistributionLaunch);
 			if ((now() - lastRead) > SERVER_KNOBS->BG_REBALANCE_SWITCH_CHECK_INTERVAL) {
@@ -1247,6 +1272,7 @@ ACTOR Future<Void> BgDDMountainChopper( DDQueueData* self, int teamCollectionInd
 							} else {
 								resetCount++;
 							}
+>>>>>>> mengxu/DD-code-read
 						}
 					}
 				}
