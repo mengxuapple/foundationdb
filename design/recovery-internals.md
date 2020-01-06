@@ -6,13 +6,13 @@ This document explains at the high level how the recovery works in a single clus
 
 ## Background
 
-## `ServerDBInfo` data structure
+### `ServerDBInfo` data structure
 
 This data structure contains transient information which is broadcast to all workers for a database, permitting them to communicate with each other. It contains, for example, the interfaces for cluster controller (CC), master, ratekeeper, and resolver, and holds the log system's configuration. Only part of the data structure, such as `ClientDBInfo` that contains the list of proxies, is  available to the client.
 
 Whenever a field of the `ServerDBInfo`is changed, the new value of the field, say new master's interface, will be sent to the CC and CC will propogate the new `ServerDBInfo` to all workers in the cluster.
 
-## When will recovery happen?
+### When will recovery happen?
 Failure of certain roles in FDB can cause recovery. Those roles are cluster controller, master, proxy, transaction logs (tLog), resolvers, and log router.
 
 Network partition or failures can make CC unable to reach some roles, treating those roles as dead and causing recovery. If CC cannot connect to a majority of coordinators, it will be treated as dead by coordinators and recovery will happen.
@@ -25,7 +25,7 @@ Not every type of failure can trigger recovery. For example, storage server (SS)
 
 Failure of coordinators does not cause recovery. If more than a majority of coordinators fails, FDB will become unavailable. When the failed coordinators are replaced and rebooted, a recovery will happen.
 
-## How to detect CC failure?
+### How to detect CC failure?
 
 CC sends heart beat to all coordinators periodically. A CC will kill itself in the following conditions:
 
@@ -35,7 +35,7 @@ CC sends heart beat to all coordinators periodically. A CC will kill itself in t
 
 Once coordinators think there is no CC in a cluster, they will start leader election process to select a new CC.
 
-## When will multiple CCs exist in a transient time period?
+### When will multiple CCs exist in a transient time period?
 
 Although only one CC can succeed in recovery, which is guaranteed by Paxos algorithm, there exist scenarios when multiple CCs can exist in a  transient time period.
 
