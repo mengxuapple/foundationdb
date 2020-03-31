@@ -741,6 +741,7 @@ ACTOR Future<Void> commitBatch(
 		replies.push_back(brokenPromiseToNever(self->resolvers[r].resolve.getReply(requests.requests[r], TaskPriority::ProxyResolverReply)));
 	}
 
+	// transactionResolverMap[i]: indexes of resolvers the transaction i will be sent to
 	state vector<vector<int>> transactionResolverMap = std::move( requests.transactionResolverMap );
 	state Future<Void> releaseFuture = releaseResolvingAfter(self, releaseDelay, localBatchNumber);
 
@@ -756,7 +757,7 @@ ACTOR Future<Void> commitBatch(
 	wait(yield(TaskPriority::ProxyCommitYield1));
 
 	state double computeStart = g_network->timer();
-	state double computeDuration = 0; 
+	state double computeDuration = 0;
 	self->stats.txnCommitResolved += trs.size();
 
 	if (debugID.present())
@@ -819,7 +820,7 @@ ACTOR Future<Void> commitBatch(
 	}
 
 	// Determine which transactions actually committed (conservatively) by combining results from the resolvers
-	state vector<uint8_t> committed(trs.size());
+	state vector<uint8_t> committed(trs.size()); // Each txn's commit state
 	ASSERT(transactionResolverMap.size() == committed.size());
 	// For each commitTransactionRef, it is only sent to resolvers specified in transactionResolverMap
 	// Thus, we use this nextTr to track the correct transaction index on each resolver.
@@ -944,7 +945,7 @@ ACTOR Future<Void> commitBatch(
 
 					if (debugMutation("ProxyCommit", commitVersion, m))
 						TraceEvent("ProxyCommitTo", self->dbgid).detail("To", describe(tags)).detail("Mutation", m.toString()).detail("Version", commitVersion);
-					
+
 					toCommit.addTags(tags);
 					if(self->cacheInfo[m.param1]) {
 						toCommit.addTag(cacheTag);
@@ -1046,7 +1047,7 @@ ACTOR Future<Void> commitBatch(
 						self->metadataVersion = v.metadataVersion;
 						self->committedVersion.set(v.version);
 					}
-					
+
 					if (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS)
 						wait(delay(SERVER_KNOBS->PROXY_SPIN_DELAY));
 				}
