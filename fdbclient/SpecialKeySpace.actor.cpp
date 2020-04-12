@@ -27,7 +27,7 @@
 // If the corresponding key is not in this special key range, it will move as far as possible to adjust the offset to 1
 // It does have overhead here since we query all keys twice in the worst case.
 // However, moving the KeySelector while handling other parameters like limits makes the code much more complex and hard
-// to maintain Separate each part to make the code easy to understand and more compact
+// to maintain; Separate each part to make the code easy to understand and more compact
 ACTOR Future<Void> SpecialKeyRangeBaseImpl::normalizeKeySelectorActor(const SpecialKeyRangeBaseImpl* pkrImpl,
                                                                       Reference<ReadYourWritesTransaction> ryw,
                                                                       KeySelector* ks) {
@@ -57,6 +57,8 @@ ACTOR Future<Void> SpecialKeyRangeBaseImpl::normalizeKeySelectorActor(const Spec
 		return Void();
 	}
 	// Note : KeySelector::setKey has byte limit according to the knobs, customize it if needed
+	// Q: What does this if tries to achieve?
+	// Q: Can offset be negative?
 	if (ks->offset < 1) {
 		if (result.size() >= 1 - ks->offset) {
 			ks->setKey(KeyRef(ks->arena(), result[result.size() - (1 - ks->offset)].key));
@@ -82,6 +84,8 @@ ACTOR Future<Void> SpecialKeyRangeBaseImpl::normalizeKeySelectorActor(const Spec
 	return Void();
 }
 
+// Q: Can you explain in comment what the input and output of this function? What is the contract here?
+// Q: It will be great if you can also briefly describe the challenges to be handled in this function.
 ACTOR Future<Standalone<RangeResultRef>> SpecialKeySpace::getRangeAggregationActor(
     SpecialKeySpace* pks, Reference<ReadYourWritesTransaction> ryw, KeySelector begin, KeySelector end,
     GetRangeLimits limits, bool reverse) {

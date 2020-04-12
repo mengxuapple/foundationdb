@@ -2771,6 +2771,7 @@ ACTOR static Future<Void> tryCommit( Database cx, Reference<TransactionLogInfo> 
 				} else {
 					// clear the RYW transaction which contains previous conflicting keys
 					tr->info.conflictingKeys.reset();
+					//Q: When will ci.conflictingKRIndices.present() is false? If it has confliction, it should never be false, right?
 					if (ci.conflictingKRIndices.present()) {
 						tr->info.conflictingKeys =
 						    std::make_shared<CoalescedKeyRangeMap<Value>>(conflictingKeysFalse, specialKeys.end);

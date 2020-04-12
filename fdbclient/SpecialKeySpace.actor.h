@@ -57,6 +57,7 @@ public:
 	Future<Standalone<RangeResultRef>> getRange(Reference<ReadYourWritesTransaction> ryw, KeySelector begin,
 	                                            KeySelector end, GetRangeLimits limits, bool reverse = false);
 
+	// Q: Should we limit the special key space to system key space?
 	SpecialKeySpace(KeyRef spaceStartKey = Key(), KeyRef spaceEndKey = normalKeys.end) {
 		// Default value is nullptr, begin of KeyRangeMap is Key()
 		impls = KeyRangeMap<SpecialKeyRangeBaseImpl*>(nullptr, spaceEndKey);

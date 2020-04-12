@@ -110,6 +110,8 @@ struct SpecialKeySpaceCorrectnessWorkload : TestWorkload {
 			auto correctResultFuture = self->ryw->getRange(begin, end, limit, false, reverse);
 			ASSERT(correctResultFuture.isReady());
 			auto correctResult = correctResultFuture.getValue();
+			// Q: Can we test if getRange() on a special key have extra operation on the keys, instead of simply returning the key-values
+			// Q: For example, atomic increase by 1 on the value?
 			auto testResultFuture = cx->specialKeySpace->getRange(self->ryw, begin, end, limit, reverse);
 			ASSERT(testResultFuture.isReady());
 			auto testResult = testResultFuture.getValue();
