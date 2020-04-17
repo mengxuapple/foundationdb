@@ -21,6 +21,7 @@
 #include "fdbclient/ReadYourWrites.h"
 #include "fdbclient/Atomic.h"
 #include "fdbclient/DatabaseContext.h"
+#include "fdbclient/SpecialKeySpace.actor.h"
 #include "fdbclient/StatusClient.h"
 #include "fdbclient/MonitorLeader.h"
 #include "flow/Util.h"
@@ -1228,6 +1229,10 @@ Future< Optional<Value> > ReadYourWritesTransaction::get( const Key& key, bool s
 		return Optional<Value>();
 	}
 
+	// special key space are only allowed to query if both begin and end start with \xff\xff
+	if (key.startsWith(specialKeys.begin))
+		return getDatabase()->specialKeySpace->get(Reference<ReadYourWritesTransaction>::addRef(this), key);
+
 	if(checkUsedDuringCommit()) {
 		return used_during_commit();
 	}
@@ -1278,7 +1283,12 @@ Future< Standalone<RangeResultRef> > ReadYourWritesTransaction::getRange(
 			return Standalone<RangeResultRef>();
 		}
 	}
-	
+
+	// special key space are only allowed to query if both begin and end start with \xff\xff
+	if (begin.getKey().startsWith(specialKeys.begin) && end.getKey().startsWith(specialKeys.begin))
+		return getDatabase()->specialKeySpace->getRange(Reference<ReadYourWritesTransaction>::addRef(this), begin, end,
+		                                                limits, reverse);
+
 	if(checkUsedDuringCommit()) {
 		return used_during_commit();
 	}

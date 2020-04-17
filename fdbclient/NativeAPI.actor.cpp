@@ -21,6 +21,7 @@
 #include "fdbclient/NativeAPI.actor.h"
 
 #include <iterator>
+#include <unordered_set>
 
 #include "fdbclient/Atomic.h"
 #include "fdbclient/ClusterInterface.h"
@@ -32,6 +33,8 @@
 #include "fdbclient/MasterProxyInterface.h"
 #include "fdbclient/MonitorLeader.h"
 #include "fdbclient/MutationList.h"
+#include "fdbclient/ReadYourWrites.h"
+#include "fdbclient/SpecialKeySpace.actor.h"
 #include "fdbclient/StorageServerInterface.h"
 #include "fdbclient/SystemData.h"
 #include "fdbrpc/LoadBalance.h"
@@ -500,25 +503,42 @@ ACTOR static Future<HealthMetrics> getHealthMetricsActor(DatabaseContext *cx, bo
 Future<HealthMetrics> DatabaseContext::getHealthMetrics(bool detailed = false) {
 	return getHealthMetricsActor(this, detailed);
 }
-DatabaseContext::DatabaseContext(
-	Reference<AsyncVar<Reference<ClusterConnectionFile>>> connectionFile, Reference<AsyncVar<ClientDBInfo>> clientInfo, Future<Void> clientInfoMonitor,
-	TaskPriority taskID, LocalityData const& clientLocality, bool enableLocalityLoadBalance, bool lockAware, bool internal, int apiVersion, bool switchable ) 
-	: connectionFile(connectionFile),clientInfo(clientInfo), clientInfoMonitor(clientInfoMonitor), taskID(taskID), clientLocality(clientLocality), enableLocalityLoadBalance(enableLocalityLoadBalance),
-	lockAware(lockAware), apiVersion(apiVersion), switchable(switchable), provisional(false), cc("TransactionMetrics"), transactionReadVersions("ReadVersions", cc), 
-	transactionReadVersionsCompleted("ReadVersionsCompleted", cc), transactionReadVersionBatches("ReadVersionBatches", cc), transactionBatchReadVersions("BatchPriorityReadVersions", cc), 
-	transactionDefaultReadVersions("DefaultPriorityReadVersions", cc), transactionImmediateReadVersions("ImmediatePriorityReadVersions", cc), 
-	transactionBatchReadVersionsCompleted("BatchPriorityReadVersionsCompleted", cc), transactionDefaultReadVersionsCompleted("DefaultPriorityReadVersionsCompleted", cc), 
-	transactionImmediateReadVersionsCompleted("ImmediatePriorityReadVersionsCompleted", cc), transactionLogicalReads("LogicalUncachedReads", cc), transactionPhysicalReads("PhysicalReadRequests", cc), 
-	transactionPhysicalReadsCompleted("PhysicalReadRequestsCompleted", cc), transactionGetKeyRequests("GetKeyRequests", cc), transactionGetValueRequests("GetValueRequests", cc), 
-	transactionGetRangeRequests("GetRangeRequests", cc), transactionWatchRequests("WatchRequests", cc), transactionGetAddressesForKeyRequests("GetAddressesForKeyRequests", cc), 
-	transactionBytesRead("BytesRead", cc), transactionKeysRead("KeysRead", cc), transactionMetadataVersionReads("MetadataVersionReads", cc), transactionCommittedMutations("CommittedMutations", cc), 
-	transactionCommittedMutationBytes("CommittedMutationBytes", cc), transactionSetMutations("SetMutations", cc), transactionClearMutations("ClearMutations", cc), 
-	transactionAtomicMutations("AtomicMutations", cc), transactionsCommitStarted("CommitStarted", cc), transactionsCommitCompleted("CommitCompleted", cc), 
-	transactionKeyServerLocationRequests("KeyServerLocationRequests", cc), transactionKeyServerLocationRequestsCompleted("KeyServerLocationRequestsCompleted", cc), transactionsTooOld("TooOld", cc), 
-	transactionsFutureVersions("FutureVersions", cc), transactionsNotCommitted("NotCommitted", cc), transactionsMaybeCommitted("MaybeCommitted", cc), 
-	transactionsResourceConstrained("ResourceConstrained", cc), transactionsThrottled("Throttled", cc), transactionsProcessBehind("ProcessBehind", cc), outstandingWatches(0), latencies(1000), readLatencies(1000), commitLatencies(1000), 
-	GRVLatencies(1000), mutationsPerCommit(1000), bytesPerCommit(1000), mvCacheInsertLocation(0), healthMetricsLastUpdated(0), detailedHealthMetricsLastUpdated(0), internal(internal)
-{
+DatabaseContext::DatabaseContext(Reference<AsyncVar<Reference<ClusterConnectionFile>>> connectionFile,
+                                 Reference<AsyncVar<ClientDBInfo>> clientInfo, Future<Void> clientInfoMonitor,
+                                 TaskPriority taskID, LocalityData const& clientLocality,
+                                 bool enableLocalityLoadBalance, bool lockAware, bool internal, int apiVersion,
+                                 bool switchable)
+  : connectionFile(connectionFile), clientInfo(clientInfo), clientInfoMonitor(clientInfoMonitor), taskID(taskID),
+    clientLocality(clientLocality), enableLocalityLoadBalance(enableLocalityLoadBalance), lockAware(lockAware),
+    apiVersion(apiVersion), switchable(switchable), provisional(false), cc("TransactionMetrics"),
+    transactionReadVersions("ReadVersions", cc), transactionReadVersionsCompleted("ReadVersionsCompleted", cc),
+    transactionReadVersionBatches("ReadVersionBatches", cc),
+    transactionBatchReadVersions("BatchPriorityReadVersions", cc),
+    transactionDefaultReadVersions("DefaultPriorityReadVersions", cc),
+    transactionImmediateReadVersions("ImmediatePriorityReadVersions", cc),
+    transactionBatchReadVersionsCompleted("BatchPriorityReadVersionsCompleted", cc),
+    transactionDefaultReadVersionsCompleted("DefaultPriorityReadVersionsCompleted", cc),
+    transactionImmediateReadVersionsCompleted("ImmediatePriorityReadVersionsCompleted", cc),
+    transactionLogicalReads("LogicalUncachedReads", cc), transactionPhysicalReads("PhysicalReadRequests", cc),
+    transactionPhysicalReadsCompleted("PhysicalReadRequestsCompleted", cc),
+    transactionGetKeyRequests("GetKeyRequests", cc), transactionGetValueRequests("GetValueRequests", cc),
+    transactionGetRangeRequests("GetRangeRequests", cc), transactionWatchRequests("WatchRequests", cc),
+    transactionGetAddressesForKeyRequests("GetAddressesForKeyRequests", cc), transactionBytesRead("BytesRead", cc),
+    transactionKeysRead("KeysRead", cc), transactionMetadataVersionReads("MetadataVersionReads", cc),
+    transactionCommittedMutations("CommittedMutations", cc),
+    transactionCommittedMutationBytes("CommittedMutationBytes", cc), transactionSetMutations("SetMutations", cc),
+    transactionClearMutations("ClearMutations", cc), transactionAtomicMutations("AtomicMutations", cc),
+    transactionsCommitStarted("CommitStarted", cc), transactionsCommitCompleted("CommitCompleted", cc),
+    transactionKeyServerLocationRequests("KeyServerLocationRequests", cc),
+    transactionKeyServerLocationRequestsCompleted("KeyServerLocationRequestsCompleted", cc),
+    transactionsTooOld("TooOld", cc), transactionsFutureVersions("FutureVersions", cc),
+    transactionsNotCommitted("NotCommitted", cc), transactionsMaybeCommitted("MaybeCommitted", cc),
+    transactionsResourceConstrained("ResourceConstrained", cc), transactionsThrottled("Throttled", cc),
+    transactionsProcessBehind("ProcessBehind", cc), outstandingWatches(0), latencies(1000), readLatencies(1000),
+    commitLatencies(1000), GRVLatencies(1000), mutationsPerCommit(1000), bytesPerCommit(1000), mvCacheInsertLocation(0),
+    healthMetricsLastUpdated(0), detailedHealthMetricsLastUpdated(0), internal(internal),
+    specialKeySpace(std::make_shared<SpecialKeySpace>(normalKeys.begin, specialKeys.end)),
+    cKImpl(std::make_shared<ConflictingKeysImpl>(conflictingKeysRange.begin, conflictingKeysRange.end)) {
 	dbId = deterministicRandom()->randomUniqueID();
 	connected = clientInfo->get().proxies.size() ? Void() : clientInfo->onChange();
 
@@ -537,6 +557,7 @@ DatabaseContext::DatabaseContext(
 
 	monitorMasterProxiesInfoChange = monitorMasterProxiesChange(clientInfo, &masterProxiesChangeTrigger);
 	clientStatusUpdater.actor = clientStatusUpdateActor(this);
+	specialKeySpace->registerKeyRange(conflictingKeysRange, cKImpl.get());
 }
 
 DatabaseContext::DatabaseContext( const Error &err ) : deferredError(err), cc("TransactionMetrics"), transactionReadVersions("ReadVersions", cc), 
@@ -842,7 +863,7 @@ const UniqueOrderedOptionList<FDBTransactionOptions>& Database::getTransactionDe
 
 void setNetworkOption(FDBNetworkOptions::Option option, Optional<StringRef> value) {
 	switch(option) {
-		// SOMEDAY: If the network is already started, should these three throw an error?
+		// SOMEDAY: If the network is already started, should these four throw an error?
 		case FDBNetworkOptions::TRACE_ENABLE:
 			networkOptions.traceDirectory = value.present() ? value.get().toString() : "";
 			break;
@@ -854,16 +875,23 @@ void setNetworkOption(FDBNetworkOptions::Option option, Optional<StringRef> valu
 			validateOptionValue(value, true);
 			networkOptions.traceMaxLogsSize = extractIntOption(value, 0, std::numeric_limits<int64_t>::max());
 			break;
-		case FDBNetworkOptions::TRACE_LOG_GROUP:
-			if(value.present())
-				networkOptions.traceLogGroup = value.get().toString();
-			break;
 		case FDBNetworkOptions::TRACE_FORMAT:
 			validateOptionValue(value, true);
 			networkOptions.traceFormat = value.get().toString();
 			if (!validateTraceFormat(networkOptions.traceFormat)) {
 				fprintf(stderr, "Unrecognized trace format: `%s'\n", networkOptions.traceFormat.c_str());
 				throw invalid_option_value();
+			}
+			break;
+
+		case FDBNetworkOptions::TRACE_LOG_GROUP:
+			if(value.present()) {
+				if (traceFileIsOpen()) {
+					setTraceLogGroup(value.get().toString());
+				}
+				else {
+					networkOptions.traceLogGroup = value.get().toString();
+				}
 			}
 			break;
 		case FDBNetworkOptions::TRACE_CLOCK_SOURCE:
@@ -2146,12 +2174,9 @@ void Watch::setWatch(Future<Void> watchFuture) {
 }
 
 //FIXME: This seems pretty horrible. Now a Database can't die until all of its watches do...
-ACTOR Future<Void> watch( Reference<Watch> watch, Database cx, Transaction *self ) {
-	state TransactionInfo info = self->info;
+ACTOR Future<Void> watch(Reference<Watch> watch, Database cx, TransactionInfo info) {
 	cx->addWatch();
 	try {
-		self->watches.push_back(watch);
-
 		choose {
 			// RYOW write to value that is being watched (if applicable)
 			// Errors
@@ -2190,7 +2215,9 @@ Future<Version> Transaction::getRawReadVersion() {
 
 Future< Void > Transaction::watch( Reference<Watch> watch ) {
 	++cx->transactionWatchRequests;
-	return ::watch(watch, cx, this);
+	cx->addWatch();
+	watches.push_back(watch);
+	return ::watch(watch, cx, info);
 }
 
 ACTOR Future<Standalone<VectorRef<const char*>>> getAddressesForKeyActor(Key key, Future<Version> ver, Database cx,
@@ -2742,6 +2769,25 @@ ACTOR static Future<Void> tryCommit( Database cx, Reference<TransactionLogInfo> 
 						trLogInfo->addLog(FdbClientLogEvents::EventCommit(startTime, latency, req.transaction.mutations.size(), req.transaction.mutations.expectedSize(), req));
 					return Void();
 				} else {
+					// clear the RYW transaction which contains previous conflicting keys
+					tr->info.conflictingKeys.reset();
+					//Q: When will ci.conflictingKRIndices.present() is false? If it has confliction, it should never be false, right?
+					if (ci.conflictingKRIndices.present()) {
+						tr->info.conflictingKeys =
+						    std::make_shared<CoalescedKeyRangeMap<Value>>(conflictingKeysFalse, specialKeys.end);
+						state Standalone<VectorRef<int>> conflictingKRIndices = ci.conflictingKRIndices.get();
+						// drop duplicate indices and merge overlapped ranges
+						// Note: addReadConflictRange in native transaction object does not merge overlapped ranges
+						state std::unordered_set<int> mergedIds(conflictingKRIndices.begin(),
+																conflictingKRIndices.end());
+						for (auto const& rCRIndex : mergedIds) {
+							const KeyRangeRef kr = req.transaction.read_conflict_ranges[rCRIndex];
+							const KeyRange krWithPrefix = KeyRangeRef(kr.begin.withPrefix(conflictingKeysRange.begin),
+							                                          kr.end.withPrefix(conflictingKeysRange.begin));
+							tr->info.conflictingKeys->insert(krWithPrefix, conflictingKeysTrue);
+						}
+					}
+
 					if (info.debugID.present())
 						TraceEvent(interval.end()).detail("Conflict", 1);
 
@@ -2853,6 +2899,9 @@ Future<Void> Transaction::commitMutations() {
 		}
 		if(options.firstInBatch) {
 			tr.flags = tr.flags | CommitTransactionRequest::FLAG_FIRST_IN_BATCH;
+		}
+		if (options.reportConflictingKeys) {
+			tr.transaction.report_conflicting_keys = true;
 		}
 
 		Future<Void> commitResult = tryCommit( cx, trLogInfo, tr, readVersion, info, &this->committedVersion, this, options );
@@ -3045,7 +3094,12 @@ void Transaction::setOption( FDBTransactionOptions::Option option, Optional<Stri
 			options.includePort = true;
 			break;
 
-		default:
+	    case FDBTransactionOptions::REPORT_CONFLICTING_KEYS:
+		    validateOptionValue(value, false);
+		    options.reportConflictingKeys = true;
+		    break;
+
+	    default:
 			break;
 	}
 }

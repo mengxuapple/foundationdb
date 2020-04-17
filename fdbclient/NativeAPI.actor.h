@@ -33,6 +33,7 @@
 #include "fdbclient/CoordinationInterface.h"
 #include "fdbclient/ClusterInterface.h"
 #include "fdbclient/ClientLogEvents.h"
+#include "fdbclient/KeyRangeMap.h"
 #include "flow/actorcompiler.h" // has to be last include
 
 // CLIENT_BUGGIFY should be used to randomly introduce failures at run time (like BUGGIFY but for client side testing)
@@ -128,6 +129,7 @@ struct TransactionOptions {
 	bool readOnly : 1;
 	bool firstInBatch : 1;
 	bool includePort : 1;
+	bool reportConflictingKeys : 1;
 
 	TransactionOptions(Database const& cx);
 	TransactionOptions();
@@ -135,10 +137,15 @@ struct TransactionOptions {
 	void reset(Database const& cx);
 };
 
+class ReadYourWritesTransaction; // workaround cyclic dependency
 struct TransactionInfo {
 	Optional<UID> debugID;
 	TaskPriority taskID;
 	bool useProvisionalProxies;
+	// Used to save conflicting keys if FDBTransactionOptions::REPORT_CONFLICTING_KEYS is enabled
+	// prefix/<key1> : '1' - any keys equal or larger than this key are (probably) conflicting keys
+	// prefix/<key2> : '0' - any keys equal or larger than this key are (definitely) not conflicting keys
+	std::shared_ptr<CoalescedKeyRangeMap<Value>> conflictingKeys;
 
 	explicit TransactionInfo( TaskPriority taskID ) : taskID(taskID), useProvisionalProxies(false) {}
 };

@@ -166,6 +166,7 @@ set(FDBSERVER_SRCS
   workloads/RandomSelector.actor.cpp
   workloads/ReadWrite.actor.cpp
   workloads/RemoveServersSafely.actor.cpp
+  workloads/ReportConflictingKeys.actor.cpp
   workloads/Rollback.actor.cpp
   workloads/RyowCorrectness.actor.cpp
   workloads/RYWDisable.actor.cpp
@@ -176,6 +177,7 @@ set(FDBSERVER_SRCS
   workloads/Sideband.actor.cpp
   workloads/SlowTaskWorkload.actor.cpp
   workloads/SnapTest.actor.cpp
+  workloads/SpecialKeySpaceCorrectness.actor.cpp
   workloads/StatusWorkload.actor.cpp
   workloads/Storefront.actor.cpp
   workloads/StreamingRead.actor.cpp
