@@ -906,23 +906,66 @@ const KeyRangeRef restoreApplierKeys(LiteralStringRef("\xff\x02/restoreApplier/"
                                      LiteralStringRef("\xff\x02/restoreApplier0"));
 const KeyRef restoreApplierTxnValue = LiteralStringRef("1");
 
-// restoreApplierKeys: track atomic transaction progress to ensure applying atomicOp exactly once
-// Version and batchIndex are passed in as LittleEndian,
-// they must be converted to BigEndian to maintain ordering in lexical order
-const Key restoreApplierKeyFor(UID const& applierID, int64_t batchIndex, Version version) {
+const KeyRef restoreEpoch = LiteralStringRef("\xff\x02/restoreEpoch"); // restore generations
+// restoreMasterStates.begin/epoch = master state (i.e., finishedVersionBatchIndex)
+const KeyRef restoreMasterStates(LiteralStringRef("\xff\x02/restoreMasterStates/"),
+                                 LiteralStringRef("\xff\x02/restoreMasterStates0"));
+// restoreDBStates[key] = version: version of the key range that has been written; key is the KeyRangeMap point
+const KeyRef restoreDBStates(LiteralStringRef("\xff\x02/restoreDBStates/"),
+                             LiteralStringRef("\xff\x02/restoreDBStates0"));
+
+const Value restoreEpochValue(const int epoch) {
 	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(restoreApplierKeys.begin);
-	wr << applierID << bigEndian64(batchIndex) << bigEndian64(version);
+	wr << epoch;
 	return wr.toValue();
 }
 
-std::tuple<UID, int64_t, Version> decodeRestoreApplierKey(ValueRef const& key) {
+int decodeRestoreEpochValue(ValueRef const& val) {
+	BinaryReader rd(val, Unversioned());
+	int epoch;
+	rd >> epoch;
+	return epoch;
+}
+
+const Key restoreMasterStatesKeyFor(int epoch) {
+	BinaryWriter wr(Unversioned());
+	wr.serializeBytes(restoreMasterStates.begin);
+	wr << epoch;
+	return wr.toValue();
+}
+
+struct RestoreMasterStateStore decodeRestoreMasterState(ValueRef const& val) {
+	BinaryReader rd(val, Unversioned());
+	RestoreMasterStateStore masterState;
+	rd >> masterState;
+	return masterState;
+}
+
+const Key restoreDBStateKeyFor(Key const& key) {
+	BinaryWriter wr(Unversioned());
+	wr.serializeBytes(restoreDBStates.begin);
+	wr << key;
+	return wr.toValue();
+}
+
+Key decodeDBStateKey(ValueRef const& key) {
 	BinaryReader rd(key, Unversioned());
-	UID applierID;
-	int64_t batchIndex;
+	Key key;
+	rd >> key;
+	return key;
+}
+
+const Value restoreDBStateValueFor(Version const& version) {
+	BinaryWriter wr(Unversioned());
+	wr << version;
+	return wr.toValue();
+}
+
+Version decodeRestoreDBState(ValueRef const& val) {
+	BinaryReader rd(val, Unversioned());
 	Version version;
-	rd >> applierID >> batchIndex >> version;
-	return std::make_tuple(applierID, bigEndian64(batchIndex), bigEndian64(version));
+	rd >> version;
+	return version;
 }
 
 // Encode restore worker key for workerID

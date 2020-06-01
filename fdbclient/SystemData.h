@@ -35,6 +35,7 @@
 struct RestoreLoaderInterface;
 struct RestoreApplierInterface;
 struct RestoreMasterInterface;
+struct RestoreMasterStateStore;
 
 extern const KeyRangeRef normalKeys; // '' to systemKeys.begin
 extern const KeyRangeRef systemKeys;  // [FF] to [FF][FF]
@@ -363,8 +364,14 @@ extern const KeyRangeRef restoreRequestKeys;
 extern const KeyRangeRef restoreApplierKeys;
 extern const KeyRef restoreApplierTxnValue;
 
-const Key restoreApplierKeyFor(UID const& applierID, int64_t batchIndex, Version version);
-std::tuple<UID, int64_t, Version> decodeRestoreApplierKey(ValueRef const& key);
+const Value restoreEpochValue(const int epoch);
+int decodeRestoreEpochValue(ValueRef const& val);
+const Key restoreMasterStatesKeyFor(int epoch);
+struct RestoreMasterStateStore decodeRestoreMasterState(ValueRef const& val);
+const Key restoreDBStateKeyFor(Key const& key);
+Key decodeDBStateKey(ValueRef const& key);
+const Value restoreDBStateValueFor(Version const& version);
+Version decodeRestoreDBState(ValueRef const& val);
 const Key restoreWorkerKeyFor(UID const& workerID);
 const Value restoreWorkerInterfaceValue(RestoreWorkerInterface const& server);
 RestoreWorkerInterface decodeRestoreWorkerInterfaceValue(ValueRef const& value);

@@ -180,24 +180,31 @@ ACTOR Future<Void> monitorWorkerLiveness(Reference<RestoreWorkerData> self) {
 // RestoreWorkerLeader is the worker that runs RestoreMaster role
 ACTOR Future<Void> startRestoreWorkerLeader(Reference<RestoreWorkerData> self, RestoreWorkerInterface workerInterf,
                                             Database cx) {
-	// We must wait for enough time to make sure all restore workers have registered their workerInterfaces into the DB
-	TraceEvent("FastRestoreWorker")
-	    .detail("Master", workerInterf.id())
-	    .detail("WaitForRestoreWorkerInterfaces",
-	            SERVER_KNOBS->FASTRESTORE_NUM_LOADERS + SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS);
-	wait(delay(10.0));
-	TraceEvent("FastRestoreWorker")
-	    .detail("Master", workerInterf.id())
-	    .detail("CollectRestoreWorkerInterfaces",
-	            SERVER_KNOBS->FASTRESTORE_NUM_LOADERS + SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS);
+	loop {
+		try {
+			// We must wait for enough time to make sure all restore workers have registered their workerInterfaces into
+			// the DB
+			TraceEvent("FastRestoreWorkerLeader", workerInterf.id())
+			    .detail("WaitOnCollectRestoreWorkerInterfaces",
+			            SERVER_KNOBS->FASTRESTORE_NUM_LOADERS + SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS);
+			wait(delay(10.0));
+			wait(collectRestoreWorkerInterface(
+			    self, cx, SERVER_KNOBS->FASTRESTORE_NUM_LOADERS + SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS));
 
-	wait(collectRestoreWorkerInterface(self, cx,
-	                                   SERVER_KNOBS->FASTRESTORE_NUM_LOADERS + SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS));
+			// TODO: Needs to keep this monitor's future. May use actorCollection
+			Future<Void> workersFailureMonitor = monitorWorkerLiveness(self);
 
-	// TODO: Needs to keep this monitor's future. May use actorCollection
-	state Future<Void> workersFailureMonitor = monitorWorkerLiveness(self);
-
-	wait(startRestoreMaster(self, cx) || workersFailureMonitor);
+			wait(startRestoreMaster(self, cx) || workersFailureMonitor);
+			break;
+		} catch (Error& e) {
+			if (e.code() == error_code_please_reboot) { // Tempoary code to simulate restarting restore roles at failure
+				TraceEvent(SevWarn, "FastRestoreWorkerLeaderRestart"); // Leader is like CC in FDB
+			} else {
+				TraceEvent(SevWarn, "FastRestoreLeaderError").error(e, true);
+				break;
+			}
+		}
+	}
 
 	return Void();
 }
@@ -240,8 +247,13 @@ ACTOR Future<Void> startRestoreWorker(Reference<RestoreWorkerData> self, Restore
 				}
 			}
 		} catch (Error& e) {
-			TraceEvent(SevWarn, "FastRestoreWorkerError").detail("RequestType", requestTypeStr).error(e, true);
-			break;
+			if (e.code() == error_code_please_reboot) { // Tempoary code to simulate restarting restore roles at failure
+				TraceEvent(SevInfo, "FastRestoreWorkerRestart");
+				actors.clear();
+			} else {
+				TraceEvent(SevWarn, "FastRestoreWorkerError").detail("RequestType", requestTypeStr).error(e, true);
+				break;
+			}
 		}
 	}
 

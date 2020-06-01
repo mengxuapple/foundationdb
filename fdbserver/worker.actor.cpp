@@ -1064,7 +1064,7 @@ ACTOR Future<Void> workerServer(
 		TraceEvent("RecoveriesComplete", interf.id());
 
 		loop choose {
-			when( UpdateServerDBInfoRequest req = waitNext( interf.updateServerDBInfo.getFuture() ) ) {
+			when(UpdateServerDBInfoRequest req = waitNext(interf.updateServerDBInfo.getFuture())) {
 				ServerDBInfo localInfo = BinaryReader::fromStringRef<ServerDBInfo>(req.serializedDbInfo, AssumeVersion(currentProtocolVersion));
 				localInfo.myLocality = locality;
 
@@ -1087,7 +1087,7 @@ ACTOR Future<Void> workerServer(
 					errorForwarders.add(success(broadcastDBInfoRequest(req, SERVER_KNOBS->DBINFO_SEND_AMOUNT, notUpdated, true)));
 				}
 			}
-			when( RebootRequest req = waitNext( interf.clientInterface.reboot.getFuture() ) ) {
+			when(RebootRequest req = waitNext(interf.clientInterface.reboot.getFuture())) {
 				state RebootRequest rebootReq = req;
 				// If suspendDuration is INT_MAX, the trace will not be logged if it was inside the next block
 				// Also a useful trace to have even if suspendDuration is 0
@@ -1116,7 +1116,7 @@ ACTOR Future<Void> workerServer(
 					flushAndExit(0);
 				}
 			}
-			when( ProfilerRequest req = waitNext(interf.clientInterface.profiler.getFuture()) ) {
+			when(ProfilerRequest req = waitNext(interf.clientInterface.profiler.getFuture())) {
 				state ProfilerRequest profilerReq = req;
 				// There really isn't a great "filepath sanitizer" or "filepath escape" function available,
 				// thus we instead enforce a different requirement.  One can only write to a file that's
@@ -1137,7 +1137,7 @@ ACTOR Future<Void> workerServer(
 					profilerReq.reply.sendError(e);
 				}
 			}
-			when( RecruitMasterRequest req = waitNext(interf.master.getFuture()) ) {
+			when(RecruitMasterRequest req = waitNext(interf.master.getFuture())) {
 				MasterInterface recruited;
 				recruited.locality = locality;
 				recruited.initEndpoints();
@@ -1214,7 +1214,7 @@ ACTOR Future<Void> workerServer(
 					forwardPromise(req.reply, backupWorkerCache.get(req.reqId));
 				}
 			}
-			when( InitializeTLogRequest req = waitNext(interf.tLog.getFuture()) ) {
+			when(InitializeTLogRequest req = waitNext(interf.tLog.getFuture())) {
 				// For now, there's a one-to-one mapping of spill type to TLogVersion.
 				// With future work, a particular version of the TLog can support multiple
 				// different spilling strategies, at which point SpillType will need to be
@@ -1255,7 +1255,7 @@ ACTOR Future<Void> workerServer(
 				}
 				activeSharedTLog->set(logData.uid);
 			}
-			when( InitializeStorageRequest req = waitNext(interf.storage.getFuture()) ) {
+			when(InitializeStorageRequest req = waitNext(interf.storage.getFuture())) {
 				if( !storageCache.exists( req.reqId ) ) {
 					StorageServerInterface recruited(req.interfaceId);
 					recruited.locality = locality;
