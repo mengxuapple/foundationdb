@@ -1625,6 +1625,7 @@ ACTOR Future<UID> createAndLockProcessIdFile(std::string folder) {
 	}
 }
 
+// Ask coordinator to monitor the leader (i.e., CC) and wait for the latest leader info
 ACTOR Future<MonitorLeaderInfo> monitorLeaderRemotelyOneGeneration( Reference<ClusterConnectionFile> connFile, Reference<AsyncVar<Value>> result, MonitorLeaderInfo info ) {
 	state ClusterConnectionString ccf = info.intermediateConnFile->getConnectionString();
 	state vector<NetworkAddress> addrs = ccf.coordinators();
@@ -1716,6 +1717,7 @@ ACTOR Future<Void> monitorLeaderRemotelyWithDelayedCandidacy( Reference<ClusterC
 			when( wait(currentCC->get().present() ? IFailureMonitor::failureMonitor().onStateChanged( currentCC->get().get().registerWorker.getEndpoint() ) : Never() ) ) {}
 			when( wait(timeout.isValid() ? timeout : Never()) ) {
 				monitor.cancel();
+				// The worker tries to become a CC
 				wait( clusterController( connFile, currentCC , asyncPriorityInfo, recoveredDiskFiles, locality ) );
 				return Void();
 			}

@@ -110,6 +110,7 @@ struct GenerationRegWriteRequest {
 	}
 };
 
+// Interface for worker to nominate itself as leader (i.e., CC) and get the leader
 struct LeaderElectionRegInterface : ClientLeaderRegInterface {
 	RequestStream< struct CandidacyRequest > candidacy;
 	RequestStream< struct ElectionResultRequest > electionResult;
@@ -139,7 +140,7 @@ struct CandidacyRequest {
 
 struct ElectionResultRequest {
 	constexpr static FileIdentifier file_identifier = 78924329;
-	Key key;
+	Key key; // What is the definition of key?
 	vector<NetworkAddress> coordinators;
 	UID knownLeader;
 	ReplyPromise<Optional<LeaderInfo>> reply;

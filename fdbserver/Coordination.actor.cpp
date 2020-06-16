@@ -133,6 +133,7 @@ private:
 	}
 };
 
+// Register a read and write request service for the local server to change coordinate state
 ACTOR Future<Void> localGenerationReg( GenerationRegInterface interf, OnDemandStore* pstore ) {
 	state GenerationRegVal v;
 	state OnDemandStore& store = *pstore;
@@ -432,7 +433,9 @@ const KeyRangeRef fwdKeys( LiteralStringRef( "\xff" "fwd" ), LiteralStringRef( "
 struct LeaderRegisterCollection {
 	// SOMEDAY: Factor this into a generic tool?  Extend ActorCollection to support removal actions?  What?
 	ActorCollection actors;
-	Map<Key, LeaderElectionRegInterface> registerInterfaces;
+	// Q: Is the Map only one element in prod?
+	Map<Key, LeaderElectionRegInterface>
+	    registerInterfaces; // Key is the SHA in cluster file, identifying which cluster
 	Map<Key, LeaderInfo> forward;
 	OnDemandStore *pStore;
 
@@ -516,6 +519,7 @@ ACTOR Future<Void> leaderServer(LeaderElectionRegInterface interf, OnDemandStore
 
 	loop choose {
 		when ( OpenDatabaseCoordRequest req = waitNext( interf.openDatabase.getFuture() ) ) {
+			// Clients connect to coordinator to get a list of proxies in ClientDBInfo
 			Optional<LeaderInfo> forward = regs.getForward(req.clusterKey);
 			if( forward.present() ) {
 				ClientDBInfo info;

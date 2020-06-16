@@ -97,8 +97,9 @@ struct LeaderInfo {
 	constexpr static FileIdentifier file_identifier = 8338794;
 	UID changeID;
 	static const uint64_t mask = ~(127ll << 57);
-	Value serializedInfo;
-	bool forward;  // If true, serializedInfo is a connection string instead!
+	Value serializedInfo; // If forward is false, it is the serialized CC interface
+	bool forward; // If true, serializedInfo is a connection string instead! // Q: Why do we need to forward the
+	              // getLeader request to a different connection (which is a coord address?)?
 
 	LeaderInfo() : forward(false) {}
 	LeaderInfo(UID changeID) : changeID(changeID), forward(false) {}

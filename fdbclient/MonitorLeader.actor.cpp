@@ -387,8 +387,7 @@ ClientLeaderRegInterface::ClientLeaderRegInterface( INetwork* local ) {
 }
 
 // Nominee is the worker among all workers that are considered as leader by a coordinator
-// This function contacts a coordinator coord to ask if the worker is considered as a leader (i.e., if the worker
-// is a nominee)
+// This function asks the coordinator coord about who is the leader from the coord's view
 ACTOR Future<Void> monitorNominee( Key key, ClientLeaderRegInterface coord, AsyncTrigger* nomineeChange, Optional<LeaderInfo> *info ) {
 	loop {
 		state Optional<LeaderInfo> li = wait( retryBrokenPromise( coord.getLeader, GetLeaderRequest( key, info->present() ? info->get().changeID : UID() ), TaskPriority::CoordinationReply ) );
@@ -410,6 +409,7 @@ ACTOR Future<Void> monitorNominee( Key key, ClientLeaderRegInterface coord, Asyn
 // Also used in fdbserver/LeaderElection.actor.cpp!
 // bool represents if the LeaderInfo is a majority answer or not.
 // This function also masks the first 7 bits of changeId of the nominees and returns the Leader with masked changeId
+// Return: LeaderInfo is the nominee with most votes; bool is if the nominee has majority votes
 Optional<std::pair<LeaderInfo, bool>> getLeader( const vector<Optional<LeaderInfo>>& nominees ) {
 	// If any coordinator says that the quorum is forwarded, then it is
 	for(int i=0; i<nominees.size(); i++)
@@ -631,6 +631,7 @@ ACTOR Future<Void> getClientInfoFromLeader( Reference<AsyncVar<Optional<ClusterC
 	}
 }
 
+// Monitor leader (i.e., CC) change and update leaderInfo on behalf of proxies' requests
 ACTOR Future<Void> monitorLeaderForProxies( Key clusterKey, vector<NetworkAddress> coordinators, ClientData* clientData, Reference<AsyncVar<Optional<LeaderInfo>>> leaderInfo ) {
 	state vector< ClientLeaderRegInterface > clientLeaderServers;
 	state AsyncTrigger nomineeChange;

@@ -106,7 +106,8 @@ struct ClientDBInfo {
 	Optional<MasterProxyInterface> firstProxy; //not serialized, used for commitOnFirstProxy when the proxies vector has been shrunk
 	double clientTxnInfoSampleRate;
 	int64_t clientTxnInfoSizeLimit;
-	Optional<Value> forward;
+	Optional<Value>
+	    forward; // Q: What is the definition of this field? It was assigned for a connection string from LeaderInfo
 	double transactionTagSampleRate;
 
 	ClientDBInfo() : clientTxnInfoSampleRate(std::numeric_limits<double>::infinity()), clientTxnInfoSizeLimit(-1), transactionTagSampleRate(CLIENT_KNOBS->READ_TAG_SAMPLE_RATE) {}
