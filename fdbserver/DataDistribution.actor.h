@@ -138,6 +138,15 @@ public:
 		bool operator == ( const Team& r ) const {
 			return servers == r.servers && primary == r.primary;
 		}
+
+		std::string getDesc() {
+			std::stringstream ss;
+			ss << "Primary:" << primary << " Size:" << servers.size();
+			for (auto s : servers) {
+				ss << s.toString() << " ";
+			}
+			return ss.str();
+		}
 	};
 
 	// This tracks the data distribution on the data distribution server so that teamTrackers can

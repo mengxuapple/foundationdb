@@ -3028,9 +3028,13 @@ ACTOR Future<Void> teamTracker(DDTeamCollection* self, Reference<TCTeamInfo> tea
 			    anyWrongConfiguration != lastWrongConfiguration || recheck) { // NOTE: do not check wrongSize
 				if(logTeamEvents) {
 					TraceEvent("TeamHealthChanged", self->distributorId)
-						.detail("Team", team->getDesc()).detail("ServersLeft", serversLeft)
-						.detail("LastServersLeft", lastServersLeft).detail("ContainsUndesiredServer", anyUndesired)
-						.detail("HealthyTeamsCount", self->healthyTeamCount).detail("IsWrongConfiguration", anyWrongConfiguration);
+					    .detail("Team", team->getDesc())
+					    .detail("ServersLeft", serversLeft)
+					    .detail("LastServersLeft", lastServersLeft)
+					    .detail("ContainsUndesiredServer", anyUndesired)
+					    .detail("HealthyTeamsCount", self->healthyTeamCount)
+					    .detail("IsWrongConfiguration", anyWrongConfiguration)
+					    .detail("ContainFailed", containsFailed);
 				}
 
 				team->setWrongConfiguration( anyWrongConfiguration );
@@ -3103,8 +3107,11 @@ ACTOR Future<Void> teamTracker(DDTeamCollection* self, Reference<TCTeamInfo> tea
 				}
 
 				if(logTeamEvents) {
-					TraceEvent("TeamPriorityChange", self->distributorId).detail("Priority", team->getPriority())
-					.detail("Info", team->getDesc()).detail("ZeroHealthyTeams", self->zeroHealthyTeams->get());
+					TraceEvent("TeamPriorityChange", self->distributorId)
+					    .detail("Priority", team->getPriority())
+					    .detail("Info", team->getDesc())
+					    .detail("ZeroHealthyTeams", self->zeroHealthyTeams->get())
+					    .detail("ContainFailed", containsFailed);
 				}
 
 				lastZeroHealthy = self->zeroHealthyTeams->get(); //set this again in case it changed from this teams health changing
@@ -3150,6 +3157,12 @@ ACTOR Future<Void> teamTracker(DDTeamCollection* self, Reference<TCTeamInfo> tea
 										                                             : SERVER_KNOBS->PRIORITY_TEAM_UNHEALTHY);
 									}
 								} else {
+									if (logTeamEvents) {
+										TraceEvent("TeamTrackerRemovedServerStillInTeamInSABTF", self->distributorId)
+										    .detail("RemovedServer", t.servers[0])
+										    .detail("Team", t.getDesc());
+										tc->traceAllInfo(true);
+									}
 									TEST(true); // A removed server is still associated with a team in SABTF
 								}
 							}
