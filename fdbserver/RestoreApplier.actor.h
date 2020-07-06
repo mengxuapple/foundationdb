@@ -249,6 +249,12 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 	std::set<StagingKeyRange> stagingKeyRanges;
 	FlowLock applyStagingKeysBatchLock;
 
+	// Loaders use rangeToApplier to bypass applying phase and send mutations to appliers in the next version batch
+	//   Key is the inclusive lower bound of the key range the applier (UID) is responsible for
+	AsyncVar<Optional<std::map<Key, UID>>> rangeToApplier;
+	std::map<UID, bool> bypassMsgs; // ensure each bypass message is only processed once
+	Version endVersion, beginVersion; // [beginVersion, endVersion) for the version batch
+
 	Future<Void> pollMetrics;
 
 	RoleVersionBatchState vbState;
@@ -263,6 +269,7 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 		Counter appliedTxns, appliedTxnRetries;
 		Counter fetchKeys, fetchTxns, fetchTxnRetries; // number of keys to fetch from dest. FDB cluster.
 		Counter clearOps, clearTxns;
+		Counter receivedBypassMutations, receivedBypassMutationBytes;
 
 		Counters(ApplierBatchData* self, UID applierInterfID, int batchIndex)
 		  : cc("ApplierBatch", applierInterfID.toString() + ":" + std::to_string(batchIndex)),
@@ -272,7 +279,8 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 		    appliedMutations("AppliedMutations", cc), appliedAtomicOps("AppliedAtomicOps", cc),
 		    appliedTxns("AppliedTxns", cc), appliedTxnRetries("AppliedTxnRetries", cc), fetchKeys("FetchKeys", cc),
 		    fetchTxns("FetchTxns", cc), fetchTxnRetries("FetchTxnRetries", cc), clearOps("ClearOps", cc),
-		    clearTxns("ClearTxns", cc) {}
+		    clearTxns("ClearTxns", cc), receivedBypassMutations("ReceivedBypassMutations", cc),
+		    receivedBypassMutationBytes("ReceivedBypassMutationBytes", cc) {}
 	} counters;
 
 	void addref() { return ReferenceCounted<ApplierBatchData>::addref(); }
@@ -388,7 +396,11 @@ struct RestoreApplierData : RestoreRoleData, public ReferenceCounted<RestoreAppl
 
 	void initVersionBatch(int batchIndex) {
 		TraceEvent("FastRestoreApplierInitVersionBatch", id()).detail("BatchIndex", batchIndex);
-		batch[batchIndex] = Reference<ApplierBatchData>(new ApplierBatchData(nodeID, batchIndex));
+		if (!batch[batchIndex].isValid()) {
+			batch[batchIndex] = Reference<ApplierBatchData>(new ApplierBatchData(nodeID, batchIndex));
+		} else {
+			TraceEvent("FastRestoreApplierInitVersionBatchHasBatchData", id()).detail("BatchIndex", batchIndex);
+		}
 	}
 
 	void resetPerRestoreRequest() {

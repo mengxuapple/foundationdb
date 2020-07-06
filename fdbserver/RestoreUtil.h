@@ -58,9 +58,24 @@ struct VersionedMutation {
 	}
 };
 
+struct BypassMutation {
+	MutationRef mutation;
+	int depth; // how many version batches has the mutation been bypassed. Increase by 1 per version batch
+
+	BypassMutation() = default;
+	explicit BypassMutation(MutationRef mutation, int depth) : mutation(mutation), depth(depth) {}
+	explicit BypassMutation(Arena& arena, const BypassMutation& bm) : mutation(arena, bm.mutation), depth(bm.depth) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, mutation, depth);
+	}
+};
+
 using MutationsVec = Standalone<VectorRef<MutationRef>>;
 using LogMessageVersionVec = Standalone<VectorRef<LogMessageVersion>>;
 using VersionedMutationsVec = Standalone<VectorRef<VersionedMutation>>;
+using BypassMutationsVec = Standalone<VectorRef<BypassMutation>>;
 
 enum class RestoreRole { Invalid = 0, Master = 1, Loader, Applier };
 BINARY_SERIALIZABLE(RestoreRole);

@@ -111,6 +111,8 @@ void handleRecruitRoleRequest(RestoreRecruitRoleRequest req, Reference<RestoreWo
 		RestoreApplierInterface& recruited = self->applierInterf.get();
 		DUMPTOKEN(recruited.heartbeat);
 		DUMPTOKEN(recruited.sendMutationVector);
+		DUMPTOKEN(recruited.bypassDB);
+		DUMPTOKEN(recruited.notifyApplierRanges);
 		DUMPTOKEN(recruited.applyToDB);
 		DUMPTOKEN(recruited.initVersionBatch);
 		DUMPTOKEN(recruited.collectRestoreRoleInterfaces);

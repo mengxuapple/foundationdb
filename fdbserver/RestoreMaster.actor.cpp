@@ -47,7 +47,7 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreMasterData> 
 ACTOR static Future<Void> startProcessRestoreRequests(Reference<RestoreMasterData> self, Database cx);
 ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreMasterData> self, int batchIndex,
                                                             Database cx, RestoreRequest request,
-                                                            VersionBatch versionBatch);
+                                                            VersionBatch versionBatch, bool lastVersionBatch);
 
 ACTOR static Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> masterWorker,
                                               Reference<RestoreMasterData> masterData);
@@ -60,7 +60,8 @@ ACTOR static Future<Void> initializeVersionBatch(std::map<UID, RestoreApplierInt
 ACTOR static Future<Void> notifyApplierToApplyMutations(Reference<MasterBatchData> batchData,
                                                         Reference<MasterBatchStatus> batchStatus,
                                                         std::map<UID, RestoreApplierInterface> appliersInterf,
-                                                        int batchIndex, NotifiedVersion* finishedBatch);
+                                                        int batchIndex, NotifiedVersion* finishedBatch,
+                                                        VersionBatch versionBatch, bool lastVersionBatch);
 ACTOR static Future<Void> notifyLoadersVersionBatchFinished(std::map<UID, RestoreLoaderInterface> loadersInterf,
                                                             int batchIndex);
 ACTOR static Future<Void> notifyRestoreCompleted(Reference<RestoreMasterData> self, bool terminate);
@@ -316,6 +317,7 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreMasterData> 
 
 	actors.add(monitorFinishedVersion(self, request));
 	state std::vector<VersionBatch>::iterator versionBatch = versionBatches.begin();
+	state int maxBatchIndex = versionBatches.empty() ? 0 : versionBatches.back().batchIndex;
 	for (; versionBatch != versionBatches.end(); versionBatch++) {
 		while (self->runningVersionBatches.get() >= SERVER_KNOBS->FASTRESTORE_VB_PARALLELISM && !releaseVBOutOfOrder) {
 			// Control how many batches can be processed in parallel. Avoid dead lock due to OOM on loaders
@@ -331,7 +333,8 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreMasterData> 
 		    .detail("VersionBatches", versionBatches.size());
 		self->batch[batchIndex] = Reference<MasterBatchData>(new MasterBatchData());
 		self->batchStatus[batchIndex] = Reference<MasterBatchStatus>(new MasterBatchStatus());
-		fBatches.push_back(distributeWorkloadPerVersionBatch(self, batchIndex, cx, request, *versionBatch));
+		fBatches.push_back(distributeWorkloadPerVersionBatch(self, batchIndex, cx, request, *versionBatch,
+		                                                     versionBatch->batchIndex >= maxBatchIndex));
 		// Wait a bit to give the current version batch a head start from the next version batch
 		wait(delay(SERVER_KNOBS->FASTRESTORE_VB_LAUNCH_DELAY));
 	}
@@ -504,10 +507,32 @@ ACTOR static Future<Void> sendMutationsFromLoaders(Reference<MasterBatchData> ba
 	return Void();
 }
 
+ACTOR static Future<Void> notifyAppliersKeyRanges(Reference<MasterBatchData> batchData,
+                                                  std::map<UID, RestoreApplierInterface> appliers, int batchIndex) {
+	TraceEvent("FastRestoreMasterPhaseNotifyAppliersKeyRangesStart")
+	    .detail("BatchIndex", batchIndex)
+	    .detail("Appliers", appliers.size());
+
+	std::vector<std::pair<UID, RestoreNotifyAppliersKeyRangesRequest>> requests;
+	for (auto& applier : appliers) {
+		requests.emplace_back(applier.first,
+		                      RestoreNotifyAppliersKeyRangesRequest(batchIndex, batchData->rangeToApplier));
+	}
+	state std::vector<RestoreCommonReply> replies;
+	wait(getBatchReplies(&RestoreApplierInterface::notifyApplierRanges, appliers, requests, &replies,
+	                     TaskPriority::RestoreApplierWriteDB));
+
+	TraceEvent("FastRestoreMasterPhaseNotifyAppliersKeyRangesDone")
+	    .detail("BatchIndex", batchIndex)
+	    .detail("Appliers", appliers.size());
+
+	return Void();
+}
+
 // Process a version batch. Phases (loading files, send mutations) should execute in order
 ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreMasterData> self, int batchIndex,
                                                             Database cx, RestoreRequest request,
-                                                            VersionBatch versionBatch) {
+                                                            VersionBatch versionBatch, bool lastVersionBatch) {
 	state Reference<MasterBatchData> batchData = self->batch[batchIndex];
 	state Reference<MasterBatchStatus> batchStatus = self->batchStatus[batchIndex];
 	state double startTime = now();
@@ -546,6 +571,8 @@ ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreMas
 	ASSERT(batchData->rangeToApplier.empty());
 	splitKeyRangeForAppliers(batchData, self->appliersInterf, batchIndex);
 
+	wait(notifyAppliersKeyRanges(batchData, self->appliersInterf, batchIndex)); // TODO: make this async
+
 	// Ask loaders to send parsed mutations to appliers;
 	// log mutations should be applied before range mutations at the same version, which is ensured by LogMessageVersion
 	wait(sendMutationsFromLoaders(batchData, batchStatus, self->loadersInterf, batchIndex, false) &&
@@ -553,7 +580,8 @@ ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreMas
 
 	// Synchronization point for version batch pipelining.
 	// self->finishedBatch will continuously increase by 1 per version batch.
-	wait(notifyApplierToApplyMutations(batchData, batchStatus, self->appliersInterf, batchIndex, &self->finishedBatch));
+	wait(notifyApplierToApplyMutations(batchData, batchStatus, self->appliersInterf, batchIndex, &self->finishedBatch,
+	                                   versionBatch, lastVersionBatch));
 
 	wait(notifyLoadersVersionBatchFinished(self->loadersInterf, batchIndex));
 
@@ -846,7 +874,8 @@ ACTOR static Future<Void> initializeVersionBatch(std::map<UID, RestoreApplierInt
 ACTOR static Future<Void> notifyApplierToApplyMutations(Reference<MasterBatchData> batchData,
                                                         Reference<MasterBatchStatus> batchStatus,
                                                         std::map<UID, RestoreApplierInterface> appliersInterf,
-                                                        int batchIndex, NotifiedVersion* finishedBatch) {
+                                                        int batchIndex, NotifiedVersion* finishedBatch,
+                                                        VersionBatch versionBatch, bool lastVersionBatch) {
 	TraceEvent("FastRestoreMasterPhaseApplyToDBStart")
 	    .detail("BatchIndex", batchIndex)
 	    .detail("FinishedBatch", finishedBatch->get());
@@ -855,14 +884,16 @@ ACTOR static Future<Void> notifyApplierToApplyMutations(Reference<MasterBatchDat
 
 	if (finishedBatch->get() == batchIndex - 1) {
 		// Prepare the applyToDB requests
-		std::vector<std::pair<UID, RestoreVersionBatchRequest>> requests;
+		std::vector<std::pair<UID, RestoreApplyVersionBatchRequest>> requests;
 
 		TraceEvent("FastRestoreMasterPhaseApplyToDBRunning")
 		    .detail("BatchIndex", batchIndex)
 		    .detail("Appliers", appliersInterf.size());
 		for (auto& applier : appliersInterf) {
 			ASSERT(batchStatus->applyStatus.find(applier.first) == batchStatus->applyStatus.end());
-			requests.emplace_back(applier.first, RestoreVersionBatchRequest(batchIndex));
+			requests.emplace_back(applier.first,
+			                      RestoreApplyVersionBatchRequest(batchIndex, versionBatch.beginVersion,
+			                                                      versionBatch.endVersion, lastVersionBatch));
 			batchStatus->applyStatus[applier.first] = RestoreApplyStatus::Applying;
 		}
 		state std::vector<RestoreCommonReply> replies;

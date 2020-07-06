@@ -53,6 +53,9 @@ struct RestoreSendVersionedMutationsRequest;
 struct RestoreSysInfo;
 struct RestoreApplierInterface;
 struct RestoreFinishRequest;
+struct RestoreNotifyAppliersKeyRangesRequest;
+struct RestoreApplyVersionBatchRequest;
+struct RestoreBypassMutationsRequest;
 
 // RestoreSysInfo includes information each (type of) restore roles should know.
 // At this moment, it only include appliers. We keep the name for future extension.
@@ -169,7 +172,9 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 
 	RequestStream<RestoreSimpleRequest> heartbeat;
 	RequestStream<RestoreSendVersionedMutationsRequest> sendMutationVector;
-	RequestStream<RestoreVersionBatchRequest> applyToDB;
+	RequestStream<RestoreNotifyAppliersKeyRangesRequest> notifyApplierRanges;
+	RequestStream<RestoreBypassMutationsRequest> bypassDB; // bypass applying mutations to DB
+	RequestStream<RestoreApplyVersionBatchRequest> applyToDB;
 	RequestStream<RestoreVersionBatchRequest> initVersionBatch;
 	RequestStream<RestoreSimpleRequest> collectRestoreRoleInterfaces;
 	RequestStream<RestoreFinishRequest> finishRestore;
@@ -188,6 +193,8 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 		// Endpoint in a later restore phase has higher priority
 		heartbeat.getEndpoint(TaskPriority::LoadBalancedEndpoint);
 		sendMutationVector.getEndpoint(TaskPriority::RestoreApplierReceiveMutations);
+		notifyApplierRanges.getEndpoint(TaskPriority::RestoreNotifyApplierKeyRanges);
+		bypassDB.getEndpoint(TaskPriority::RestoreApplierWriteDB);
 		applyToDB.getEndpoint(TaskPriority::RestoreApplierWriteDB);
 		initVersionBatch.getEndpoint(TaskPriority::LoadBalancedEndpoint);
 		collectRestoreRoleInterfaces.getEndpoint(TaskPriority::LoadBalancedEndpoint);
@@ -196,8 +203,8 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, *(RestoreRoleInterface*)this, heartbeat, sendMutationVector, applyToDB, initVersionBatch,
-		           collectRestoreRoleInterfaces, finishRestore);
+		serializer(ar, *(RestoreRoleInterface*)this, heartbeat, sendMutationVector, notifyApplierRanges, bypassDB,
+		           applyToDB, initVersionBatch, collectRestoreRoleInterfaces, finishRestore);
 	}
 
 	std::string toString() { return nodeID.toString(); }
@@ -484,6 +491,57 @@ struct RestoreSendMutationsToAppliersRequest : TimedRequest {
 	}
 };
 
+struct RestoreNotifyAppliersKeyRangesRequest : TimedRequest {
+	constexpr static FileIdentifier file_identifier = 18827305;
+
+	int batchIndex; // version batch index
+	std::map<Key, UID> rangeToApplier;
+
+	ReplyPromise<RestoreCommonReply> reply;
+
+	RestoreNotifyAppliersKeyRangesRequest() = default;
+	explicit RestoreNotifyAppliersKeyRangesRequest(int batchIndex, std::map<Key, UID> rangeToApplier)
+	  : batchIndex(batchIndex), rangeToApplier(rangeToApplier) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, batchIndex, rangeToApplier, reply);
+	}
+
+	std::string toString() {
+		std::stringstream ss;
+		ss << "RestoreNotifyAppliersKeyRangesRequest batchIndex:" << batchIndex
+		   << " keyToAppliers.size:" << rangeToApplier.size();
+		return ss.str();
+	}
+};
+
+struct RestoreBypassMutationsRequest : TimedRequest {
+	constexpr static FileIdentifier file_identifier = 29764565;
+	UID id; // UUID to ensure the message is processed exactly once
+	int batchIndex; // which version batch should receive the mutations
+	Version version; // (end version - 1) of the version batch
+	BypassMutationsVec bypassMutations; // mutations sent to appliers in next version batch instead of writing to DB
+
+	ReplyPromise<RestoreCommonReply> reply;
+
+	RestoreBypassMutationsRequest() = default;
+	explicit RestoreBypassMutationsRequest(UID id, int batchIndex, Version version, BypassMutationsVec bypassMutations)
+	  : id(id), batchIndex(batchIndex), version(version), bypassMutations(bypassMutations) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, id, batchIndex, version, bypassMutations, reply);
+	}
+
+	std::string toString() {
+		std::stringstream ss;
+		ss << "VersionBatchIndex:" << batchIndex << " Version:" << version
+		   << " bypassMutations:" << bypassMutations.size();
+		return ss.str();
+	}
+};
+
 struct RestoreSendVersionedMutationsRequest : TimedRequest {
 	constexpr static FileIdentifier file_identifier = 69764565;
 
@@ -504,7 +562,7 @@ struct RestoreSendVersionedMutationsRequest : TimedRequest {
 
 	std::string toString() {
 		std::stringstream ss;
-		ss << "VersionBatchIndex:" << batchIndex << "RestoreAsset:" << asset.toString() << " msgIndex:" << msgIndex
+		ss << "VersionBatchIndex:" << batchIndex << " RestoreAsset:" << asset.toString() << " msgIndex:" << msgIndex
 		   << " isRangeFile:" << isRangeFile << " versionedMutations.size:" << versionedMutations.size();
 		return ss.str();
 	}
@@ -533,6 +591,34 @@ struct RestoreVersionBatchRequest : TimedRequest {
 	std::string toString() {
 		std::stringstream ss;
 		ss << "RestoreVersionBatchRequest batchIndex:" << batchIndex;
+		return ss.str();
+	}
+};
+
+struct RestoreApplyVersionBatchRequest : TimedRequest {
+	constexpr static FileIdentifier file_identifier = 97223537;
+
+	int batchIndex;
+	Version beginVersion, endVersion;
+	bool lastVersionBatch;
+
+	ReplyPromise<RestoreCommonReply> reply;
+
+	RestoreApplyVersionBatchRequest() = default;
+	explicit RestoreApplyVersionBatchRequest(int batchIndex, Version beginVersion, Version endVersion,
+	                                         bool lastVersionBatch)
+	  : batchIndex(batchIndex), beginVersion(beginVersion), endVersion(endVersion), lastVersionBatch(lastVersionBatch) {
+	}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, batchIndex, beginVersion, endVersion, lastVersionBatch, reply);
+	}
+
+	std::string toString() {
+		std::stringstream ss;
+		ss << "RestoreApplyVersionBatchRequest batchIndex:" << batchIndex << " beginVersion:" << beginVersion
+		   << " endVersion:" << endVersion << " lastVersionBatch:" << lastVersionBatch;
 		return ss.str();
 	}
 };
