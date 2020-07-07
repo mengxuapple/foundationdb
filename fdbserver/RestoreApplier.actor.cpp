@@ -157,7 +157,7 @@ ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest re
 	batchData->bypassMsgs[req.id] = true;
 	for (auto& bm : req.bypassMutations) { // bm: BypassMutation*
 		// TODO: handle bypassMutation.depth
-		batchData->addMutation(bm.mutation, LogMessageVersion(req.version));
+		batchData->addMutation(bm.mutation, LogMessageVersion(req.version), true);
 		batchData->counters.receivedBypassMutations += 1;
 		batchData->counters.receivedBypassMutationBytes += bm.mutation.totalSize();
 	}
@@ -628,7 +628,7 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 		ASSERT(itlow->first <= m.param1);
 		UID applierID = itlow->second;
 		std::pair<BypassMutationsVec, double>& applierInfo = applierMutations.at(applierID);
-		applierInfo.first.push_back(applierInfo.first.arena(), BypassMutation(m, 1));
+		applierInfo.first.push_back_deep(applierInfo.first.arena(), BypassMutation(m, 1)); // TODO: Change to push_back
 		applierInfo.second += m.totalSize();
 		if (applierInfo.second >= SERVER_KNOBS->FASTRESTORE_BYPASS_MSG_BYTES) {
 			RestoreApplierInterface applier = appliersInterf[applierID];

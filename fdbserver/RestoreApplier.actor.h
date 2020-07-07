@@ -58,7 +58,7 @@ struct StagingKey {
 
 	// Add mutation m at newVersion to stagingKey
 	// Assume: SetVersionstampedKey and SetVersionstampedValue have been converted to set
-	void add(const MutationRef& m, LogMessageVersion newVersion) {
+	void add(const MutationRef& m, LogMessageVersion newVersion, bool bypass = false) {
 		ASSERT(m.type != MutationRef::SetVersionstampedKey && m.type != MutationRef::SetVersionstampedValue);
 		if (debugMutation("StagingKeyAdd", newVersion.version, m)) {
 			TraceEvent("StagingKeyAdd")
@@ -71,7 +71,15 @@ struct StagingKey {
 			// overlapping mutation logs, because new TLogs can copy mutations
 			// from old generation TLogs (or backup worker is recruited without
 			// knowning previously saved progress).
-			ASSERT(type == m.type && key == m.param1 && val == m.param2);
+			if (!(type == m.type && key == m.param1 && val == m.param2)) {
+				TraceEvent(SevError, "FastRestoreApplierSameVersion")
+				    .detail("BypassMutation", bypass)
+				    .detail("Version", version.toString())
+				    .detail("Mutation", m.toString())
+				    .detail("MType", getTypeString(type))
+				    .detail("MKey", key)
+				    .detail("MVal", val);
+			}
 			TraceEvent("SameVersion").detail("Version", version.toString()).detail("Mutation", m.toString());
 			return;
 		}
@@ -157,9 +165,10 @@ struct StagingKey {
 				if (hasBaseValue()) {
 					inputVal = val;
 				}
+				key = mutation.param1;
 				Optional<ValueRef> retVal = doCompareAndClear(inputVal, mutation.param2, arena);
 				if (!retVal.present()) {
-					val = key;
+					val = key; // NOTE: When we clear a key in stagingKey, we only use key as input
 					type = MutationRef::ClearRange;
 				} // else no-op
 			} else if (isAtomicOp((MutationRef::Type)mutation.type)) {
@@ -167,6 +176,7 @@ struct StagingKey {
 				if (hasBaseValue()) {
 					inputVal = val;
 				}
+				key = mutation.param1; // In case there is no base value and key is not set
 				val = applyAtomicOp(inputVal, mutation.param2, (MutationRef::Type)mutation.type);
 				type = MutationRef::SetValue; // Precomputed result should be set to DB.
 			} else if (mutation.type == MutationRef::SetValue || mutation.type == MutationRef::ClearRange) {
@@ -177,6 +187,7 @@ struct StagingKey {
 				    .detail("MutationType", getTypeString(mutation.type))
 				    .detail("Version", lb->first.toString());
 			} else {
+				// TODO: Change to SevError to see if this case ever happens
 				TraceEvent(SevWarnAlways, "FastRestoreApplierPrecomputeResultSkipUnexpectedBackupMutation", applierID)
 				    .detail("BatchIndex", batchIndex)
 				    .detail("Context", context)
@@ -296,10 +307,10 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 	}
 	~ApplierBatchData() = default;
 
-	void addMutation(MutationRef m, LogMessageVersion ver) {
+	void addMutation(MutationRef m, LogMessageVersion ver, bool bypass = false) {
 		if (!isRangeMutation(m)) {
 			auto item = stagingKeys.emplace(m.param1, StagingKey());
-			item.first->second.add(m, ver);
+			item.first->second.add(m, ver, bypass);
 		} else {
 			stagingKeyRanges.insert(StagingKeyRange(m, ver));
 		}
