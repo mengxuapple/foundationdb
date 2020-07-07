@@ -612,6 +612,9 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 
 	std::map<Key, UID> rangeToApplierLocal = rangeToApplier->get().get();
 	for (auto& applier : rangeToApplierLocal) {
+		TraceEvent("FastRestoreBypassMutationsWaitForRangeToApplier", applierID)
+		    .detail("BatchIndex", batchIndex)
+		    .detail("Applier", applier.second);
 		applierMutations[applier.second] = std::make_pair(BypassMutationsVec(), 0);
 	}
 	Version lastVersion = batchData->endVersion - 1;
@@ -626,12 +629,17 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 		std::map<Key, UID>::iterator itlow = rangeToApplierLocal.upper_bound(m.param1);
 		--itlow; // make sure itlow->first <= m.param1
 		ASSERT(itlow->first <= m.param1);
-		UID applierID = itlow->second;
-		std::pair<BypassMutationsVec, double>& applierInfo = applierMutations.at(applierID);
+		UID dstApplierID = itlow->second;
+		std::pair<BypassMutationsVec, double>& applierInfo = applierMutations.at(dstApplierID);
 		applierInfo.first.push_back_deep(applierInfo.first.arena(), BypassMutation(m, 1)); // TODO: Change to push_back
 		applierInfo.second += m.totalSize();
+		TraceEvent(SevDebug, "FastRestoreBypassMutationsWaitForRangeToApplier", applierID)
+		    .detail("BatchIndex", batchIndex)
+		    .detail("Applier", dstApplierID)
+		    .detail("MsgSize", applierInfo.second)
+		    .detail("M", m.toString());
 		if (applierInfo.second >= SERVER_KNOBS->FASTRESTORE_BYPASS_MSG_BYTES) {
-			RestoreApplierInterface applier = appliersInterf[applierID];
+			RestoreApplierInterface applier = appliersInterf[dstApplierID];
 			UID msgUID = deterministicRandom()->randomUniqueID();
 			fBatches.push_back(applier.bypassDB.getReply(
 			    RestoreBypassMutationsRequest(msgUID, batchIndex + 1, lastVersion, applierInfo.first)));

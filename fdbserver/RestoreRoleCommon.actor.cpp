@@ -147,7 +147,14 @@ ACTOR Future<Void> isSchedulable(Reference<RestoreRoleData> self, int actorBatch
 			// memory will be larger than threshold when deterministicRandom()->random01() > 1/2
 			memory = SERVER_KNOBS->FASTRESTORE_MEMORY_THRESHOLD_MB_SOFT * 2 * deterministicRandom()->random01();
 		}
-		if (memory < memoryThresholdBytes || self->finishedBatch.get() + 1 == actorBatchIndex) {
+		if (memory < memoryThresholdBytes || self->finishedBatch.get() + 1 == actorBatchIndex ||
+		    self->finishedBatch.get() + 2 == actorBatchIndex) {
+			// The current ongoing version batch is finishedBatch+1. We must allow it to proceed even under OOM risk;
+			// otherwise, we get deadlock.
+			// Because bypassMutation() needs the range-to-applier mapping in the next version batch, we also need to
+			// allow (finishedBatch+2) version batch to proceed.
+			// TODO: Aborting bypassMutation() if (finishedBatch+2) VB is blocked due to OOM risk. It is hard because
+			// some nodes may not have memory pressure and have already sent some mutations back. (Maybe it's ok.)
 			if (memory >= memoryThresholdBytes) {
 				TraceEvent(SevWarn, "FastRestoreMemoryUsageAboveThreshold", self->id())
 				    .suppressFor(5.0)
