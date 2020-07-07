@@ -74,7 +74,7 @@ ACTOR Future<Void> restoreApplierCore(RestoreApplierInterface applierInterf, int
 				}
 				when(RestoreBypassMutationsRequest req = waitNext(applierInterf.bypassDB.getFuture())) {
 					requestTypeStr = "bypassDB";
-					actors.add(handleBypassMutations(req, self)); // TODO
+					actors.add(handleBypassMutations(req, self));
 				}
 				when(RestoreApplyVersionBatchRequest req = waitNext(applierInterf.applyToDB.getFuture())) {
 					requestTypeStr = "applyToDB";
@@ -117,16 +117,15 @@ ACTOR static Future<Void> handleNotifyApplierKeyRanges(RestoreNotifyAppliersKeyR
 		self->batch[req.batchIndex] = Reference<ApplierBatchData>(new ApplierBatchData(self->id(), req.batchIndex));
 		TraceEvent("FastRestoreApplierPhaseCreateBatchDataEarly", self->id()).detail("BatchIndex", req.batchIndex);
 	}
-	state Reference<ApplierBatchData> batchData =
-	    self->batch[req.batchIndex]; // create batchData if the new vb has not started
+	state Reference<ApplierBatchData> batchData = self->batch[req.batchIndex];
 	TraceEvent("FastRestoreApplierPhaseHandleApplierKeyRanges", self->id())
 	    .detail("BatchIndex", req.batchIndex)
 	    .detail("CurrentRangeToAppliers",
-	            batchData->rangeToApplier.get().present() ? batchData->rangeToApplier.get().get().size() : 0)
+	            batchData->rangeToApplier->get().present() ? batchData->rangeToApplier->get().get().size() : 0)
 	    .detail("NewRangeToAppliers", req.rangeToApplier.size());
 
 	bool isDuplicated = batchData->rangeToApplier.get().present();
-	batchData->rangeToApplier.set(req.rangeToApplier);
+	batchData->rangeToApplier->set(req.rangeToApplier);
 
 	req.reply.send(RestoreCommonReply(self->id(), isDuplicated));
 
@@ -134,6 +133,9 @@ ACTOR static Future<Void> handleNotifyApplierKeyRanges(RestoreNotifyAppliersKeyR
 }
 
 ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest req, Reference<RestoreApplierData> self) {
+	TraceEvent("FastRestoreApplierHandleBypassMutations", self->id())
+	    .detail("BatchIndex", req.batchIndex)
+	    .detail("BatchDataValid", self->batch[req.batchIndex].isValid());
 	if (!self->batch[req.batchIndex].isValid()) {
 		self->batch[req.batchIndex] = Reference<ApplierBatchData>(new ApplierBatchData(self->id(), req.batchIndex));
 	}
@@ -578,7 +580,7 @@ ACTOR static Future<Void> applyStagingKeys(Reference<ApplierBatchData> batchData
 ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Reference<ApplierBatchData> batchData,
                                           std::map<UID, RestoreApplierInterface> appliersInterf,
                                           Reference<AsyncVar<Optional<std::map<Key, UID>>>> rangeToApplier) {
-	TraceEvent("FastRestoreBypassMutationsStart", applierID)
+	TraceEvent("FastRestoreApplierBypassMutationsStart", applierID)
 	    .detail("BatchIndex", batchIndex)
 	    .detail("StagingKeys", batchData->stagingKeys.size());
 	state std::map<UID, std::pair<BypassMutationsVec, double>> applierMutations; // temporary struct
@@ -635,7 +637,7 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 
 	wait(waitForAll(fBatches));
 
-	TraceEvent("FastRestoreBypassMutationsDone", applierID)
+	TraceEvent("FastRestoreApplierBypassMutationsDone", applierID)
 	    .detail("BatchIndex", batchIndex)
 	    .detail("StagingKeys", batchData->stagingKeys.size())
 	    .detail("TransactionBatches", msgs);
@@ -699,11 +701,9 @@ ACTOR static Future<Void> handleApplyToDBRequest(RestoreApplyVersionBatchRequest
 				    Reference<ApplierBatchData>(new ApplierBatchData(self->id(), req.batchIndex + 1));
 			}
 			Reference<ApplierBatchData> nextBatchData = self->batch[req.batchIndex + 1];
-			Reference<AsyncVar<Optional<std::map<Key, UID>>>> nextBatchRangeToApper =
-			    Reference<AsyncVar<Optional<std::map<Key, UID>>>>(&nextBatchData->rangeToApplier);
 			batchData->dbApplier = Never();
 			batchData->dbApplier = writeMutationsToDB(self->id(), req.batchIndex, batchData, cx, self->appliersInterf,
-			                                          lastVersionBatch, nextBatchRangeToApper); // TODO
+			                                          lastVersionBatch, nextBatchData->rangeToApplier);
 			batchData->vbState = ApplierVersionBatchState::WRITE_TO_DB;
 		}
 

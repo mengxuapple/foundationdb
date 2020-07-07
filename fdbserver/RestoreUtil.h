@@ -36,11 +36,11 @@
 #include <cstdint>
 #include <cstdarg>
 
-#define SevFRMutationInfo SevVerbose
-//#define SevFRMutationInfo SevInfo
+//#define SevFRMutationInfo SevVerbose
+#define SevFRMutationInfo SevInfo
 
-#define SevFRDebugInfo SevVerbose
-//#define SevFRDebugInfo SevInfo
+//#define SevFRDebugInfo SevVerbose
+#define SevFRDebugInfo SevInfo
 
 struct VersionedMutation {
 	MutationRef mutation;

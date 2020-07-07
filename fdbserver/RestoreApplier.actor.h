@@ -251,7 +251,7 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 
 	// Loaders use rangeToApplier to bypass applying phase and send mutations to appliers in the next version batch
 	//   Key is the inclusive lower bound of the key range the applier (UID) is responsible for
-	AsyncVar<Optional<std::map<Key, UID>>> rangeToApplier;
+	Reference<AsyncVar<Optional<std::map<Key, UID>>>> rangeToApplier;
 	std::map<UID, bool> bypassMsgs; // ensure each bypass message is only processed once
 	Version endVersion, beginVersion; // [beginVersion, endVersion) for the version batch
 
@@ -288,7 +288,7 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 
 	explicit ApplierBatchData(UID nodeID, int batchIndex)
 	  : counters(this, nodeID, batchIndex), applyStagingKeysBatchLock(SERVER_KNOBS->FASTRESTORE_APPLYING_PARALLELISM),
-	    vbState(ApplierVersionBatchState::NOT_INIT) {
+	    vbState(ApplierVersionBatchState::NOT_INIT), rangeToApplier(new AsyncVar<Optional<std::map<Key, UID>>>()) {
 		pollMetrics = traceCounters(format("FastRestoreApplierMetrics%d", batchIndex), nodeID,
 		                            SERVER_KNOBS->FASTRESTORE_ROLE_LOGGING_DELAY, &counters.cc,
 		                            nodeID.toString() + "/RestoreApplierMetrics/" + std::to_string(batchIndex));

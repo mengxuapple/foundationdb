@@ -396,7 +396,7 @@ ACTOR Future<Void> handleSendMutationsRequest(RestoreSendMutationsToAppliersRequ
 	state Reference<LoaderBatchStatus> batchStatus = self->status[req.batchIndex];
 	state bool isDuplicated = true;
 
-	TraceEvent("FastRestoreLoaderPhaseSendMutations", self->id())
+	TraceEvent("FastRestoreLoaderPhaseSendMutationsStart", self->id())
 	    .detail("BatchIndex", req.batchIndex)
 	    .detail("UseRangeFile", req.useRangeFile)
 	    .detail("LoaderSendStatus", batchStatus->toString());
