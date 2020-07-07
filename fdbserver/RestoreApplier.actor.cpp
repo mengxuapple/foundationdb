@@ -685,8 +685,12 @@ ACTOR Future<Void> writeMutationsToDB(UID applierID, int64_t batchIndex, Referen
 	    .detail("RangeToApplierReady", rangeToApplierInNextVB->get().present());
 	wait(precomputeMutationsResult(batchData, applierID, batchIndex, cx));
 
+	state double memoryThresholdBytes = SERVER_KNOBS->FASTRESTORE_BYPASS_MEMORY_THRESHOLD_MB * 1024 * 1024;
+	double memory = getSystemStatistics().processMemory;
+
+	// TODO: write db states after bypassing many version batches
 	// bypass mutations
-	if (!lastVersionBatch) {
+	if (!lastVersionBatch || memory < memoryThresholdBytes) {
 		wait(bypassMutations(applierID, batchIndex, batchData, appliersInterf, rangeToApplierInNextVB));
 	} else {
 		wait(applyStagingKeys(batchData, applierID, batchIndex, cx));

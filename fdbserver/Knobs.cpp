@@ -628,6 +628,7 @@ void ServerKnobs::initialize(bool randomize, ClientKnobs* clientKnobs, bool isSi
 	init( FASTRESTORE_TXN_RETRY_MAX,                              10 ); if( randomize && BUGGIFY ) { FASTRESTORE_TXN_RETRY_MAX = deterministicRandom()->random01() * 100 + 1; }
 	init( FASTRESTORE_TXN_EXTRA_DELAY,                           0.1 ); if( randomize && BUGGIFY ) { FASTRESTORE_TXN_EXTRA_DELAY = deterministicRandom()->random01() * 1 + 0.001;}
 	init( FASTRESTORE_BYPASS_MSG_BYTES,                    1048576.0 ); if( randomize && BUGGIFY ) { FASTRESTORE_BYPASS_MSG_BYTES = deterministicRandom()->random01() * 1024.0 * 1024.0 + 1.0; }
+	init( FASTRESTORE_BYPASS_MEMORY_THRESHOLD_MB, 0.7 * FASTRESTORE_MEMORY_THRESHOLD_MB_SOFT ); if( randomize && BUGGIFY ) { FASTRESTORE_BYPASS_MEMORY_THRESHOLD_MB = deterministicRandom()->random01() * 10; }
 
 	init( REDWOOD_DEFAULT_PAGE_SIZE,                            4096 );
 	init( REDWOOD_KVSTORE_CONCURRENT_READS,                       64 );

@@ -560,6 +560,7 @@ public:
 	int FASTRESTORE_TXN_RETRY_MAX; // threshold to start output error on too many retries
 	double FASTRESTORE_TXN_EXTRA_DELAY; // extra delay to avoid overwhelming fdb
 	double FASTRESTORE_BYPASS_MSG_BYTES; // target size for bypass message
+	double FASTRESTORE_BYPASS_MEMORY_THRESHOLD_MB; // memory threshold that should disable bypass mutations to next VBs
 
 	int REDWOOD_DEFAULT_PAGE_SIZE;  // Page size for new Redwood files
 	int REDWOOD_KVSTORE_CONCURRENT_READS;  // Max number of simultaneous point or range reads in progress.
