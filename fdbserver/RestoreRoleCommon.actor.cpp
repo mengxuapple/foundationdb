@@ -77,6 +77,42 @@ ACTOR Future<Void> handleInitVersionBatchRequest(RestoreVersionBatchRequest req,
 	return Void();
 }
 
+// Assume: Only update the local data if it (applierInterf) has not been set
+void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<RestoreRoleData> self) {
+	TraceEvent("FastRestoreRole", self->id()).detail("HandleRestoreSysInfoRequest", self->id());
+	ASSERT(self.isValid());
+
+	// The loader has received the appliers interfaces
+	if (!self->appliersInterf.empty()) {
+		req.reply.send(RestoreCommonReply(self->id()));
+		return;
+	}
+
+	self->appliersInterf = req.sysInfo.appliers;
+
+	if (req.rangeVersions.size() > 0) {
+		// Update rangeVersions
+		ASSERT(req.rangeVersions.size() > 0); // At least the min version of range files will be used
+		ASSERT(self->rangeVersions.size() == 1); // rangeVersions has not been set
+		for (auto rv = req.rangeVersions.begin(); rv != req.rangeVersions.end(); ++rv) {
+			self->rangeVersions.insert(rv->first, rv->second);
+		}
+
+		// Debug message for range version in each loader
+		auto ranges = self->rangeVersions.ranges();
+		int i = 0;
+		for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+			TraceEvent("FastRestoreLoader", self->id())
+			    .detail("RangeIndex", i++)
+			    .detail("RangeBegin", r->begin())
+			    .detail("RangeEnd", r->end())
+			    .detail("Version", r->value());
+		}
+	}
+
+	req.reply.send(RestoreCommonReply(self->id()));
+}
+
 void updateProcessStats(Reference<RestoreRoleData> self) {
 	if (g_network->isSimulated()) {
 		// memUsage and cpuUsage are not relevant in the simulator,

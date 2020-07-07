@@ -44,7 +44,6 @@ void _parseSerializedMutation(KeyRangeMap<Version>* pRangeVersions,
                               std::map<LoadingParam, MutationsVec>::iterator samplesIter, LoaderCounters* cc,
                               const RestoreAsset& asset);
 
-void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<RestoreLoaderData> self);
 ACTOR Future<Void> handleLoadFileRequest(RestoreLoadFileRequest req, Reference<RestoreLoaderData> self);
 ACTOR Future<Void> handleSendMutationsRequest(RestoreSendMutationsToAppliersRequest req,
                                               Reference<RestoreLoaderData> self);
@@ -137,39 +136,6 @@ static inline bool logMutationTooOld(KeyRangeMap<Version>* pRangeVersions, Mutat
 	return isRangeMutation(mutation)
 	           ? _logMutationTooOld(pRangeVersions, KeyRangeRef(mutation.param1, mutation.param2), v)
 	           : _logMutationTooOld(pRangeVersions, KeyRangeRef(singleKeyRange(mutation.param1)), v);
-}
-
-// Assume: Only update the local data if it (applierInterf) has not been set
-void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<RestoreLoaderData> self) {
-	TraceEvent("FastRestoreLoader", self->id()).detail("HandleRestoreSysInfoRequest", self->id());
-	ASSERT(self.isValid());
-
-	// The loader has received the appliers interfaces
-	if (!self->appliersInterf.empty()) {
-		req.reply.send(RestoreCommonReply(self->id()));
-		return;
-	}
-
-	self->appliersInterf = req.sysInfo.appliers;
-	// Update rangeVersions
-	ASSERT(req.rangeVersions.size() > 0); // At least the min version of range files will be used
-	ASSERT(self->rangeVersions.size() == 1); // rangeVersions has not been set
-	for (auto rv = req.rangeVersions.begin(); rv != req.rangeVersions.end(); ++rv) {
-		self->rangeVersions.insert(rv->first, rv->second);
-	}
-
-	// Debug message for range version in each loader
-	auto ranges = self->rangeVersions.ranges();
-	int i = 0;
-	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
-		TraceEvent("FastRestoreLoader", self->id())
-		    .detail("RangeIndex", i++)
-		    .detail("RangeBegin", r->begin())
-		    .detail("RangeEnd", r->end())
-		    .detail("Version", r->value());
-	}
-
-	req.reply.send(RestoreCommonReply(self->id()));
 }
 
 // Parse a data block in a partitioned mutation log file and store mutations

@@ -170,15 +170,22 @@ ACTOR Future<Void> distributeRestoreSysInfo(Reference<RestoreMasterData> masterD
 		    .detail("RangeEnd", r->end())
 		    .detail("RangeVersion", r->value());
 	}
-	std::vector<std::pair<UID, RestoreSysInfoRequest>> requests;
+	std::vector<std::pair<UID, RestoreSysInfoRequest>> loaderRequests;
 	for (auto& loader : masterData->loadersInterf) {
-		requests.emplace_back(loader.first, RestoreSysInfoRequest(sysInfo, rangeVersionsVec));
+		loaderRequests.emplace_back(loader.first, RestoreSysInfoRequest(sysInfo, rangeVersionsVec));
 	}
 
-	TraceEvent("FastRestoreDistributeRestoreSysInfoToLoaders", masterData->id())
+	std::vector<std::pair<UID, RestoreSysInfoRequest>> applierRequests;
+	for (auto& applier : masterData->appliersInterf) {
+		applierRequests.emplace_back(applier.first, RestoreSysInfoRequest(sysInfo));
+	}
+
+	TraceEvent("FastRestoreDistributeRestoreSysInfoToRoles", masterData->id())
 	    .detail("Loaders", masterData->loadersInterf.size());
-	wait(sendBatchRequests(&RestoreLoaderInterface::updateRestoreSysInfo, masterData->loadersInterf, requests));
-	TraceEvent("FastRestoreDistributeRestoreSysInfoToLoadersDone", masterData->id())
+	wait(
+	    sendBatchRequests(&RestoreLoaderInterface::updateRestoreSysInfo, masterData->loadersInterf, loaderRequests) &&
+	    sendBatchRequests(&RestoreApplierInterface::updateRestoreSysInfo, masterData->appliersInterf, applierRequests));
+	TraceEvent("FastRestoreDistributeRestoreSysInfoToRolesDone", masterData->id())
 	    .detail("Loaders", masterData->loadersInterf.size());
 
 	return Void();

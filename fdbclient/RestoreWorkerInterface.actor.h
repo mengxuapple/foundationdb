@@ -171,6 +171,7 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 	constexpr static FileIdentifier file_identifier = 54253048;
 
 	RequestStream<RestoreSimpleRequest> heartbeat;
+	RequestStream<RestoreSysInfoRequest> updateRestoreSysInfo;
 	RequestStream<RestoreSendVersionedMutationsRequest> sendMutationVector;
 	RequestStream<RestoreNotifyAppliersKeyRangesRequest> notifyApplierRanges;
 	RequestStream<RestoreBypassMutationsRequest> bypassDB; // bypass applying mutations to DB
@@ -192,6 +193,7 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 	void initEndpoints() {
 		// Endpoint in a later restore phase has higher priority
 		heartbeat.getEndpoint(TaskPriority::LoadBalancedEndpoint);
+		updateRestoreSysInfo.getEndpoint(TaskPriority::LoadBalancedEndpoint);
 		sendMutationVector.getEndpoint(TaskPriority::RestoreApplierReceiveMutations);
 		notifyApplierRanges.getEndpoint(TaskPriority::RestoreNotifyApplierKeyRanges);
 		bypassDB.getEndpoint(TaskPriority::RestoreApplierWriteDB);
@@ -203,8 +205,9 @@ struct RestoreApplierInterface : RestoreRoleInterface {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, *(RestoreRoleInterface*)this, heartbeat, sendMutationVector, notifyApplierRanges, bypassDB,
-		           applyToDB, initVersionBatch, collectRestoreRoleInterfaces, finishRestore);
+		serializer(ar, *(RestoreRoleInterface*)this, heartbeat, updateRestoreSysInfo, sendMutationVector,
+		           notifyApplierRanges, bypassDB, applyToDB, initVersionBatch, collectRestoreRoleInterfaces,
+		           finishRestore);
 	}
 
 	std::string toString() { return nodeID.toString(); }
@@ -400,6 +403,7 @@ struct RestoreSysInfoRequest : TimedRequest {
 	ReplyPromise<RestoreCommonReply> reply;
 
 	RestoreSysInfoRequest() = default;
+	explicit RestoreSysInfoRequest(RestoreSysInfo sysInfo) : sysInfo(sysInfo) {}
 	explicit RestoreSysInfoRequest(RestoreSysInfo sysInfo,
 	                               Standalone<VectorRef<std::pair<KeyRangeRef, Version>>> rangeVersions)
 	  : sysInfo(sysInfo), rangeVersions(rangeVersions) {}

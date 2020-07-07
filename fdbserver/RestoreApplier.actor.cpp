@@ -62,6 +62,10 @@ ACTOR Future<Void> restoreApplierCore(RestoreApplierInterface applierInterf, int
 					requestTypeStr = "heartbeat";
 					actors.add(handleHeartbeat(req, applierInterf.id()));
 				}
+				when(RestoreSysInfoRequest req = waitNext(applierInterf.updateRestoreSysInfo.getFuture())) {
+					requestTypeStr = "updateRestoreSysInfo";
+					handleRestoreSysInfoRequest(req, self);
+				}
 				when(RestoreSendVersionedMutationsRequest req =
 				         waitNext(applierInterf.sendMutationVector.getFuture())) {
 					requestTypeStr = "sendMutationVector";
@@ -133,9 +137,10 @@ ACTOR static Future<Void> handleNotifyApplierKeyRanges(RestoreNotifyAppliersKeyR
 }
 
 ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest req, Reference<RestoreApplierData> self) {
-	TraceEvent("FastRestoreApplierHandleBypassMutations", self->id())
+	TraceEvent(SevFRDebugInfo, "FastRestoreApplierHandleBypassMutationsStart", self->id())
 	    .detail("BatchIndex", req.batchIndex)
-	    .detail("BatchDataValid", self->batch[req.batchIndex].isValid());
+	    .detail("BatchDataValid", self->batch[req.batchIndex].isValid())
+	    .detail("Request", req.toString());
 	if (!self->batch[req.batchIndex].isValid()) {
 		self->batch[req.batchIndex] = Reference<ApplierBatchData>(new ApplierBatchData(self->id(), req.batchIndex));
 	}
@@ -143,6 +148,9 @@ ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest re
 
 	if (batchData->bypassMsgs.find(req.id) != batchData->bypassMsgs.end()) { // already processed
 		req.reply.send(RestoreCommonReply(self->id(), true));
+		TraceEvent(SevFRDebugInfo, "FastRestoreApplierHandleBypassMutationsDuplicate", self->id())
+		    .detail("BatchIndex", req.batchIndex)
+		    .detail("Request", req.toString());
 		return Void();
 	}
 
@@ -155,6 +163,10 @@ ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest re
 	}
 
 	req.reply.send(RestoreCommonReply(self->id(), false));
+
+	TraceEvent(SevFRDebugInfo, "FastRestoreApplierHandleBypassMutationsDone", self->id())
+	    .detail("BatchIndex", req.batchIndex)
+	    .detail("Request", req.toString());
 
 	return Void();
 }
@@ -587,12 +599,15 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 	    .detail("StagingKeys", batchData->stagingKeys.size());
 	state std::map<UID, std::pair<BypassMutationsVec, double>> applierMutations; // temporary struct
 
+	ASSERT(appliersInterf.size() > 0);
 	// Wait for rangeToApplier in the next version batch to be set
 	if (!rangeToApplier->get().present()) {
 		TraceEvent("FastRestoreBypassMutationsWaitForRangeToApplierStart", applierID).detail("BatchIndex", batchIndex);
 		wait(rangeToApplier->onChange());
 		ASSERT(rangeToApplier->get().present());
-		TraceEvent("FastRestoreBypassMutationsWaitForRangeToApplierDone", applierID).detail("BatchIndex", batchIndex);
+		TraceEvent("FastRestoreBypassMutationsWaitForRangeToApplierDone", applierID)
+		    .detail("BatchIndex", batchIndex)
+		    .detail("RangeToAppliers", rangeToApplier->get().get().size());
 	}
 
 	std::map<Key, UID> rangeToApplierLocal = rangeToApplier->get().get();
@@ -639,14 +654,14 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 	TraceEvent("FastRestoreApplierBypassMutationsWaitOnSend", applierID)
 	    .detail("BatchIndex", batchIndex)
 	    .detail("StagingKeys", batchData->stagingKeys.size())
-	    .detail("TransactionBatches", msgs);
+	    .detail("BypassMutationMessages", msgs);
 
 	wait(waitForAll(fBatches));
 
 	TraceEvent("FastRestoreApplierBypassMutationsDone", applierID)
 	    .detail("BatchIndex", batchIndex)
 	    .detail("StagingKeys", batchData->stagingKeys.size())
-	    .detail("TransactionBatches", msgs);
+	    .detail("BypassMutationMessages", msgs);
 
 	return Void();
 }

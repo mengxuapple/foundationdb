@@ -64,6 +64,7 @@ ACTOR Future<Void> isSchedulable(Reference<RestoreRoleData> self, int actorBatch
 ACTOR Future<Void> handleHeartbeat(RestoreSimpleRequest req, UID id);
 ACTOR Future<Void> handleInitVersionBatchRequest(RestoreVersionBatchRequest req, Reference<RestoreRoleData> self);
 void handleFinishRestoreRequest(const RestoreFinishRequest& req, Reference<RestoreRoleData> self);
+void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<RestoreRoleData> self);
 
 class RoleVersionBatchState {
 public:
@@ -100,6 +101,8 @@ public:
 
 	std::map<UID, RestoreLoaderInterface> loadersInterf; // UID: loaderInterf's id
 	std::map<UID, RestoreApplierInterface> appliersInterf; // UID: applierInterf's id
+
+	KeyRangeMap<Version> rangeVersions; // range file's key-range version; used to skip mutations
 
 	NotifiedVersion versionBatchId; // The index of the version batch that has been initialized and put into pipeline
 	NotifiedVersion finishedBatch; // The highest batch index all appliers have applied mutations
