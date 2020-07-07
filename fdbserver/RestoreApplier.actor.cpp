@@ -581,7 +581,6 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 	TraceEvent("FastRestoreBypassMutationsStart", applierID)
 	    .detail("BatchIndex", batchIndex)
 	    .detail("StagingKeys", batchData->stagingKeys.size());
-	state std::vector<std::pair<UID, RestoreBypassMutationsRequest>> requests;
 	state std::map<UID, std::pair<BypassMutationsVec, double>> applierMutations; // temporary struct
 
 	// Wait for rangeToApplier in the next version batch to be set
