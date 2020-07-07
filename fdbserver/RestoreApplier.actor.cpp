@@ -124,7 +124,7 @@ ACTOR static Future<Void> handleNotifyApplierKeyRanges(RestoreNotifyAppliersKeyR
 	            batchData->rangeToApplier->get().present() ? batchData->rangeToApplier->get().get().size() : 0)
 	    .detail("NewRangeToAppliers", req.rangeToApplier.size());
 
-	bool isDuplicated = batchData->rangeToApplier.get().present();
+	bool isDuplicated = batchData->rangeToApplier->get().present();
 	batchData->rangeToApplier->set(req.rangeToApplier);
 
 	req.reply.send(RestoreCommonReply(self->id(), isDuplicated));
@@ -153,6 +153,8 @@ ACTOR static Future<Void> handleBypassMutations(RestoreBypassMutationsRequest re
 		batchData->counters.receivedBypassMutations += 1;
 		batchData->counters.receivedBypassMutationBytes += bm.mutation.totalSize();
 	}
+
+	req.reply.send(RestoreCommonReply(self->id(), false));
 
 	return Void();
 }
@@ -634,6 +636,10 @@ ACTOR static Future<Void> bypassMutations(UID applierID, int64_t batchIndex, Ref
 			++msgs;
 		}
 	}
+	TraceEvent("FastRestoreApplierBypassMutationsWaitOnSend", applierID)
+	    .detail("BatchIndex", batchIndex)
+	    .detail("StagingKeys", batchData->stagingKeys.size())
+	    .detail("TransactionBatches", msgs);
 
 	wait(waitForAll(fBatches));
 
