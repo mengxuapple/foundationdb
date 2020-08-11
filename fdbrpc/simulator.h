@@ -87,6 +87,8 @@ public:
 		}
 
 		// Returns true if the class represents an acceptable worker
+		// TODO: Change this function name to isSuitableForStatefulRole
+		// Comment change to: Return true if the class type is suitable for stateful roles, such as tLog and SS
 		bool isAvailableClass() const {
 			switch (startingClass._class) {
 				case ProcessClass::UnsetClass: return true;

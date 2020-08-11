@@ -208,7 +208,7 @@ BINARY_SERIALIZABLE(LogSystemType);
 struct LogSystemConfig {
 	constexpr static FileIdentifier file_identifier = 16360847;
 	LogSystemType logSystemType;
-	std::vector<TLogSet> tLogs;
+	std::vector<TLogSet> tLogs; // LogSets in different locations: primary, remote or satellite
 	int32_t logRouterTags;
 	int32_t txsTags;
 	std::vector<OldTLogConf> oldTLogs;

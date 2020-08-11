@@ -193,7 +193,7 @@ struct MasterData : NonCopyable, ReferenceCounted<MasterData> {
 	LogSystemDiskQueueAdapter* txnStateLogAdapter;
 	IKeyValueStore* txnStateStore;
 	int64_t memoryLimit;
-	std::map<Optional<Value>,int8_t> dcId_locality;
+	std::map<Optional<Value>, int8_t> dcId_locality; // definition of locality?
 	std::vector<Tag> allTags;
 
 	int8_t getNextLocality() {
@@ -335,7 +335,7 @@ ACTOR Future<Void> newTLogServers( Reference<MasterData> self, RecruitFromConfig
 	if(self->configuration.usableRegions > 1) {
 		state Optional<Key> remoteDcId = self->remoteDcIds.size() ? self->remoteDcIds[0] : Optional<Key>();
 		if( !self->dcId_locality.count(recr.dcId) ) {
-			int8_t loc = self->getNextLocality();
+			int8_t loc = self->getNextLocality(); // loc is the max locality
 			Standalone<CommitTransactionRef> tr;
 			tr.set(tr.arena(), tagLocalityListKeyFor(recr.dcId), tagLocalityListValue(loc));
 			initialConfChanges->push_back(tr);
@@ -790,6 +790,8 @@ ACTOR Future<Void> readTransactionSystemState( Reference<MasterData> self, Refer
 	return Void();
 }
 
+// Broadcast txnState change (via TxnStateRequest) to all masterProxies; and
+// Send the very first ResolveTransactionBatchRequest to resolver
 ACTOR Future<Void> sendInitialCommitToResolvers( Reference<MasterData> self ) {
 	state KeyRange txnKeys = allKeys;
 	state Sequence txnSequence = 0;

@@ -1429,6 +1429,7 @@ ACTOR Future<Void> commitBatch(
 	return Void();
 }
 
+// Confirm the most recent time when the txn system is alive
 ACTOR Future<Void> updateLastCommit(ProxyCommitData* self, Optional<UID> debugID = Optional<UID>()) {
 	state double confirmStart = now();
 	self->lastStartCommit = confirmStart;
@@ -1460,6 +1461,10 @@ ACTOR Future<GetReadVersionReply> getLiveCommittedVersion(SpanID parentSpan, Pro
 			proxyVersions.push_back(brokenPromiseToNever(p.getRawCommittedVersion.getReply(GetRawCommittedVersionRequest(span.context, debugID), TaskPriority::TLogConfirmRunningReply)));
 	}
 
+	// TODO: Can we remove (!SERVER_KNOBS->ALWAYS_CAUSAL_READ_RISKY &&
+	// !(flags&GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY))? Add: We should not accept new requests when txn system
+	// is down (say during recovery); If we can commit in the current epoch, we know the txn system is up. If there is a
+	// txn committed no later than REQUIRED_MIN_RECOVERY_DURATION, the txn must belong to the current epoch
 	if (!SERVER_KNOBS->ALWAYS_CAUSAL_READ_RISKY && !(flags&GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)) {
 		wait(updateLastCommit(commitData, debugID));
 	} else if (SERVER_KNOBS->REQUIRED_MIN_RECOVERY_DURATION > 0 && now() - SERVER_KNOBS->REQUIRED_MIN_RECOVERY_DURATION > commitData->lastCommitTime.get()) {

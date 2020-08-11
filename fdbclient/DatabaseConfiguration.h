@@ -48,7 +48,7 @@ struct SatelliteInfo {
 
 struct RegionInfo {
 	Key dcId;
-	int32_t priority;
+	int32_t priority; // larger value means higher priority, is preferred to be primary
 
 	Reference<IReplicationPolicy> satelliteTLogPolicy;
 	int32_t satelliteDesiredTLogCount;

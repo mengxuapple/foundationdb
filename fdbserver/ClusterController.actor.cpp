@@ -533,10 +533,17 @@ public:
 		throw no_more_servers();
 	}
 
+	// Get the best *amount* workers in datacenter *dcId* for *role*
+	// Preference: Choose the best fitness process. For processes with the same fitness level,
+	//  choose the one that is used least times
 	vector<WorkerDetails> getWorkersForRoleInDatacenter(
 	    Optional<Standalone<StringRef>> const& dcId, ProcessClass::ClusterRole role, int amount,
 	    DatabaseConfiguration const& conf, std::map<Optional<Standalone<StringRef>>, int>& id_used,
 	    Optional<WorkerFitnessInfo> minWorker = Optional<WorkerFitnessInfo>(), bool checkStable = false) {
+
+		// first: <Fitness, int>: int is the number of times the processID has been used at the Fitness level
+		// second: <<vector<WorkerDetails>, vector<WorkerDetails>>: second vector is long lived stateless (RK and DD),
+		// first is the rest
 		std::map<std::pair<ProcessClass::Fitness, int>, std::pair<vector<WorkerDetails>, vector<WorkerDetails>>>
 		    fitness_workers;
 		vector<WorkerDetails> results;
@@ -1072,7 +1079,16 @@ public:
 		}
 	}
 
-	//FIXME: determine when to fail the cluster controller when a primaryDC has not been set
+	// FIXME: determine when to fail the cluster controller when a primaryDC has not been set
+	// Better master exists if
+	// (1) a txn process (tLog, satellite log, logRouter, masterProxy, grvProxy, resolver) or backupWorker is excluded;
+	// or (2) there exists a worker that has better (smaller) fitness for masterRole than the current master worker; or
+	// (3) there exist a new set of tLog whose fitness is better than or equal to the current tLog set, and there exist
+	//     a better satellite location, which are:
+	//     (3.1) local satellite's policy is not equal to region's current satellite policy (ToCheck) ...
+	// (4) no txn related role in the new recruitment has a worse fitness than the current one AND the new recruitment
+	//     can make at least one role's fitness better (smaller). The txn related roles include:
+	//     primary tLog, MasterProxy, GrvProxy, Resolver, satellite tLog, remote tLog, log routers, and backup worker
 	bool betterMasterExists() {
 		const ServerDBInfo dbi = db.serverInfo->get();
 
@@ -1364,6 +1380,8 @@ public:
 		return false;
 	}
 
+	// Is the worker with processId used for other txn roles that are not master role
+	// If yes, the worker will not be a good candidate to colocate DD or RK
 	bool isUsedNotMaster(Optional<Key> processId) {
 		ASSERT(masterProcessId.present());
 		if (processId == masterProcessId) return false;
@@ -1784,6 +1802,8 @@ ACTOR Future<Void> doCheckOutstandingRequests( ClusterControllerData* self ) {
 	} catch( Error &e ) {
 		if(e.code() != error_code_no_more_servers) {
 			TraceEvent(SevError, "CheckOutstandingError").error(e);
+		} else {
+			TraceEvent(SevInfo, "CCNoMoreServers").error(e);
 		}
 	}
 	return Void();
