@@ -374,8 +374,6 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				    .detail("BeginVersion", newState.oldTLogData.back().epochBegin)
 				    .detail("EndVersion", newState.oldTLogData.back().epochEnd);
 			}
-		} else if (oldLogData.size()) {
-			newState.minKnownDurableVersion = oldLogData[0].epochEnd;
 		}
 
 		newState.logSystemType = logSystemType;

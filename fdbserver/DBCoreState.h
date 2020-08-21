@@ -122,12 +122,9 @@ struct DBCoreState {
 	std::vector<OldTLogCoreData> oldTLogData;
 	DBRecoveryCount recoveryCount;  // Increases with sequential successful recoveries.
 	LogSystemType logSystemType;
-	Version minKnownDurableVersion; // The minimum known durable version of all storage servers.
 	std::set<int8_t> pseudoLocalities;
 
-	DBCoreState()
-	  : logRouterTags(0), txsTags(0), recoveryCount(0), logSystemType(LogSystemType::empty),
-	    minKnownDurableVersion(invalidVersion) {}
+	DBCoreState() : logRouterTags(0), txsTags(0), recoveryCount(0), logSystemType(LogSystemType::empty) {}
 
 	vector<UID> getPriorCommittedLogServers() {
 		vector<UID> priorCommittedLogServers;
@@ -149,7 +146,7 @@ struct DBCoreState {
 	bool isEqual(const DBCoreState& r) const {
 		return logSystemType == r.logSystemType && recoveryCount == r.recoveryCount && tLogs == r.tLogs &&
 		       oldTLogData == r.oldTLogData && logRouterTags == r.logRouterTags && txsTags == r.txsTags &&
-		       pseudoLocalities == r.pseudoLocalities && minKnownDurableVersion == r.minKnownDurableVersion;
+		       pseudoLocalities == r.pseudoLocalities;
 	}
 	bool operator==(const DBCoreState& rhs) const { return isEqual(rhs); }
 
@@ -157,7 +154,7 @@ struct DBCoreState {
 	void serialize(Archive& ar) {
 		ASSERT(ar.protocolVersion().hasMultiGenerationTLog());
 		if(ar.protocolVersion().hasTagLocality()) {
-			serializer(ar, tLogs, logRouterTags, oldTLogData, recoveryCount, logSystemType, minKnownDurableVersion);
+			serializer(ar, tLogs, logRouterTags, oldTLogData, recoveryCount, logSystemType);
 			if (ar.protocolVersion().hasPseudoLocalities()) {
 				serializer(ar, pseudoLocalities);
 			}
@@ -167,7 +164,7 @@ struct DBCoreState {
 		} else if(ar.isDeserializing) {
 			tLogs.push_back(CoreTLogSet());
 			serializer(ar, tLogs[0].tLogs, tLogs[0].tLogWriteAntiQuorum, recoveryCount, tLogs[0].tLogReplicationFactor,
-			           logSystemType, minKnownDurableVersion);
+			           logSystemType);
 			tLogs[0].tLogVersion = TLogVersion::V2;
 
 			uint64_t tLocalitySize = (uint64_t)tLogs[0].tLogLocalities.size();

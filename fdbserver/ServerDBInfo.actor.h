@@ -57,15 +57,20 @@ struct ServerDBInfo {
 	Optional<LatencyBandConfig> latencyBandConfig;
 	std::vector<std::pair<uint16_t,StorageServerInterface>> storageCaches;
 	int64_t infoGeneration;
+	Version minKnownDurableVersion; // The version we ensure every storage server has been durable.
 
-	ServerDBInfo() : recoveryCount(0), recoveryState(RecoveryState::UNINITIALIZED), logSystemConfig(0), infoGeneration(0) {}
+	ServerDBInfo()
+	  : recoveryCount(0), recoveryState(RecoveryState::UNINITIALIZED), logSystemConfig(0), infoGeneration(0),
+	    minKnownDurableVersion(invalidVersion) {}
 
 	bool operator == (ServerDBInfo const& r) const { return id == r.id; }
 	bool operator != (ServerDBInfo const& r) const { return id != r.id; }
 
 	template <class Ar>
 	void serialize( Ar& ar ) {
-		serializer(ar, id, clusterInterface, client, distributor, master, ratekeeper, resolvers, recoveryCount, recoveryState, masterLifetime, logSystemConfig, priorCommittedLogServers, latencyBandConfig, storageCaches, infoGeneration);
+		serializer(ar, id, clusterInterface, client, distributor, master, ratekeeper, resolvers, recoveryCount,
+		           recoveryState, masterLifetime, logSystemConfig, priorCommittedLogServers, latencyBandConfig,
+		           storageCaches, infoGeneration, minKnownDurableVersion);
 	}
 };
 

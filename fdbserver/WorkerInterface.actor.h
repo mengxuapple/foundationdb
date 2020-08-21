@@ -187,6 +187,7 @@ struct RegisterMasterRequest {
 	std::vector<UID> priorCommittedLogServers;
 	RecoveryState recoveryState;
 	bool recoveryStalled;
+	Version lastEpochEnd;
 
 	ReplyPromise<Void> reply;
 
@@ -198,7 +199,7 @@ struct RegisterMasterRequest {
 			ASSERT(ar.protocolVersion().isValid());
 		}
 		serializer(ar, id, mi, logSystemConfig, proxies, resolvers, recoveryCount, registrationCount, configuration,
-		           priorCommittedLogServers, recoveryState, recoveryStalled, reply);
+		           priorCommittedLogServers, recoveryState, recoveryStalled, lastEpochEnd, reply);
 	}
 };
 

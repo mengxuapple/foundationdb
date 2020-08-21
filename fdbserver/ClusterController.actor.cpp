@@ -1887,7 +1887,8 @@ void clusterRegisterMaster( ClusterControllerData* self, RegisterMasterRequest c
 	    .detail("Proxies", req.proxies.size())
 	    .detail("RecoveryCount", req.recoveryCount)
 	    .detail("Stalled", req.recoveryStalled)
-	    .detail("OldestBackupEpoch", req.logSystemConfig.oldestBackupEpoch);
+	    .detail("OldestBackupEpoch", req.logSystemConfig.oldestBackupEpoch)
+	    .detail("LastEpochEnd", req.lastEpochEnd);
 
 	//make sure the request comes from an active database
 	auto db = &self->db;
@@ -1962,6 +1963,11 @@ void clusterRegisterMaster( ClusterControllerData* self, RegisterMasterRequest c
 	if( dbInfo.recoveryCount != req.recoveryCount ) {
 		isChanged = true;
 		dbInfo.recoveryCount = req.recoveryCount;
+	}
+
+	if (req.recoveryState >= RecoveryState::STORAGE_RECOVERED && dbInfo.minKnownDurableVersion < req.lastEpochEnd) {
+		isChanged = true;
+		dbInfo.minKnownDurableVersion = req.lastEpochEnd;
 	}
 
 	if( isChanged ) {

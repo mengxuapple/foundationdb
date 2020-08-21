@@ -469,6 +469,7 @@ Future<Void> sendMasterRegistration( MasterData* self, LogSystemConfig const& lo
 	masterReq.priorCommittedLogServers = priorCommittedLogServers;
 	masterReq.recoveryState = self->recoveryState.get();
 	masterReq.recoveryStalled = self->recruitmentStalled->get();
+	masterReq.lastEpochEnd = self->lastEpochEnd;
 	return brokenPromiseToNever( self->clusterController.registerMaster.getReply( masterReq ) );
 }
 
@@ -1205,11 +1206,11 @@ ACTOR Future<Void> monitorOldTLogsBeforeStorageRecovery(Reference<MasterData> se
 				failedOldTLogs = PromiseStream<std::pair<TLogInterface, const OldTLogConf*>>();
 				oldTLogConfs = self->logSystem->getLogSystemConfig().oldTLogs;
 				currentFailedOldTLogs.clear();
-				// oldTLogConfs is at recency order.
+				// oldTLogConfs is sorted at recency order.
 				for (const auto& oldTLogConf : oldTLogConfs) {
 					// To avoid unnecessary pings, we don't need to ping TLogs that we are sure that all storage servers
 					// have caught up.
-					if (oldTLogConf.epochEnd <= self->cstate.myDBState.minKnownDurableVersion) break;
+					if (oldTLogConf.epochEnd <= self->dbInfo->get().minKnownDurableVersion) break;
 					for (const auto& oldTLogSet : oldTLogConf.tLogs) {
 						// Should we only need to track primary tlogs?
 						// if (!oldTLogSet.isLocal) continue;
