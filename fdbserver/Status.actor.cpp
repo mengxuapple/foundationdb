@@ -1009,7 +1009,10 @@ ACTOR static Future<JsonBuilderObject> recoveryStateStatusFetcher(WorkerDetails 
 
 	try {
 		state Future<TraceEventFields> activeGens = timeoutError(mWorker.interf.eventLogRequest.getReply( EventLogRequest( LiteralStringRef("MasterRecoveryGenerations") ) ), 1.0);
-		TraceEventFields md = wait( timeoutError(mWorker.interf.eventLogRequest.getReply( EventLogRequest( LiteralStringRef("MasterRecoveryState") ) ), 1.0) );
+		state TraceEventFields md = wait(timeoutError(
+		    mWorker.interf.eventLogRequest.getReply(EventLogRequest(LiteralStringRef("MasterRecoveryState"))), 1.0));
+		state Optional<TraceEventFields> missingOldTLogs =
+		    wait(latestEventOnWorker(mWorker.interf, "OldTLogMissingBeforeStorageRecovery"));
 		int mStatusCode = md.getInt("StatusCode");
 		if (mStatusCode < 0 || mStatusCode >= RecoveryStatus::END)
 			throw attribute_not_found();
@@ -1030,6 +1033,17 @@ ACTOR static Future<JsonBuilderObject> recoveryStateStatusFetcher(WorkerDetails 
 			message["required_resolvers"] = requiredResolvers;
 		} else if (mStatusCode == RecoveryStatus::locking_old_transaction_servers) {
 			message["missing_logs"] = md.getValue("MissingIDs").c_str();
+		}
+
+		if (mStatusCode < RecoveryStatus::storage_recovered && missingOldTLogs.present()) {
+			JsonBuilderObject missing_old_tlogs_message;
+			missing_old_tlogs_message["recovering_master_id"] =
+			    missingOldTLogs.get().getValue("RecoveringMasterId").c_str();
+			missing_old_tlogs_message["current_epoch"] = atoi(missingOldTLogs.get().getValue("CurrentEpoch").c_str());
+			missing_old_tlogs_message["missing_ids"] = missingOldTLogs.get().getValue("MissingIds").c_str();
+			missing_old_tlogs_message["missing_addresses"] = missingOldTLogs.get().getValue("MissingAddresses").c_str();
+			missing_old_tlogs_message["missing_epochs"] = missingOldTLogs.get().getValue("MissingEpochs").c_str();
+			message["storage_recovery_missing_old_tlogs"] = missing_old_tlogs_message;
 		}
 		// TODO:  time_in_recovery: 0.5
 		//        time_in_state: 0.1
@@ -2243,7 +2257,7 @@ ACTOR Future<StatusReply> clusterGetStatus(
 	// Check if master worker is present
 	state JsonBuilderArray messages;
 	state std::set<std::string> status_incomplete_reasons;
-	state WorkerDetails mWorker;
+	state WorkerDetails mWorker; // Master worker
 	state WorkerDetails ddWorker; // DataDistributor worker
 	state WorkerDetails rkWorker; // Ratekeeper worker
 

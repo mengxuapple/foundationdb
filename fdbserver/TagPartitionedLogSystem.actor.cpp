@@ -374,6 +374,8 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				    .detail("BeginVersion", newState.oldTLogData.back().epochBegin)
 				    .detail("EndVersion", newState.oldTLogData.back().epochEnd);
 			}
+		} else if (oldLogData.size()) {
+			newState.minKnownDurableVersion = oldLogData[0].epochEnd;
 		}
 
 		newState.logSystemType = logSystemType;
@@ -595,7 +597,15 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 
 				if(thisBegin < lastBegin) {
 					if(thisBegin < end) {
-						TraceEvent("TLogPeekAllAddingOld", dbgid).detail("Tag", tag.toString()).detail("Begin", begin).detail("End", end).detail("BestLogs", localOldSets[bestOldSet]->logServerString()).detail("LastBegin", lastBegin).detail("ThisBegin", thisBegin);
+						TraceEvent("TLogPeekAllAddingOld", dbgid)
+						    .detail("LogEpoch", format("Epoch: %d, Start: %d, End: %d", oldLogData[i].epoch,
+						                               oldLogData[i].epochBegin, oldLogData[i].epochEnd))
+						    .detail("Tag", tag.toString())
+						    .detail("Begin", begin)
+						    .detail("End", end)
+						    .detail("BestLogs", localOldSets[bestOldSet]->logServerString())
+						    .detail("LastBegin", lastBegin)
+						    .detail("ThisBegin", thisBegin);
 						cursors.emplace_back(new ILogSystem::SetPeekCursor(localOldSets, bestOldSet, localOldSets[bestOldSet]->bestLocationFor( tag ), tag, thisBegin, std::min(lastBegin, end), parallelGetMore));
 						epochEnds.push_back(LogMessageVersion(std::min(lastBegin, end)));
 					}

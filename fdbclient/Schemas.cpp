@@ -497,6 +497,13 @@ const KeyRef JSONSchemas::statusSchema = LiteralStringRef(R"statusSchema(
          "required_logs":3,
          "missing_logs":"7f8d623d0cb9966e",
          "active_generations":1,
+         "storage_recovery_missing_old_tlogs": {
+            "recovering_master_id": "240c1f6ac4f1b051f78b9f890000005a",
+            "current_epoch": 21,
+            "missing_ids": "474ae549c250ef075e87c0f1f05e3003, c30f5496ecf1461d7dd403b13a732b20",
+            "missing_addresses": "2.1.1.1:1, 2.1.1.1:1",
+            "missing_epochs": "Epoch:19 Start:663324079 End:767966427, Epoch:16 Start:561502347 End:663324079"
+         },
          "description":"Recovery complete."
       },
       "workload":{
