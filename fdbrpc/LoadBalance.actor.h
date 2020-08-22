@@ -466,6 +466,7 @@ Optional<BasicLoadBalancedReply> getBasicLoadBalancedReply(const BasicLoadBalanc
 Optional<BasicLoadBalancedReply> getBasicLoadBalancedReply(const void*);
 
 // A simpler version of LoadBalance that does not send second requests where the list of servers are always fresh
+// Q: Wont it be possible that a request may be delivered to two interfaces?
 ACTOR template <class Interface, class Request, class Multi>
 Future< REPLY_TYPE(Request) > basicLoadBalance(
 	Reference<ModelInterface<Multi>> alternatives,

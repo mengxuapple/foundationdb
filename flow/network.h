@@ -323,6 +323,7 @@ struct NetworkMetrics {
 	double secSquaredSubmit = 0;
 	double secSquaredDiskStall = 0;
 
+	// PriorityStats tracks time info used by tasks whose priority is in the priority band defined in starvationBins
 	struct PriorityStats {
 		TaskPriority priority;
 
@@ -337,9 +338,14 @@ struct NetworkMetrics {
 
 	std::unordered_map<TaskPriority, struct PriorityStats> activeTrackers;
 	double lastZeroBusy;
+
+	// starvationTrackers[0].duration is the amount of time the process has been running
+	// starvationTrackers[i].duration is the amount of time tasks whose priority is >= starvationTrackers[i].priority
+	// has been running; In other words, starvationTrackers[i].duration is the amount of time tasks whose priority is <=
+	// starvationTrackers[i].priority has been starved because a higher priority task is running
 	std::vector<struct PriorityStats> starvationTrackers;
 
-	static const std::vector<int> starvationBins;
+	static const std::vector<int> starvationBins; // tasks' execution time are tracked at these priority bands
 
 	NetworkMetrics() {
 		for(int priority : starvationBins) {

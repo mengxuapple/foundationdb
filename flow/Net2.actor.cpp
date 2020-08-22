@@ -1200,7 +1200,7 @@ void Net2::run() {
 				trackAtPriority(TaskPriority::Zero, sleepStart);
 				awakeMetric = false;
 				priorityMetric = 0;
-				reactor.sleep(sleepTime);
+				reactor.sleep(sleepTime); // Q: Does runloop sleep (block and yield) here?
 				awakeMetric = true;
 			}
 		}
@@ -1208,14 +1208,15 @@ void Net2::run() {
 		tscBegin = timestampCounter();
 		taskBegin = timer_monotonic();
 		trackAtPriority(TaskPriority::ASIOReactor, taskBegin);
-		reactor.react();
-		
+		reactor.react(); // Q: What does this do? why do we need this here?
+
 		updateNow();
 		double now = this->currentTime;
 		trackAtPriority(TaskPriority::RunLoop, now);
 
 		countReactTime += now - taskBegin;
-		checkForSlowTask(tscBegin, timestampCounter(), now - taskBegin, TaskPriority::ASIOReactor);
+		checkForSlowTask(tscBegin, timestampCounter(), now - taskBegin,
+		                 TaskPriority::ASIOReactor); // Q: Does this aim to check if ASIOReactor is a slow task?
 
 		if ((now-nnow) > FLOW_KNOBS->SLOW_LOOP_CUTOFF && nondeterministicRandom()->random01() < (now-nnow)*FLOW_KNOBS->SLOW_LOOP_SAMPLING_RATE)
 			TraceEvent("SomewhatSlowRunLoopTop").detail("Elapsed", now - nnow);
@@ -1373,6 +1374,7 @@ void Net2::trackAtPriority( TaskPriority priority, double now ) {
 	}
 }
 
+// Move ready tasks from background thread to main thread's runloop to execute
 void Net2::processThreadReady() {
 	int numReady = 0;
 	while (true) {
@@ -1655,7 +1657,7 @@ void ASIOReactor::sleep(double sleepTime) {
 				this->firstTimer.async_wait(&nullWaitHandler);
 			}
 			setProfilingEnabled(0); // The following line generates false positives for slow task profiling
-			ios.run_one();
+			ios.run_one(); // Q: How does this run_one() work?
 			setProfilingEnabled(1);
 			this->firstTimer.cancel();
 		}

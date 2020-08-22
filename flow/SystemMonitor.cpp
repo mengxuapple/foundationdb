@@ -166,6 +166,7 @@ SystemStatistics customSystemMonitor(std::string eventName, StatisticsState *sta
 				n.detail(format("PriorityBusy%d", itr.first).c_str(), itr.second);
 			}
 
+			// Is it possible for multiple trackers active? I don't think so
 			for (auto &itr : g_network->networkInfo.metrics.starvationTrackers) {
 				if(itr.active) {
 					itr.duration += now() - itr.windowedTimer;

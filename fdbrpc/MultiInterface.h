@@ -105,6 +105,7 @@ public:
 		alternatives[index].lastUpdate = now();
 	}
 
+	// Q: What is the algorithm in english and why it works?
 	void updateProbabilities() {
 		double totalBusyTime = 0;
 		for(auto& it : alternatives) {
