@@ -877,6 +877,9 @@ void assertResolutionStateMutationsSizeConsistent(
 }
 
 // Compute and apply "metadata" effects of each other proxy's most recent batch
+// Resolver collects mutations that change txnStateStore from each transaction sent for conflict resolution from
+// proxies; Resolver then piggy-back these txnStateStore mutations in ResolveTransactionBatchReply to each proxy so that
+// each proxy can apply the same txnStateStore mutations in the same order.
 void applyMetadataEffect(CommitBatchContext* self) {
 	bool initialState = self->isMyFirstBatch;
 	self->firstStateMutations = self->isMyFirstBatch;
