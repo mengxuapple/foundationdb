@@ -504,10 +504,10 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		vector<Future<TLogCommitReply>> allReplies;
 		int location = 0;
 		for(auto& it : tLogs) {
-			if(it->isLocal && it->logServers.size()) {
+			if (it->isLocal && it->logServers.size()) { // it->logServers are primary DC's tlogs
 				vector<Future<Void>> tLogCommitResults;
 				for(int loc=0; loc< it->logServers.size(); loc++) {
-					Standalone<StringRef> msg = data.getMessages(location);
+					Standalone<StringRef> msg = data.getMessages(location); // Q: Why cannot we use loc?
 					allReplies.push_back( it->logServers[loc]->get().interf().commit.getReply( TLogCommitRequest( msg.arena(), prevVersion, version, knownCommittedVersion, minKnownCommittedVersion, msg, debugID ), TaskPriority::ProxyTLogCommitReply ) );
 					Future<Void> commitSuccess = success(allReplies.back());
 					addActor.get().send(commitSuccess);
@@ -1580,6 +1580,9 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		return Void();
 	}
 
+	// Assume recovery ends epoch i and produces epoch i+1,
+	// epochEnd(...) locks logSystem in epoch i, recruit tLogs in previous epochs (<i) (for SS to catch up old
+	// mutations); INPUT: outLogSystem is the locked tLogSystem in epoch i; prevState is the state in epoch i
 	ACTOR static Future<Void> epochEnd( Reference<AsyncVar<Reference<ILogSystem>>> outLogSystem, UID dbgid, DBCoreState prevState, FutureStream<TLogRejoinRequest> rejoinRequests, LocalityData locality, bool* forceRecovery ) {
 		// Stops a co-quorum of tlogs so that no further versions can be committed until the DBCoreState coordination state is changed
 		// Creates a new logSystem representing the (now frozen) epoch
@@ -1696,8 +1699,10 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 
 		// trackRejoins listens for rejoin requests from the tLogs that we are recovering from, to learn their TLogInterfaces
 		state std::vector<LogLockInfo> lockResults;
-		state std::vector<std::pair<Reference<AsyncVar<OptionalInterface<TLogInterface>>>,Reference<IReplicationPolicy>>> allLogServers;
-		state std::vector<Reference<LogSet>> logServers;
+		state
+		    std::vector<std::pair<Reference<AsyncVar<OptionalInterface<TLogInterface>>>, Reference<IReplicationPolicy>>>
+		        allLogServers; // all tLogs in all epochs
+		state std::vector<Reference<LogSet>> logServers; // active tlogs in the most recent epoch before recovery
 		state std::vector<OldLogData> oldLogData;
 		state std::vector<std::vector<Reference<AsyncVar<bool>>>> logFailed;
 		state std::vector<Future<Void>> failureTrackers;
@@ -1729,6 +1734,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		std::set<int8_t> lockedLocalities;
 		bool foundSpecial = false;
 		for( int i=0; i < logServers.size(); i++ ) {
+			// Q: why handle tagLocalitySpecial?
 			if(logServers[i]->locality == tagLocalitySpecial || logServers[i]->locality == tagLocalityUpgraded) {
 				foundSpecial = true;
 			}

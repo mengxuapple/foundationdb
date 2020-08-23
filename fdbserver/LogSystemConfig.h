@@ -158,7 +158,7 @@ struct TLogSet {
 
 struct OldTLogConf {
 	constexpr static FileIdentifier file_identifier = 16233772;
-	std::vector<TLogSet> tLogs;
+	std::vector<TLogSet> tLogs; // TLogSet in each DC
 	Version epochBegin, epochEnd;
 	int32_t logRouterTags;
 	int32_t txsTags;
@@ -208,10 +208,10 @@ BINARY_SERIALIZABLE(LogSystemType);
 struct LogSystemConfig {
 	constexpr static FileIdentifier file_identifier = 16360847;
 	LogSystemType logSystemType;
-	std::vector<TLogSet> tLogs;
+	std::vector<TLogSet> tLogs; // TLogSet in each DC in current epoch
 	int32_t logRouterTags;
 	int32_t txsTags;
-	std::vector<OldTLogConf> oldTLogs;
+	std::vector<OldTLogConf> oldTLogs; // old generations of log systems
 	int32_t expectedLogSets;
 	UID recruitmentID;
 	bool stopped;

@@ -76,8 +76,9 @@ struct CoreTLogSet {
 	}
 };
 
+// OldTLogCoreData: tLog configuration in an old epoch
 struct OldTLogCoreData {
-	std::vector<CoreTLogSet> tLogs;
+	std::vector<CoreTLogSet> tLogs; // TLogSet in each DC in one old epoch
 	int32_t logRouterTags;
 	int32_t txsTags;
 	Version epochBegin, epochEnd;
@@ -116,10 +117,10 @@ struct OldTLogCoreData {
 };
 
 struct DBCoreState {
-	std::vector<CoreTLogSet> tLogs;
+	std::vector<CoreTLogSet> tLogs; // TLogSet in each DC in the current epoch
 	int32_t logRouterTags;
 	int32_t txsTags;
-	std::vector<OldTLogCoreData> oldTLogData;
+	std::vector<OldTLogCoreData> oldTLogData; // Each item is the tLog configuration in an old epoch
 	DBRecoveryCount recoveryCount;  // Increases with sequential successful recoveries.
 	LogSystemType logSystemType;
 	std::set<int8_t> pseudoLocalities;

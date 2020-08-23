@@ -165,7 +165,7 @@ private:
 struct MasterData : NonCopyable, ReferenceCounted<MasterData> {
 	UID dbgid;
 
-	AsyncTrigger registrationTrigger;
+	AsyncTrigger registrationTrigger; // trigger to update new configuration from master to CC
 	Version lastEpochEnd, // The last version in the old epoch not (to be) rolled back in this recovery
 		recoveryTransactionVersion;  // The first version in this epoch
 	double lastCommitTime;
@@ -1516,6 +1516,7 @@ ACTOR Future<Void> masterCore( Reference<MasterData> self ) {
 	state Future<Void> minRecoveryDuration;
 	state Future<Version> poppedTxsVersion;
 
+	// wait for oldLogSystem to recover
 	loop {
 		Reference<ILogSystem> oldLogSystem = oldLogSystems->get();
 		if(oldLogSystem) {

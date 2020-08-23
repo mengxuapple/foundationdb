@@ -55,6 +55,8 @@ public:
 	Version startVersion;
 	std::vector<Future<TLogLockResult>> replies;
 	std::vector<std::vector<int>> satelliteTagLocations;
+	// satelliteTagLocations[i][j]: i is txsTag or tagId+1, j is which satellite; [i][j] is the tLog location used for
+	// the tag
 
 	LogSet() : tLogWriteAntiQuorum(0), tLogReplicationFactor(0), isLocal(true), locality(tagLocalityInvalid), startVersion(invalidVersion) {}
 	LogSet(const TLogSet& tlogSet);
@@ -242,6 +244,8 @@ public:
 		return resultEntries.size() == 0;
 	}
 
+	// Get which tLogs should be used for the tags
+	// OUTPUT: locations are the indexes of tLogs to be used for the tags
 	void getPushLocations(VectorRef<Tag> tags, std::vector<int>& locations, int locationOffset,
 	                      bool allLocations = false) {
 		if(locality == tagLocalitySatellite) {

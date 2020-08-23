@@ -283,6 +283,7 @@ struct TLogData : NonCopyable {
 	AsyncTrigger newLogData;
 	// A process has only 1 SharedTLog, which holds data for multiple logs, so that it obeys its assigned memory limit.
 	// A process has only 1 active log and multiple non-active log from old generations.
+	// Active log accepts both push and (peek and pop); non-active log only accepts peek and pop.
 	// In the figure below, TLog [1-4] are logs from old generations.
 	// Because SS may need to pull data from old generation log, we keep Tlog [1-4].
 	//
@@ -294,7 +295,7 @@ struct TLogData : NonCopyable {
 	//  | TLog 1 | TLog 2 | TLog 3 | TLog 4 | TLog 5 |
 	//  +--------+--------+--------+--------+--------+
 	//    ^ popOrder         ^spillOrder         ^committing
-	// 
+	//
 	// ^popOrder is the location where SS reads the to-be-read data from tlog.
 	// ^committing is the location where the active TLog accepts the pushed data.
 	Deque<UID> popOrder;

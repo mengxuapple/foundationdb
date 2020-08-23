@@ -391,7 +391,7 @@ public:
 
 	// The following are in rough order from newest to oldest
 	Version lastTLogVersion, lastVersionWithData, restoredVersion;
-	NotifiedVersion version;
+	NotifiedVersion version; // the version of mutations the SS has seen (peeked)
 	NotifiedVersion desiredOldestVersion;    // We can increase oldestVersion (and then durableVersion) to this version when the disk permits
 	NotifiedVersion oldestVersion;           // See also storageVersion()
 	NotifiedVersion durableVersion; 	     // At least this version will be readable from storage after a power failure

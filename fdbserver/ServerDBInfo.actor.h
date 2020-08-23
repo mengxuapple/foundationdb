@@ -53,7 +53,11 @@ struct ServerDBInfo {
 	LifetimeToken masterLifetime;  // Used by masterserver to detect not being the currently chosen master
 	LocalityData myLocality;       // (Not serialized) Locality information, if available, for the *local* process
 	LogSystemConfig logSystemConfig;
-	std::vector<UID> priorCommittedLogServers;   // If !fullyRecovered and logSystemConfig refers to a new log system which may not have been committed to the coordinated state yet, then priorCommittedLogServers are the previous, fully committed generation which need to stay alive in case this recovery fails
+	std::vector<UID> priorCommittedLogServers; // set of log servers in the most recent fully recovered generation. If
+	                                           // !fullyRecovered and logSystemConfig refers to a new log system which
+	                                           // may not have been committed to the coordinated state yet, then
+	                                           // priorCommittedLogServers are the previous, fully committed generation
+	                                           // which need to stay alive in case this recovery fails
 	Optional<LatencyBandConfig> latencyBandConfig;
 	std::vector<std::pair<uint16_t,StorageServerInterface>> storageCaches;
 	int64_t infoGeneration;

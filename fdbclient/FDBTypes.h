@@ -37,16 +37,16 @@ typedef StringRef ValueRef;
 typedef int64_t Generation;
 
 enum {
-	tagLocalitySpecial = -1,
+	tagLocalitySpecial = -1, // Q: Definition of each locality?
 	tagLocalityLogRouter = -2,
 	tagLocalityRemoteLog = -3,
 	tagLocalityUpgraded = -4,
 	tagLocalitySatellite = -5,
-	tagLocalityLogRouterMapped = -6,  // used by log router to pop from TLogs
+	tagLocalityLogRouterMapped = -6, // used by log router to pop from TLogs
 	tagLocalityTxs = -7,
-	tagLocalityBackup = -8,  // used by backup role to pop from TLogs
+	tagLocalityBackup = -8, // used by backup role to pop from TLogs
 	tagLocalityInvalid = -99
-}; //The TLog and LogRouter require these number to be as compact as possible
+}; // The TLog and LogRouter require these number to be as compact as possible
 
 inline bool isPseudoLocality(int8_t locality) {
 	return locality == tagLocalityLogRouterMapped || locality == tagLocalityBackup;
@@ -54,8 +54,10 @@ inline bool isPseudoLocality(int8_t locality) {
 
 #pragma pack(push, 1)
 struct Tag {
+	// locality: which type of tag will the id be used; It is always negative value.
 	int8_t locality;
-	uint16_t id;
+	uint16_t id; // used to decide which tLog (location) in the locality (e.g., primary DC, satellite or logRouter sets)
+	             // should be used
 
 	Tag() : locality(tagLocalitySpecial), id(0) {}
 	Tag(int8_t locality, uint16_t id) : locality(locality), id(id) {}
