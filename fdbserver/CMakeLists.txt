@@ -46,7 +46,7 @@ set(FDBSERVER_SRCS
   LogSystemPeekCursor.actor.cpp
   MasterInterface.h
   MasterProxyServer.actor.cpp
-  masterserver.actor.cpp
+  MasterServer.actor.cpp
   MutationTracking.h
   MutationTracking.cpp
   MoveKeys.actor.h
