@@ -3566,15 +3566,16 @@ ACTOR Future<Void> tryCommit(Transaction* tr, Future<Version> readVersion) {
 	try {
 		wait(waitForAll(responses));
 	} catch (Error& e) {
+		TraceEvent("ClientCommitLargeTransactoinsError").error(e);
 		throw;
 	}
-
-	tr->getCommittedVersion() = committedVersions.front();
-	tr->versionstampPromise.swap(versionstampPromises.front());
 
 	for (int i = 1; i < numProxies; ++i) {
 		ASSERT(tr->getCommittedVersion() == committedVersions[i]);
 	}
+
+	tr->getCommittedVersion() = committedVersions.front(); // All sub-txns commit versions are the same
+	tr->versionstampPromise.swap(versionstampPromises.front());
 
 	return Void();
 }

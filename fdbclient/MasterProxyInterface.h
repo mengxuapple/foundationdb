@@ -162,7 +162,7 @@ struct SplitTransaction {
 	/// The index of the current part
 	int partIndex;
 
-	/// The indexes of mutation items
+	/// start subversion of the part
 	int startSubversion = BAD_START_SUBVERSION;
 
 	SplitTransaction() : id(), totalParts(1), partIndex(0) {}

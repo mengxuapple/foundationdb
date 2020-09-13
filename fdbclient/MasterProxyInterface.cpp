@@ -50,6 +50,16 @@ bool shouldSplitCommitTransactionRequest(const CommitTransactionRequest& commitT
 	    ((CLIENT_KNOBS->TRANSACTION_SPLIT_MODE & SPLIT_TRANSACTION_MASK) == DISABLE_SPLIT_TRANSACTION)) {
 		return false;
 	}
+	// TODO: If the txn must be committed on proxy0, it should not be split
+
+	// Do not split these two types of txns for now
+	// TODO: We should handle read_snapshot I think
+	if (commitTxnRequest.transaction.report_conflicting_keys) {
+		TraceEvent(SevDebug, "TxnTypeNotSplittable")
+		    .detail("ReadSnapshot", commitTxnRequest.transaction.read_snapshot)
+		    .detail("ReportConflictKeys", commitTxnRequest.transaction.report_conflicting_keys);
+		return false;
+	}
 
 	const int size =
 	    std::accumulate(commitTxnRequest.transaction.mutations.begin(), commitTxnRequest.transaction.mutations.end(), 0,
@@ -67,6 +77,8 @@ namespace {
  * In order to distribute the commit transactions to multiple proxies, all
  * commits must share the same read conflict and write conflicts, together with
  * the same splitID
+ * MX: Split one transaction's read-write conflict ranges to multiple sub-transactions in a round-robin fashion
+ * MX: mutations will be distributed to these sub-transactions later
  */
 std::vector<CommitTransactionRequest> prepareSplitTransactions(const CommitTransactionRequest& commitTxnRequest,
                                                                const int numProxies) {
@@ -88,12 +100,16 @@ std::vector<CommitTransactionRequest> prepareSplitTransactions(const CommitTrans
 		newRequest.transaction.mutations = VectorRef<MutationRef>();
 		newRequest.transaction.read_conflict_ranges = VectorRef<KeyRangeRef>();
 		newRequest.transaction.write_conflict_ranges = VectorRef<KeyRangeRef>();
+		newRequest.transaction.read_snapshot = commitTxnRequest.transaction.read_snapshot;
 	}
 
 	// Distribute the conflicts to proxies
 	auto conflict_split_mode = CLIENT_KNOBS->TRANSACTION_SPLIT_MODE & CONFLICTS_MASK;
 
-	if (conflict_split_mode == CONFLICTS_TO_ONE_PROXY) {
+	// Q: How about read_snapshot and report_conflicting_keys, these txn are not splittable I guess. Then it should
+	// consider it in shouldSplitCommitTransactionRequest()
+	if (conflict_split_mode ==
+	    CONFLICTS_TO_ONE_PROXY) { // This branch is never executed for now due to TRANSACTION_SPLIT_MODE value
 
 		const int proxyWithAllConflictsIndex = deterministicRandom()->randomInt(0, numProxies);
 		auto& requestWithAllConflicts = result[proxyWithAllConflictsIndex];
@@ -239,7 +255,7 @@ public:
 				if (i < numMutations)
 					result.push_back(i);
 				else
-					result.push_back(numMutations);
+					result.push_back(numMutations); // Q: Why increase the vector size?
 			}
 			return result;
 		}
@@ -280,6 +296,7 @@ public:
 	}
 };
 
+// TODO: Write a simpler implementation. Current implementation seems unnecessarily complex
 void distributeMutationsInSequence(const CommitTransactionRequest& request,
                                    std::vector<CommitTransactionRequest>& splitCommitTxnRequests,
                                    std::vector<int>& requestMutationStartSubversion) {
@@ -297,6 +314,7 @@ void distributeMutationsInSequence(const CommitTransactionRequest& request,
 
 	requestMutationStartSubversion = distributor.evaluate();
 
+	int mIndex = 0; // For sanity check, debug only
 	for (int currentSplit = 0; currentSplit < NUM_PROXIES; ++currentSplit) {
 		// NOTE: Here START and END are both used as indexes rather than subversions, and subversions start with 1 while
 		// indexes start with 0. Subtract 1 to translate subversion to index.
@@ -308,8 +326,15 @@ void distributeMutationsInSequence(const CommitTransactionRequest& request,
 		auto& currTxnReq = splitCommitTxnRequests[currentSplit];
 		auto& arena = currTxnReq.arena;
 		auto& mutations = currTxnReq.transaction.mutations;
+		ASSERT(mIndex == START); // mutations are assigned in order, so index must be continuous
+		TraceEvent(SevDebug, "MXDebugSubTxnSubVersions",
+		           request.splitTransaction.present() ? request.splitTransaction.get().id : UID())
+		    .detail("SubTxn", currentSplit)
+		    .detail("StartSubVersion", START)
+		    .detail("EndSubVersionExclusive", END);
 		for (int i = START; i < END; ++i) {
-			mutations.push_back(arena, MutationRef(arena, request.transaction.mutations[i]));
+			mutations.push_back(arena, MutationRef(arena, request.transaction.mutations[i])); // mutation is deep copy
+			mIndex++;
 		}
 	}
 }
