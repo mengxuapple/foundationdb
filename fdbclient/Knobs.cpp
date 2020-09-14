@@ -222,7 +222,7 @@ void ClientKnobs::initialize(bool randomize) {
 
 	// Large transaction
 	init( LARGE_TRANSACTION_CRITERIA,       1024 * 1024 ); if( randomize && BUGGIFY ) LARGE_TRANSACTION_CRITERIA = 100; // 1MB // TODO: Make this random value in a range
-	init( TRANSACTION_SPLIT_MODE,                   0b0 ); // 0b0: disable split mode; 0b001 enable split mode; TODO: Buggify to a different mode
+	init( TRANSACTION_SPLIT_MODE,                   0b1 ); // 0b0: disable split mode; 0b001 enable split mode; TODO: Buggify to a different mode
 	
 	//fdbcli		
 	init( CLI_CONNECT_PARALLELISM,                  400 );
