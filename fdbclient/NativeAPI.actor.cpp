@@ -3387,7 +3387,9 @@ ACTOR static Future<Void> tryCommitSingleTransaction(Transaction* tr, Future<Ver
 	state TransactionInfo& info = tr->info;
 	state Promise<Standalone<StringRef>>& versionstampPromise =
 	    pVersionstampPromise == nullptr ? tr->versionstampPromise : *pVersionstampPromise;
-	state Version& committedVersion = pCommittedVersion == nullptr ? tr->getCommittedVersion() : *pCommittedVersion;
+	state Version& committedVersion = pCommittedVersion == nullptr
+	                                      ? tr->getCommittedVersion()
+	                                      : *pCommittedVersion; // Q: Where do we get commitedVersion?
 	state Reference<TransactionLogInfo> trLogInfo = tr->trLogInfo;
 	state TransactionOptions& options = tr->options;
 	state Span span("NAPI:tryCommit"_loc, info.spanID);
@@ -3431,7 +3433,7 @@ ACTOR static Future<Void> tryCommitSingleTransaction(Transaction* tr, Future<Ver
 		} else if (options.commitOnGivenProxy) {
 			const auto& proxies = cx->clientInfo->get().proxies;
 			const auto& proxy = proxies[req.splitTransaction.get().partIndex];
-			reply = brokenPromiseToMaybeDelivered(proxy.commit.getReply(req));
+			reply = throwErrorOr(brokenPromiseToMaybeDelivered(proxy.commit.getReply(req)));
 		} else {
 			reply = basicLoadBalance( cx->getMasterProxies(info.useProvisionalProxies), &MasterProxyInterface::commit, req, TaskPriority::DefaultPromiseEndpoint, true );
 		}

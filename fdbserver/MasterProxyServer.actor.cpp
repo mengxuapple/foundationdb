@@ -513,6 +513,8 @@ ACTOR Future<Void> commitBatcher(ProxyCommitData *commitData, PromiseStream<std:
 						}
 					}
 
+					// splitTransaction marks as firstInBatch; It sends out the first batch and then create a batch for
+					// the splitTransaction alone
 					if((batchBytes + bytes > CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT || req.firstInBatch()) && batch.size()) {
 						out.send({ std::move(batch), batchBytes });
 						lastBatch = now();
@@ -535,7 +537,7 @@ ACTOR Future<Void> commitBatcher(ProxyCommitData *commitData, PromiseStream<std:
 						// similar distribution TS2P1, TS2P2 and TS2P3, with
 						// version TS2V.
 						// If TS1P2 and TS2P2 are batched now, then the master
-						// will be confused -- should it return TS1V or TS2V?
+						// will be confused -- should it return TS1V or TS2V? // Q: Why would master  confuse?
 						// A race condition is then introduced. The easiest way
 						// is simple -- do *NOT* batch any split transaction.
 						// This is acceptable since for split transaction, each
@@ -1575,11 +1577,8 @@ ACTOR Future<Void> reply(CommitBatchContext* self) {
 }	// namespace CommitBatch
 
 // Commit one batch of transactions trs
-ACTOR Future<Void> commitBatch(
-		ProxyCommitData* self,
-		vector<CommitTransactionRequest>* trs,
-		int currentBatchMemBytesCount) {
-	//WARNING: this code is run at a high priority (until the first delay(0)), so it needs to do as little work as possible
+ACTOR Future<Void> commitBatch(ProxyCommitData* self, vector<CommitTransactionRequest>* trs,
+                               int currentBatchMemBytesCount) {
 	state CommitBatch::CommitBatchContext context(self, trs, currentBatchMemBytesCount);
 
 	// Active load balancing runs at a very high priority (to obtain accurate estimate of memory used by commit batches) so we need to downgrade here

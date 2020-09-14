@@ -380,12 +380,17 @@ ACTOR Future<Void> splitTransactionResolver(Reference<Resolver> self, ResolveTra
 
 	self->splitTransactionMerger.add(splitID, batch, partIndex, totalParts);
 
+	// ASSERT(self->splitTransactionMerger.exists(splitID)); // TODO: Separate logic to check if splitID exist and
+	// expire a splitID
+
 	// Additional exists called to trigger the removal of expired keys
 	if (self->splitTransactionMerger.exists(splitID) && self->splitTransactionMerger.get(splitID).ready()) {
 		const auto& merged = self->splitTransactionMerger.get(splitID).get();
 		wait(resolveBatch(self, merged));
 	}
 
+	// Part transaction resolution requests wait here until all parts have been received, merged and resolved in
+	// resolveBatch
 	state Optional<ResolveTransactionBatchReply> reply = wait(self->splitTransactionResponse.get(splitID).getFuture());
 
 	if (reply.present()) {
