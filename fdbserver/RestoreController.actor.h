@@ -136,7 +136,23 @@ struct ControllerBatchStatus : public ReferenceCounted<ControllerBatchStatus> {
 	~ControllerBatchStatus() = default;
 };
 
+struct LoaderRateInfo {
+	double targetParseFileQueueBytes;
+	double targetWriteBytes;
+	double remainingFileBytes; // remaining files bytes to parse
+
+	LoaderRateInfo()
+	  : targetParseFileQueueBytes(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024),
+	    targetWriteBytes(SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024),
+	    remainingFileBytes(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024) {}
+
+	explicit LoaderRateInfo(double targetParseFileQueueBytes, double targetWriteBytes, double remainingFileBytes)
+	  : targetParseFileQueueBytes(targetParseFileQueueBytes), targetWriteBytes(targetWriteBytes),
+	    remainingFileBytes(remainingFileBytes) {}
+};
+
 struct RestoreControllerData : RestoreRoleData, public ReferenceCounted<RestoreControllerData> {
+	RestoreControllerInterface ci; // Restore Controller Interface
 	std::map<Version, VersionBatch> versionBatches; // key is the beginVersion of the version batch
 
 	Reference<IBackupContainer> bc; // Backup container is used to read backup files
@@ -147,6 +163,17 @@ struct RestoreControllerData : RestoreRoleData, public ReferenceCounted<RestoreC
 
 	AsyncVar<int> runningVersionBatches; // Currently running version batches
 
+	std::map<UID, LoaderRateInfo> loaderRateInfos; // key: loader ID, value:loader's rate info in current time window
+	double rangeFilesBytes; // total bytes of range files; Including kv bytes that are out of key-range
+	double dispatchedRangeFilesBytes; // bytes of range files that have been dispatched to loaders but may not have been
+	                                  // processed by loaders yet.
+	double parsedRangeFilesBytes; // range files bytes that has been parsed and written to DB; Including kv bytes that
+	                              // are out of key-range
+	std::list<RestoreFileFR> rangeFiles; // remaining range files to dispatch
+	std::set<UID> finishedLoaders; // which loader has no file to process
+	KeyRangeMap<Version> rangeVersions; // init as MAX_VERSION. A keyrange without version uses MAX_VERSION and ignore
+	                                    // all mutations in the keyrange
+
 	std::map<UID, double> rolesHeartBeatTime; // Key: role id; Value: most recent time controller receives heart beat
 
 	// addActor: add to actorCollection so that when an actor has error, the ActorCollection can catch the error.
@@ -156,9 +183,11 @@ struct RestoreControllerData : RestoreRoleData, public ReferenceCounted<RestoreC
 	void addref() { return ReferenceCounted<RestoreControllerData>::addref(); }
 	void delref() { return ReferenceCounted<RestoreControllerData>::delref(); }
 
-	RestoreControllerData(UID interfId) {
+	RestoreControllerData(RestoreControllerInterface ci)
+	  : rangeFilesBytes(0), dispatchedRangeFilesBytes(0), parsedRangeFilesBytes(0), ci(ci),
+	    rangeVersions(MAX_VERSION, allKeys.end) {
 		role = RestoreRole::Controller;
-		nodeID = interfId;
+		nodeID = ci.id();
 		runningVersionBatches.set(0);
 	}
 
@@ -169,6 +198,28 @@ struct RestoreControllerData : RestoreRoleData, public ReferenceCounted<RestoreC
 
 	void initVersionBatch(int batchIndex) {
 		TraceEvent("FastRestoreControllerInitVersionBatch", id()).detail("VersionBatchIndex", batchIndex);
+	}
+
+	void insertRangeVersion(KeyRange keyRange, Version version) {
+		auto ranges = rangeVersions.modify(keyRange);
+		for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+			r->value() = std::max(r->value(), version);
+		}
+
+		// Dump the new key ranges
+		if (g_network->isSimulated()) {
+			ranges = rangeVersions.ranges();
+			int i = 0;
+			for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+				TraceEvent(SevDebug, "RangeVersionsAfterUpdate")
+				    .detail("KeyRange", keyRange.toString())
+				    .detail("Version", version)
+				    .detail("RangeIndex", i++)
+				    .detail("RangeBegin", r->begin())
+				    .detail("RangeEnd", r->end())
+				    .detail("RangeVersion", r->value());
+			}
+		}
 	}
 
 	// Reset controller data at the beginning of each restore request

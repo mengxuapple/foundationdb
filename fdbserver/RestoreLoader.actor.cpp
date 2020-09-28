@@ -21,6 +21,7 @@
 // This file implements the functions and actors used by the RestoreLoader role.
 // The RestoreLoader role starts with the restoreLoaderCore actor
 
+#include "flow/IRandom.h"
 #include "flow/UnitTest.h"
 #include "fdbclient/BackupContainer.h"
 #include "fdbclient/BackupAgent.actor.h"
@@ -65,6 +66,113 @@ ACTOR static Future<Void> _parseRangeFileToMutationsOnLoader(
     std::map<LoadingParam, SampledMutationsVec>::iterator samplesIter, LoaderCounters* cc,
     Reference<IBackupContainer> bc, Version version, RestoreAsset asset);
 ACTOR Future<Void> handleFinishVersionBatchRequest(RestoreVersionBatchRequest req, Reference<RestoreLoaderData> self);
+ACTOR static Future<Void> applyKVBatch(int begin, int end, VectorRef<KeyValueRef> data, Database cx, UID nodeID,
+                                       double* appliedBytes, double* applyingDataBytes, double* targetBytes,
+                                       AsyncTrigger* releaseTxnTrigger);
+ACTOR static Future<KeyRange> parseRangeFileAndWriteDB(Reference<IBackupContainer> bc, Version version,
+                                                       RestoreAsset asset, double* appliedBytes,
+                                                       double* applyingDataBytes, double* targetWriteBytes,
+                                                       AsyncTrigger* releaseTxnTrigger, Database cx, UID loaderID);
+
+// updateRateInfo is used periodically in the background to fetch loading params, and
+// it is also started when loader finishes processing a loading param (range file)
+ACTOR Future<Void> updateRateInfo(Reference<RestoreLoaderData> self,
+                                  LoadRangeFileOption cmd = LoadRangeFileOption::LoadRangeFile_Continue,
+                                  KeyRange range = KeyRange(), Version version = -1) {
+	loop {
+		if (cmd != LoadRangeFileOption::LoadRangeFile_Done) {
+			cmd = self->getRemainingFileBytes() < 1 ? LoadRangeFileOption::LoadRangeFile_Complete
+			                                        : LoadRangeFileOption::LoadRangeFile_Continue;
+		}
+
+		RestoreLoaderRateInfoReply reply = wait(self->ci.getRateInfo.getReply(RestoreLoaderRateInfoRequest(
+		    deterministicRandom()->randomUniqueID(), self->id(), self->getRemainingFileBytes(), cmd, range, version)));
+
+		if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Invalid) {
+			TraceEvent(SevError, "FastRestoreLoaderRestoreLoaderRateInfoReplyInvalid", self->id())
+			    .detail("RestoreLoaderRateInfoReply", reply.toString());
+		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Complete) {
+			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderRateInfoReplyDone", self->id())
+			    .detail("RestoreLoaderRateInfoReply", reply.toString());
+			self->isLoadRangeFileFinished = true;
+			break;
+		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Wait) {
+			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderRateInfoReplyStart", self->id())
+			    .suppressFor(10.0)
+			    .detail("RestoreLoaderRateInfoReply", reply.toString());
+		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Continue ||
+		           reply.cmd == LoadRangeFileOption::LoadRangeFile_Done) {
+			self->targetParseFileQueueBytes = reply.targetParseFileQueueBytes;
+			self->targetWriteBytes = reply.targetWriteBytes;
+			for (auto& param : reply.params) {
+				self->rangeFilesToProcess.push_back(param);
+			}
+			self->loadRangeFilesTrigger.trigger();
+		}
+
+		if (cmd == LoadRangeFileOption::LoadRangeFile_Done) {
+			break;
+		}
+		wait(delay(SERVER_KNOBS->FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY));
+	}
+
+	return Void();
+}
+
+ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database cx) {
+	try {
+		int index = deterministicRandom()->randomInt(0, self->rangeFilesToProcess.size());
+		state LoadingParam param = self->rangeFilesToProcess[index];
+		self->currentParsingBytes += param.asset.len;
+		self->initBackupContainer(param.url);
+		state Future<KeyRange> range = parseRangeFileAndWriteDB(
+		    self->bc, param.rangeVersion.get(), param.asset, &self->appliedBytes, &self->applyingDataBytes,
+		    &self->targetWriteBytes, &self->releaseTxnTrigger, cx, self->id());
+		wait(success(range));
+
+		self->currentParsingBytes -= param.asset.len;
+		wait(updateRateInfo(self, LoadRangeFileOption::LoadRangeFile_Done, range.get(), param.rangeVersion.get()));
+
+		self->loadRangeFilesTrigger.trigger();
+	} catch (Error& e) {
+		if (e.code() != error_code_actor_cancelled) {
+			TraceEvent(SevError, "FastRestoreLoadOneRangeFile").error(e, true);
+		}
+	}
+
+	return Void();
+}
+
+// Load range files and apply parsed kv to DB
+ACTOR Future<Void> loadRangeFiles(Reference<RestoreLoaderData> self, Database cx) {
+	state std::vector<Future<Void>> fLoads;
+	loop {
+		if (self->isLoadRangeFileFinished) {
+			TraceEvent("FastRestoreLoaderLoadRangeFilesFinished", self->id());
+			break;
+		}
+		if (self->currentParsingBytes <=
+		    SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_RATIO * self->targetParseFileQueueBytes) {
+			// Parse RHS amount of range files concurrently.
+			// If we process too small amount of range files concurrently, loader will not fully utilize its CPU;
+			// but if we process too much, loaders won't get new range file's LoadingParam in time and waste its CPU
+			// while it waits for new loading params each time it finishes processing a bunch of range files.
+			fLoads.push_back(loadOneRangeFile(self, cx));
+		} else {
+			wait(self->loadRangeFilesTrigger.onTrigger());
+			// clean up ready future
+			std::vector<Future<Void>>::iterator cur = fLoads.begin();
+			while (cur != fLoads.end()) {
+				ASSERT(cur->isValid());
+				ASSERT(!cur->isError());
+				if (cur->isReady()) {
+					cur = fLoads.erase(cur);
+				}
+			}
+		}
+	}
+	return Void();
+}
 
 // Dispatch requests based on node's business (i.e, cpu usage for now) and requests' priorities
 // Requests for earlier version batches are preferred; which is equivalent to
@@ -224,10 +332,12 @@ ACTOR Future<Void> restoreLoaderCore(RestoreLoaderInterface loaderInterf, int no
 	state Future<Void> exitRole = Never();
 	state bool hasQueuedRequests = false;
 
-	actors.add(updateProcessMetrics(self));
-	actors.add(traceProcessMetrics(self, "RestoreLoader"));
+	self->addActor.send(updateProcessMetrics(self));
+	self->addActor.send(traceProcessMetrics(self, "RestoreLoader"));
 
 	self->addActor.send(dispatchRequests(self));
+	self->addActor.send(updateRateInfo(self));
+	self->addActor.send(loadRangeFiles(self, cx));
 
 	loop {
 		state std::string requestTypeStr = "[Init]";
@@ -326,6 +436,7 @@ void handleRestoreSysInfoRequest(const RestoreSysInfoRequest& req, Reference<Res
 	// Update rangeVersions
 	ASSERT(req.rangeVersions.size() > 0); // At least the min version of range files will be used
 	ASSERT(self->rangeVersions.size() == 1); // rangeVersions has not been set
+	// TODO: Send rangeVersions in 1MB network packages
 	for (auto rv = req.rangeVersions.begin(); rv != req.rangeVersions.end(); ++rv) {
 		self->rangeVersions.insert(rv->first, rv->second);
 	}
@@ -1124,6 +1235,7 @@ void _parseSerializedMutation(KeyRangeMap<Version>* pRangeVersions,
 	}
 }
 
+// TODO: Remove this actor
 // Parsing the data blocks in a range file
 // kvOpsIter: saves the parsed versioned-mutations for the sepcific LoadingParam;
 // samplesIter: saves the sampled mutations from the parsed versioned-mutations;
@@ -1243,6 +1355,177 @@ ACTOR static Future<Void> _parseRangeFileToMutationsOnLoader(
 	}
 
 	return Void();
+}
+
+// Apply mutations in batchData->stagingKeys [begin, end).
+ACTOR static Future<Void> applyKVBatch(int begin, int end, VectorRef<KeyValueRef> data, Database cx, UID nodeID,
+                                       double* appliedBytes, double* applyingDataBytes, double* targetBytes,
+                                       AsyncTrigger* releaseTxnTrigger) {
+	if (SERVER_KNOBS->FASTRESTORE_NOT_WRITE_DB) {
+		TraceEvent("FastRestoreLoaderPhaseApplyRangeDataSkipped", nodeID).detail("Begin", data[begin].key);
+		ASSERT(!g_network->isSimulated());
+		return Void();
+	}
+	wait(shouldReleaseTransaction(targetBytes, applyingDataBytes, releaseTxnTrigger));
+
+	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
+	state int sets = 0;
+	state int clears = 0;
+	state Key endKey = data[begin].key;
+	state double txnSize = 0;
+	state double txnSizeUsed = 0; // txn size accounted in applyingDataBytes
+	TraceEvent(SevFRDebugInfo, "FastRestoreLoaderPhaseApplyRangeData", nodeID).detail("Begin", data[begin].key);
+	loop {
+		try {
+			txnSize = 0;
+			txnSizeUsed = 0;
+			tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr->setOption(FDBTransactionOptions::LOCK_AWARE);
+			int cur = begin;
+			while (cur < end) {
+				tr->set(data[cur].key, data[cur].value);
+				txnSize += MutationRef::OVERHEAD_BYTES + data[cur].key.size() + data[cur].value.size();
+				endKey = cur < end ? data[cur].key : endKey;
+				cur++;
+				if (sets > 10000000 || clears > 10000000) {
+					TraceEvent(SevError, "FastRestoreLoaderPhaseApplyRangeDataInfiniteLoop", nodeID)
+					    .detail("Begin", data[begin].key)
+					    .detail("Sets", sets)
+					    .detail("Clears", clears);
+				}
+			}
+			TraceEvent(SevFRDebugInfo, "FastRestoreLoaderPhaseApplyRangeDataPrecommit", nodeID)
+			    .detail("Begin", data[begin].key)
+			    .detail("End", endKey);
+			tr->addWriteConflictRange(KeyRangeRef(data[begin].key, keyAfter(endKey))); // Reduce resolver load
+			txnSizeUsed = txnSize;
+			*applyingDataBytes += txnSizeUsed; // Must account for applying bytes before wait for write traffic control
+			wait(tr->commit());
+			*appliedBytes += txnSize;
+			*applyingDataBytes -= txnSizeUsed;
+			if (okToReleaseTxns(*targetBytes, *applyingDataBytes)) {
+				releaseTxnTrigger->trigger();
+			}
+			break;
+		} catch (Error& e) {
+			wait(tr->onError(e));
+			*applyingDataBytes -= txnSizeUsed;
+		}
+	}
+	return Void();
+}
+
+// Parsing the data blocks in a range file and set kv to DB;
+// Return keyRange of the range file
+// bc: backup container to read the backup file
+// version: the version the parsed mutations should be at
+// asset: RestoreAsset about which backup data should be parsed
+ACTOR static Future<KeyRange> parseRangeFileAndWriteDB(Reference<IBackupContainer> bc, Version version,
+                                                       RestoreAsset asset, double* appliedBytes,
+                                                       double* applyingDataBytes, double* targetWriteBytes,
+                                                       AsyncTrigger* releaseTxnTrigger, Database cx, UID loaderID) {
+
+	TraceEvent(SevFRDebugInfo, "FastRestoreDecodedRangeFile", loaderID)
+	    .detail("BatchIndex", asset.batchIndex)
+	    .detail("Filename", asset.filename)
+	    .detail("Version", version)
+	    .detail("BeginVersion", asset.beginVersion)
+	    .detail("EndVersion", asset.endVersion)
+	    .detail("RestoreAsset", asset.toString());
+	// Sanity check the range file is within the restored version range
+	ASSERT_WE_THINK(asset.isInVersionRange(version));
+
+	state Standalone<VectorRef<KeyValueRef>> blockData;
+	// should retry here
+	state int readFileRetries = 0;
+	loop {
+		try {
+			// The set of key value version is rangeFile.version. the key-value set in the same range file has the same
+			// version
+			Reference<IAsyncFile> inFile = wait(bc->readFile(asset.filename));
+			Standalone<VectorRef<KeyValueRef>> kvs =
+			    wait(fileBackup::decodeRangeFileBlock(inFile, asset.offset, asset.len));
+			TraceEvent("FastRestoreLoaderDecodedRangeFile")
+			    .detail("BatchIndex", asset.batchIndex)
+			    .detail("Filename", asset.filename)
+			    .detail("DataSize", kvs.contents().size());
+			blockData = kvs;
+			break;
+		} catch (Error& e) {
+			if (e.code() == error_code_restore_bad_read || e.code() == error_code_restore_unsupported_file_version ||
+			    e.code() == error_code_restore_corrupted_data_padding) { // no retriable error
+				TraceEvent(SevError, "FastRestoreFileRestoreCorruptedRangeFileBlock").error(e);
+				throw;
+			} else if (e.code() == error_code_http_request_failed || e.code() == error_code_connection_failed ||
+			           e.code() == error_code_timed_out || e.code() == error_code_lookup_failed) {
+				// blob http request failure, retry
+				TraceEvent(SevWarnAlways, "FastRestoreDecodedRangeFileConnectionFailure")
+				    .detail("Retries", ++readFileRetries)
+				    .error(e);
+				wait(delayJittered(0.1));
+			} else {
+				TraceEvent(SevError, "FastRestoreParseRangeFileOnLoaderUnexpectedError").error(e);
+				throw;
+			}
+		}
+	}
+
+	// First and last key are the range for this file
+	state KeyRange fileRange = KeyRangeRef(blockData.front().key, blockData.back().key);
+
+	// If fileRange doesn't intersect restore range then we're done.
+	if (!fileRange.intersects(asset.range)) {
+		return fileRange;
+	}
+
+	// We know the file range intersects the restore range but there could still be keys outside the restore range.
+	// Find the subvector of kv pairs that intersect the restore range.
+	// Note that the first and last keys are just the range endpoints for this file.
+	// They are metadata, not the real data.
+	int rangeStart = 1;
+	int rangeEnd = blockData.size() - 1; // The rangeStart and rangeEnd is [,)
+
+	// Slide start from begining, stop if something in range is found
+	// Move rangeStart and rangeEnd until they is within restoreRange
+	while (rangeStart < rangeEnd && !asset.range.contains(blockData[rangeStart].key)) {
+		++rangeStart;
+	}
+	// Side end from back, stop if something at (rangeEnd-1) is found in range
+	while (rangeEnd > rangeStart && !asset.range.contains(blockData[rangeEnd - 1].key)) {
+		--rangeEnd;
+	}
+
+	// Now data only contains the kv mutation within restoreRange
+	VectorRef<KeyValueRef> data = blockData.slice(rangeStart, rangeEnd);
+
+	// Note we give INT_MAX as the sub sequence number to override any log mutations.
+	const LogMessageVersion msgVersion(version, std::numeric_limits<int32_t>::max());
+
+	// TODO: Write to DB
+	// Convert KV in data into SET mutations of different keys in kvOps
+	Arena tempArena;
+	state std::vector<Future<Void>> fTxns;
+	state int begin = 0;
+	state int cur = begin;
+	state double txnSize = 0;
+	while (cur < data.size()) {
+		if (txnSize > SERVER_KNOBS->FASTRESTORE_TXN_BATCH_MAX_BYTES) {
+			fTxns.push_back(applyKVBatch(begin, cur, data, cx, loaderID, appliedBytes, applyingDataBytes,
+			                             targetWriteBytes, releaseTxnTrigger));
+			begin = cur;
+			txnSize = 0;
+		}
+		txnSize += MutationRef::OVERHEAD_BYTES + data[cur].key.size() + data[cur].value.size();
+		cur++;
+	}
+	if (txnSize > 0 && begin < data.size()) {
+		fTxns.push_back(applyKVBatch(begin, cur, data, cx, loaderID, appliedBytes, applyingDataBytes, targetWriteBytes,
+		                             releaseTxnTrigger));
+	}
+
+	wait(waitForAll(fTxns));
+
+	return fileRange;
 }
 
 // Parse data blocks in a log file into a vector of <string, string> pairs.

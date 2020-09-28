@@ -27,6 +27,7 @@
 #include "fdbclient/ManagementAPI.actor.h"
 #include "fdbclient/MutationList.h"
 #include "fdbclient/BackupContainer.h"
+#include "fdbserver/RatekeeperInterface.h"
 #include "fdbserver/RestoreUtil.h"
 #include "fdbserver/RestoreCommon.actor.h"
 #include "fdbserver/RestoreRoleCommon.actor.h"
@@ -34,13 +35,15 @@
 #include "fdbserver/RestoreApplier.actor.h"
 #include "fdbserver/RestoreLoader.actor.h"
 
+#include "flow/IRandom.h"
 #include "flow/Platform.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
+#include <sys/socket.h>
 
 ACTOR static Future<Void> clearDB(Database cx);
-ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, std::vector<RestoreFileFR>* rangeFiles,
-                                                std::vector<RestoreFileFR>* logFiles, Version* minRangeVersion,
-                                                Database cx, RestoreRequest request);
+ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, std::list<RestoreFileFR>* rangeFiles,
+                                                double* rangeFilesBytes, std::vector<RestoreFileFR>* logFiles,
+                                                Version* minRangeVersion, Database cx, RestoreRequest request);
 ACTOR static Future<Void> buildRangeVersions(KeyRangeMap<Version>* pRangeVersions,
                                              std::vector<RestoreFileFR>* pRangeFiles, Key url);
 
@@ -53,8 +56,7 @@ ACTOR static Future<Void> distributeWorkloadPerVersionBatch(Reference<RestoreCon
 
 ACTOR static Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> controllerWorker,
                                               Reference<RestoreControllerData> controllerData);
-ACTOR static Future<Void> distributeRestoreSysInfo(Reference<RestoreControllerData> controllerData,
-                                                   KeyRangeMap<Version>* pRangeVersions);
+ACTOR static Future<Void> distributeRestoreSysInfo(Reference<RestoreControllerData> controllerData);
 
 ACTOR static Future<std::vector<RestoreRequest>> collectRestoreRequests(Database cx);
 ACTOR static Future<Void> initializeVersionBatch(std::map<UID, RestoreApplierInterface> appliersInterf,
@@ -96,7 +98,9 @@ ACTOR Future<Void> sampleBackups(Reference<RestoreControllerData> self, RestoreC
 			}
 			req.reply.send(RestoreCommonReply(req.id));
 		} catch (Error& e) {
-			TraceEvent(SevWarn, "FastRestoreControllerSampleBackupsError", self->id()).error(e);
+			TraceEvent(g_network->isSimulated() ? SevWarnAlways : SevError, "FastRestoreControllerSampleBackupsError",
+			           self->id())
+			    .error(e);
 			break;
 		}
 	}
@@ -104,11 +108,148 @@ ACTOR Future<Void> sampleBackups(Reference<RestoreControllerData> self, RestoreC
 	return Void();
 }
 
+// Periodically update rate info for all loaders
+ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self) {
+	// Initialize loaderRateInfos
+	ASSERT(self->loadersInterf.size() == SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
+	for (auto& loader : self->loadersInterf) {
+		self->loaderRateInfos[loader.first] = LoaderRateInfo(); // Init it to default knob values
+	}
+
+	loop {
+		try {
+			double totalRemainingBytes = 0;
+			for (auto& info : self->loaderRateInfos) {
+				totalRemainingBytes += info.second.remainingFileBytes;
+			}
+			double newTargetParseFileQueueBytes =
+			    std::min(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024,
+			             (self->rangeFilesBytes - self->dispatchedRangeFilesBytes) * 1.0 /
+			                 SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
+			newTargetParseFileQueueBytes =
+			    std::max(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB * 1024 * 1024, newTargetParseFileQueueBytes);
+			for (auto& info : self->loaderRateInfos) {
+				info.second.targetWriteBytes = (info.second.remainingFileBytes * 1.0 / totalRemainingBytes) *
+				                               SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024;
+				info.second.targetParseFileQueueBytes = newTargetParseFileQueueBytes;
+			}
+
+			wait(delay(SERVER_KNOBS->FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY));
+		} catch (Error& e) {
+			if (e.code() != error_code_operation_cancelled) {
+				TraceEvent(SevError, "FastRestoreControllerUpdateLoaderRateInfoError", self->id()).error(e);
+				// g_network->isSimulated() ? SevWarnAlways : SevError
+			}
+		}
+	}
+}
+
+// Loader send RestoreLoaderRateInfoRequest request to controller for (1) updating rate info or
+// (2) acking processed range file's keyrange-version info;
+// Controller respond to request by (1) serving loader with its rate info and which range files to load; and
+// (2) updating its key-range version map, which will be used to load log files
+ACTOR Future<Void> serverGetRateInfo(Reference<RestoreControllerData> self, RestoreRequest request) {
+	state Future<Void> updater = updateLoaderRateInfo(self);
+	loop {
+		try {
+			RestoreLoaderRateInfoRequest req = waitNext(self->ci.getRateInfo.getFuture());
+			TraceEvent(SevDebug, "FastRestoreControllerGetRateInfo")
+			    .detail("RequestID", req.id)
+			    .detail("Loader", req.loaderID)
+			    .detail("RemainingFileBytes", req.remainingFileBytes);
+
+			if (req.cmd == LoadRangeFileOption::LoadRangeFile_Done) {
+				if (self->rangeFiles.empty()) {
+					TraceEvent("FastRestoreControllerDetectOneLoaderFinishRangeFiles", self->id())
+					    .detail("Loader", req.loaderID)
+					    .detail("RestoreLoaderRateInfoRequest", req.toString());
+					self->finishedLoaders.insert(req.loaderID);
+					self->insertRangeVersion(req.range, req.version);
+
+					if (self->finishedLoaders.size() == self->loadersInterf.size()) {
+						// Sanity check loader ID matches
+						for (auto& finishedLoader : self->finishedLoaders) {
+							ASSERT(self->loadersInterf.find(finishedLoader) != self->loadersInterf.end());
+						}
+						TraceEvent("FastRestoreControllerDetectAllLoaderFinishRangeFiles", self->id())
+						    .detail("FinishedLoaders", self->finishedLoaders.size());
+						// TODO: send LoadRangeFileOption::LoadRangeFile_Done to loaders so that loaders can stop trying
+						// to load files
+						break;
+					}
+				} else {
+					TraceEvent("FastRestoreControllerLoaderLeftIdle", self->id())
+					    .detail("Loader", req.loaderID)
+					    .detail("Suggestion", "Increase targetParseFileQueueBytes");
+				}
+			}
+
+			// Create RestoreLoaderRateInfoReply for the loader
+			LoaderRateInfo& rateInfo = self->loaderRateInfos[req.loaderID];
+			rateInfo.remainingFileBytes = req.remainingFileBytes;
+
+			RestoreLoaderRateInfoReply rateReply;
+			rateReply.id = req.id;
+			rateReply.cmd = LoadRangeFileOption::LoadRangeFile_Continue;
+			rateReply.targetWriteBytes = rateInfo.targetWriteBytes;
+			rateReply.targetParseFileQueueBytes = rateInfo.targetParseFileQueueBytes;
+			double dispatchBytes = 0;
+			while (1) {
+				if (dispatchBytes + req.remainingFileBytes >= rateInfo.targetParseFileQueueBytes ||
+				    self->rangeFiles.empty()) {
+					break;
+				}
+				// Random choose a file
+				int index = deterministicRandom()->randomInt(0, self->rangeFiles.size());
+				std::list<RestoreFileFR>::iterator file = self->rangeFiles.begin();
+				advance(file, index);
+
+				LoadingParam param;
+				param.url = request.url;
+				ASSERT(file->isRange);
+				param.isRangeFile = file->isRange;
+				param.rangeVersion = file->version;
+				param.blockSize = file->blockSize;
+				param.asset.uid = deterministicRandom()->randomUniqueID();
+				param.asset.filename = file->fileName;
+				param.asset.fileIndex = file->fileIndex; // TODO: Verify it has been set
+				param.asset.partitionId = file->partitionId;
+				param.asset.offset = 0;
+				param.asset.len = file->fileSize;
+				param.asset.range = request.range;
+				param.asset.beginVersion = file->version; // range file's version
+				param.asset.endVersion = file->version + 1; // exclusive
+				param.asset.addPrefix = request.addPrefix;
+				param.asset.removePrefix = request.removePrefix;
+				param.asset.batchIndex = -1; // unused
+
+				rateReply.params.push_back(param);
+				dispatchBytes += file->fileSize;
+
+				self->rangeFiles.erase(file);
+			}
+			if (dispatchBytes < 1) {
+				ASSERT(self->rangeFiles.empty());
+				rateReply.cmd = LoadRangeFileOption::LoadRangeFile_Complete;
+			}
+
+			req.reply.send(rateReply); // TODO: Must ensure the reply is received. Otherwise, we lose files
+			// We probably need to use a RequestStream to get it
+		} catch (Error& e) {
+			TraceEvent(g_network->isSimulated() ? SevWarnAlways : SevError, "FastRestoreControllerGetRateInfoError",
+			           self->id())
+			    .error(e);
+		}
+	}
+	// return when all range files have been dispatched and processed by loaders
+	return Void();
+}
+
 ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controllerWorker, Database cx) {
 	ASSERT(controllerWorker.isValid());
 	ASSERT(controllerWorker->controllerInterf.present());
 	state Reference<RestoreControllerData> self =
-	    Reference<RestoreControllerData>(new RestoreControllerData(controllerWorker->controllerInterf.get().id()));
+	    Reference<RestoreControllerData>(new RestoreControllerData(controllerWorker->controllerInterf.get()));
 	state Future<Void> error = actorCollection(self->addActor.getFuture());
 
 	try {
@@ -194,14 +335,13 @@ ACTOR Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> controllerWo
 	return Void();
 }
 
-ACTOR Future<Void> distributeRestoreSysInfo(Reference<RestoreControllerData> controllerData,
-                                            KeyRangeMap<Version>* pRangeVersions) {
+ACTOR Future<Void> distributeRestoreSysInfo(Reference<RestoreControllerData> controllerData) {
 	ASSERT(controllerData.isValid());
 	ASSERT(!controllerData->loadersInterf.empty());
 	RestoreSysInfo sysInfo(controllerData->appliersInterf);
 	// Construct serializable KeyRange versions
 	Standalone<VectorRef<std::pair<KeyRangeRef, Version>>> rangeVersionsVec;
-	auto ranges = pRangeVersions->ranges();
+	auto ranges = controllerData->rangeVersions.ranges();
 	int i = 0;
 	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
 		rangeVersionsVec.push_back(rangeVersionsVec.arena(),
@@ -299,46 +439,57 @@ ACTOR static Future<Void> monitorFinishedVersion(Reference<RestoreControllerData
 
 ACTOR static Future<Version> processRestoreRequest(Reference<RestoreControllerData> self, Database cx,
                                                    RestoreRequest request) {
-	state std::vector<RestoreFileFR> rangeFiles;
+	// state std::vector<RestoreFileFR> rangeFiles;
 	state std::vector<RestoreFileFR> logFiles;
 	state std::vector<RestoreFileFR> allFiles;
-	state Version minRangeVersion = MAX_VERSION;
+	state Version minRangeVersion = MAX_VERSION; // in case no range files in backup, we need to apply all logs
 
 	self->initBackupContainer(request.url);
 
 	// Get all backup files' description and save them to files
-	state Version targetVersion =
-	    wait(collectBackupFiles(self->bc, &rangeFiles, &logFiles, &minRangeVersion, cx, request));
+	state Version targetVersion = wait(collectBackupFiles(self->bc, &self->rangeFiles, &self->rangeFilesBytes,
+	                                                      &logFiles, &minRangeVersion, cx, request));
 	ASSERT(targetVersion > 0);
 	ASSERT(minRangeVersion != MAX_VERSION); // otherwise, all mutations will be skipped
+	self->rangeVersions = KeyRangeMap<Version>(minRangeVersion, allKeys.end); // initialize with correct minRangeVersion
 
-	std::sort(rangeFiles.begin(), rangeFiles.end());
+	// Load range files first
+	state Future<Void> fLoadRangeFiles = serverGetRateInfo(self, request);
+
+	// std::sort(rangeFiles.begin(), rangeFiles.end());
 	std::sort(logFiles.begin(), logFiles.end(), [](RestoreFileFR const& f1, RestoreFileFR const& f2) -> bool {
 		return std::tie(f1.endVersion, f1.beginVersion, f1.fileIndex, f1.fileName) <
 		       std::tie(f2.endVersion, f2.beginVersion, f2.fileIndex, f2.fileName);
 	});
 
 	// Build range versions: version of key ranges in range file
-	state KeyRangeMap<Version> rangeVersions(minRangeVersion, allKeys.end);
-	if (SERVER_KNOBS->FASTRESTORE_GET_RANGE_VERSIONS_EXPENSIVE) {
-		wait(buildRangeVersions(&rangeVersions, &rangeFiles, request.url));
-	} else {
-		// Debug purpose, dump range versions
-		auto ranges = rangeVersions.ranges();
-		int i = 0;
-		for (auto r = ranges.begin(); r != ranges.end(); ++r) {
-			TraceEvent(SevDebug, "SingleRangeVersion")
-			    .detail("RangeIndex", i++)
-			    .detail("RangeBegin", r->begin())
-			    .detail("RangeEnd", r->end())
-			    .detail("RangeVersion", r->value());
-		}
-	}
+	// TODO: Refer to this buildRangeVersions() to build range version online
+	// state KeyRangeMap<Version> rangeVersions(minRangeVersion, allKeys.end);
+	// if (SERVER_KNOBS->FASTRESTORE_GET_RANGE_VERSIONS_EXPENSIVE) {
+	// 	wait(buildRangeVersions(&rangeVersions, &rangeFiles, request.url));
+	// } else {
+	// 	// Debug purpose, dump range versions
+	// 	auto ranges = rangeVersions.ranges();
+	// 	int i = 0;
+	// 	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+	// 		TraceEvent(SevDebug, "SingleRangeVersion")
+	// 		    .detail("RangeIndex", i++)
+	// 		    .detail("RangeBegin", r->begin())
+	// 		    .detail("RangeEnd", r->end())
+	// 		    .detail("RangeVersion", r->value());
+	// 	}
+	// }
 
-	wait(distributeRestoreSysInfo(self, &rangeVersions));
+	wait(fLoadRangeFiles);
+
+	wait(distributeRestoreSysInfo(self));
+
+	// TODO: Load range files only
 
 	// Divide files into version batches.
-	self->buildVersionBatches(rangeFiles, logFiles, &self->versionBatches, targetVersion);
+	// TODO: Remove rangeFiles from buildVersionBatches
+	// rangeFiles are left empty on purpose because rangeFiles have already been processed
+	self->buildVersionBatches(std::vector<RestoreFileFR>(), logFiles, &self->versionBatches, targetVersion);
 	self->dumpVersionBatches(self->versionBatches);
 
 	state std::vector<Future<Void>> fBatches;
@@ -725,9 +876,9 @@ ACTOR static Future<std::vector<RestoreRequest>> collectRestoreRequests(Database
 
 // Collect the backup files' description into output_files by reading the backupContainer bc.
 // Returns the restore target version.
-ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, std::vector<RestoreFileFR>* rangeFiles,
-                                                std::vector<RestoreFileFR>* logFiles, Version* minRangeVersion,
-                                                Database cx, RestoreRequest request) {
+ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, std::list<RestoreFileFR>* rangeFiles,
+                                                double* rangeFilesBytes, std::vector<RestoreFileFR>* logFiles,
+                                                Version* minRangeVersion, Database cx, RestoreRequest request) {
 	state BackupDescription desc = wait(bc->describeBackup());
 
 	// Convert version to real time for operators to read the BackupDescription desc.
@@ -773,10 +924,12 @@ ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, 
 			}
 			RestoreFileFR file(f);
 			TraceEvent(SevFRDebugInfo, "FastRestoreControllerPhaseCollectBackupFiles")
-			    .detail("RangeFileFR", file.toString());
-			uniqueRangeFiles.insert(file);
-			rangeSize += file.fileSize;
-			*minRangeVersion = std::min(*minRangeVersion, file.version);
+			    .detail("RangeFile", file.toString());
+			auto ret = uniqueRangeFiles.insert(file);
+			if (ret.second) { // new element is inserted
+				rangeSize += file.fileSize;
+				*minRangeVersion = std::min(*minRangeVersion, file.version);
+			}
 		}
 	}
 	if (MAX_VERSION == *minRangeVersion) {
@@ -793,14 +946,26 @@ ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, 
 			TraceEvent(SevFRDebugInfo, "FastRestoreControllerPhaseCollectBackupFiles")
 			    .detail("LogFileFR", file.toString());
 			logFiles->push_back(file);
-			uniqueLogFiles.insert(file);
-			logSize += file.fileSize;
+			auto ret = uniqueLogFiles.insert(file);
+			if (ret.second) { // new element is inserted
+				logSize += file.fileSize;
+			}
 		}
 	}
 
 	// Assign unique range files and log files to output
-	rangeFiles->assign(uniqueRangeFiles.begin(), uniqueRangeFiles.end());
-	logFiles->assign(uniqueLogFiles.begin(), uniqueLogFiles.end());
+	// Assign range files and add fileIndex
+	int i = 0;
+	for (auto& f : uniqueRangeFiles) {
+		rangeFiles->push_back(f);
+		rangeFiles->back().fileIndex = i++;
+	}
+	i = 0;
+	for (auto& f : uniqueLogFiles) {
+		logFiles->push_back(f);
+		logFiles->back().fileIndex = i++;
+	}
+	*rangeFilesBytes = rangeSize;
 
 	TraceEvent("FastRestoreControllerPhaseCollectBackupFilesDone")
 	    .detail("BackupDesc", desc.toString())
@@ -815,63 +980,63 @@ ACTOR static Future<Version> collectBackupFiles(Reference<IBackupContainer> bc, 
 
 // By the first and last block of *file to get (beginKey, endKey);
 // set (beginKey, endKey) and file->version to pRangeVersions
-ACTOR static Future<Void> insertRangeVersion(KeyRangeMap<Version>* pRangeVersions, RestoreFileFR* file,
-                                             Reference<IBackupContainer> bc) {
-	TraceEvent("FastRestoreControllerDecodeRangeVersion").detail("File", file->toString());
-	RangeFile rangeFile = { file->version, (uint32_t)file->blockSize, file->fileName, file->fileSize };
+// ACTOR static Future<Void> insertRangeVersion(KeyRangeMap<Version>* pRangeVersions, RestoreFileFR* file,
+//                                              Reference<IBackupContainer> bc) {
+// 	TraceEvent("FastRestoreControllerDecodeRangeVersion").detail("File", file->toString());
+// 	RangeFile rangeFile = { file->version, (uint32_t)file->blockSize, file->fileName, file->fileSize };
 
-	// First and last key are the range for this file: endKey is exclusive
-	KeyRange fileRange = wait(bc->getSnapshotFileKeyRange(rangeFile));
-	TraceEvent("FastRestoreControllerInsertRangeVersion")
-	    .detail("DecodedRangeFile", file->fileName)
-	    .detail("KeyRange", fileRange)
-	    .detail("Version", file->version);
-	// Update version for pRangeVersions's ranges in fileRange
-	auto ranges = pRangeVersions->modify(fileRange);
-	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
-		r->value() = std::max(r->value(), file->version);
-	}
+// 	// First and last key are the range for this file: endKey is exclusive
+// 	KeyRange fileRange = wait(bc->getSnapshotFileKeyRange(rangeFile));
+// 	TraceEvent("FastRestoreControllerInsertRangeVersion")
+// 	    .detail("DecodedRangeFile", file->fileName)
+// 	    .detail("KeyRange", fileRange)
+// 	    .detail("Version", file->version);
+// 	// Update version for pRangeVersions's ranges in fileRange
+// 	auto ranges = pRangeVersions->modify(fileRange);
+// 	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+// 		r->value() = std::max(r->value(), file->version);
+// 	}
 
-	// Dump the new key ranges
-	ranges = pRangeVersions->ranges();
-	int i = 0;
-	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
-		TraceEvent(SevDebug, "RangeVersionsAfterUpdate")
-		    .detail("File", file->toString())
-		    .detail("FileRange", fileRange.toString())
-		    .detail("FileVersion", file->version)
-		    .detail("RangeIndex", i++)
-		    .detail("RangeBegin", r->begin())
-		    .detail("RangeEnd", r->end())
-		    .detail("RangeVersion", r->value());
-	}
+// 	// Dump the new key ranges
+// 	ranges = pRangeVersions->ranges();
+// 	int i = 0;
+// 	for (auto r = ranges.begin(); r != ranges.end(); ++r) {
+// 		TraceEvent(SevDebug, "RangeVersionsAfterUpdate")
+// 		    .detail("File", file->toString())
+// 		    .detail("FileRange", fileRange.toString())
+// 		    .detail("FileVersion", file->version)
+// 		    .detail("RangeIndex", i++)
+// 		    .detail("RangeBegin", r->begin())
+// 		    .detail("RangeEnd", r->end())
+// 		    .detail("RangeVersion", r->value());
+// 	}
 
-	return Void();
-}
+// 	return Void();
+// }
 
 // Build the version skyline of snapshot ranges by parsing range files;
 // Expensive and slow operation that should not run in real prod.
-ACTOR static Future<Void> buildRangeVersions(KeyRangeMap<Version>* pRangeVersions,
-                                             std::vector<RestoreFileFR>* pRangeFiles, Key url) {
-	if (!g_network->isSimulated()) {
-		TraceEvent(SevError, "ExpensiveBuildRangeVersions")
-		    .detail("Reason", "Parsing all range files is slow and memory intensive");
-		return Void();
-	}
-	Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
+// ACTOR static Future<Void> buildRangeVersions(KeyRangeMap<Version>* pRangeVersions,
+//                                              std::vector<RestoreFileFR>* pRangeFiles, Key url) {
+// 	if (!g_network->isSimulated()) {
+// 		TraceEvent(SevError, "ExpensiveBuildRangeVersions")
+// 		    .detail("Reason", "Parsing all range files is slow and memory intensive");
+// 		return Void();
+// 	}
+// 	Reference<IBackupContainer> bc = IBackupContainer::openContainer(url.toString());
 
-	// Key ranges not in range files are empty;
-	// Assign highest version to avoid applying any mutation in these ranges
-	state int fileIndex = 0;
-	state std::vector<Future<Void>> fInsertRangeVersions;
-	for (; fileIndex < pRangeFiles->size(); ++fileIndex) {
-		fInsertRangeVersions.push_back(insertRangeVersion(pRangeVersions, &pRangeFiles->at(fileIndex), bc));
-	}
+// 	// Key ranges not in range files are empty;
+// 	// Assign highest version to avoid applying any mutation in these ranges
+// 	state int fileIndex = 0;
+// 	state std::vector<Future<Void>> fInsertRangeVersions;
+// 	for (; fileIndex < pRangeFiles->size(); ++fileIndex) {
+// 		fInsertRangeVersions.push_back(insertRangeVersion(pRangeVersions, &pRangeFiles->at(fileIndex), bc));
+// 	}
 
-	wait(waitForAll(fInsertRangeVersions));
+// 	wait(waitForAll(fInsertRangeVersions));
 
-	return Void();
-}
+// 	return Void();
+// }
 
 ACTOR static Future<Void> clearDB(Database cx) {
 	wait(runRYWTransaction(cx, [](Reference<ReadYourWritesTransaction> tr) -> Future<Void> {

@@ -404,3 +404,6 @@ ACTOR Future<Void> restoreWorker(Reference<ClusterConnectionFile> connFile, Loca
 
 	return Void();
 }
+
+std::vector<std::string> LoadRangeFileOptionStr{ "LoadRangeFile_Wait", "LoadRangeFile_Continue", "LoadRangeFile_Done",
+	                                             "LoadRangeFile_Complete", "LoadRangeFile_Invalid" };

@@ -593,6 +593,12 @@ public:
 	bool FASTRESTORE_EXPENSIVE_VALIDATION; // when set true, performance will be heavily affected
 	double FASTRESTORE_WRITE_BW_MB; // target aggregated write bandwidth from all appliers
 	double FASTRESTORE_RATE_UPDATE_SECONDS; // how long to update appliers target write rate
+	double FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB; // loader keeps so many MB of range files oustanding to parse
+	double FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB; // minimum outsanding range file bytes each loader should keep
+	double FASTRESTORE_WRITE_RANGE_TARGET_MB; // loaders' aggregated target write bandwidth
+	double
+	    FASTRESTORE_PARSE_RANGEQUEUE_RATIO; // ratio of FASTRESTORE_PARSE_RANGEQUEUE_* amount of data to parse currently
+	double FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY; // period (seconds) of updating loader rate info
 
 	int REDWOOD_DEFAULT_PAGE_SIZE;  // Page size for new Redwood files
 	int REDWOOD_KVSTORE_CONCURRENT_READS;  // Max number of simultaneous point or range reads in progress.

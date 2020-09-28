@@ -152,6 +152,24 @@ ACTOR Future<Void> isSchedulable(Reference<RestoreRoleData> self, int actorBatch
 	return Void();
 }
 
+bool okToReleaseTxns(double targetBytes, double applyingDataBytes) {
+	return applyingDataBytes < targetBytes;
+}
+
+ACTOR static Future<Void> shouldReleaseTransaction(double* targetBytes, double* applyingDataBytes,
+                                                   AsyncTrigger* releaseTxns) {
+	loop {
+		if (okToReleaseTxns(*targetBytes, *applyingDataBytes)) {
+			break;
+		} else {
+			wait(releaseTxns->onTrigger());
+			wait(delay(0.0)); // Avoid all waiting txns are triggered at the same time and all decide to proceed before
+			                  // applyingDataBytes has a chance to update
+		}
+	}
+	return Void();
+}
+
 // Updated process metrics will be used by scheduler for throttling as well
 ACTOR Future<Void> updateProcessMetrics(Reference<RestoreRoleData> self) {
 	loop {

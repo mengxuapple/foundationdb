@@ -469,36 +469,18 @@ ACTOR static Future<Void> precomputeMutationsResult(Reference<ApplierBatchData> 
 	return Void();
 }
 
-bool okToReleaseTxns(double targetMB, double applyingDataBytes) {
-	return applyingDataBytes < targetMB * 1024 * 1024;
-}
-
-ACTOR static Future<Void> shouldReleaseTransaction(double* targetMB, double* applyingDataBytes,
-                                                   AsyncTrigger* releaseTxns) {
-	loop {
-		if (okToReleaseTxns(*targetMB, *applyingDataBytes)) {
-			break;
-		} else {
-			wait(releaseTxns->onTrigger());
-			wait(delay(0.0)); // Avoid all waiting txns are triggered at the same time and all decide to proceed before
-			                  // applyingDataBytes has a chance to update
-		}
-	}
-	return Void();
-}
-
 // Apply mutations in batchData->stagingKeys [begin, end).
 ACTOR static Future<Void> applyStagingKeysBatch(std::map<Key, StagingKey>::iterator begin,
                                                 std::map<Key, StagingKey>::iterator end, Database cx, UID applierID,
                                                 ApplierBatchData::Counters* cc, double* appliedBytes,
-                                                double* applyingDataBytes, double* targetMB,
+                                                double* applyingDataBytes, double* targetWriteRateBytes,
                                                 AsyncTrigger* releaseTxnTrigger) {
 	if (SERVER_KNOBS->FASTRESTORE_NOT_WRITE_DB) {
 		TraceEvent("FastRestoreApplierPhaseApplyStagingKeysBatchSkipped", applierID).detail("Begin", begin->first);
 		ASSERT(!g_network->isSimulated());
 		return Void();
 	}
-	wait(shouldReleaseTransaction(targetMB, applyingDataBytes, releaseTxnTrigger));
+	wait(shouldReleaseTransaction(targetWriteRateBytes, applyingDataBytes, releaseTxnTrigger));
 
 	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
 	state int sets = 0;
@@ -561,7 +543,7 @@ ACTOR static Future<Void> applyStagingKeysBatch(std::map<Key, StagingKey>::itera
 			cc->appliedBytes += txnSize;
 			*appliedBytes += txnSize;
 			*applyingDataBytes -= txnSizeUsed;
-			if (okToReleaseTxns(*targetMB, *applyingDataBytes)) {
+			if (okToReleaseTxns(*targetWriteRateBytes, *applyingDataBytes)) {
 				releaseTxnTrigger->trigger();
 			}
 			break;
@@ -591,7 +573,7 @@ ACTOR static Future<Void> applyStagingKeys(Reference<ApplierBatchData> batchData
 		if (txnSize > SERVER_KNOBS->FASTRESTORE_TXN_BATCH_MAX_BYTES) {
 			fBatches.push_back(applyStagingKeysBatch(begin, cur, cx, applierID, &batchData->counters,
 			                                         &batchData->appliedBytes, &batchData->applyingDataBytes,
-			                                         &batchData->targetWriteRateMB, &batchData->releaseTxnTrigger));
+			                                         &batchData->targetWriteRateBytes, &batchData->releaseTxnTrigger));
 			batchData->totalBytesToWrite += txnSize;
 			begin = cur;
 			txnSize = 0;
@@ -602,7 +584,7 @@ ACTOR static Future<Void> applyStagingKeys(Reference<ApplierBatchData> batchData
 	if (begin != batchData->stagingKeys.end()) {
 		fBatches.push_back(applyStagingKeysBatch(begin, cur, cx, applierID, &batchData->counters,
 		                                         &batchData->appliedBytes, &batchData->applyingDataBytes,
-		                                         &batchData->targetWriteRateMB, &batchData->releaseTxnTrigger));
+		                                         &batchData->targetWriteRateBytes, &batchData->releaseTxnTrigger));
 		batchData->totalBytesToWrite += txnSize;
 		txnBatches++;
 	}
@@ -642,14 +624,14 @@ void handleUpdateRateRequest(RestoreUpdateRateRequest req, Reference<RestoreAppl
 	if (self->finishedBatch.get() == req.batchIndex - 1) { // current applying batch
 		Reference<ApplierBatchData> batchData = self->batch[req.batchIndex];
 		ASSERT(batchData.isValid());
-		batchData->targetWriteRateMB = req.writeMB;
+		batchData->targetWriteRateBytes = req.writeMB * 1024 * 1024;
 		remainingDataMB = batchData->totalBytesToWrite > 0
 		                      ? std::max(0.0, batchData->totalBytesToWrite - batchData->appliedBytes) / 1024 / 1024
 		                      : batchData->receivedBytes / 1024 / 1024;
 		ev.detail("TotalBytesToWrite", batchData->totalBytesToWrite)
 		    .detail("AppliedBytes", batchData->appliedBytes)
 		    .detail("ReceivedBytes", batchData->receivedBytes)
-		    .detail("TargetWriteRateMB", batchData->targetWriteRateMB)
+		    .detail("TargetWriteRateMB", batchData->targetWriteRateBytes / 1024 / 1024)
 		    .detail("RemainingDataMB", remainingDataMB);
 	}
 	req.reply.send(RestoreUpdateRateReply(self->id(), remainingDataMB));
@@ -669,7 +651,7 @@ ACTOR static Future<Void> traceRate(const char* context, Reference<ApplierBatchD
 		    .detail("FinishedBatchIndex", finishedVB->get())
 		    .detail("TotalDataToWriteMB", batchData->totalBytesToWrite / 1024 / 1024)
 		    .detail("AppliedBytesMB", batchData->appliedBytes / 1024 / 1024)
-		    .detail("TargetBytesMB", batchData->targetWriteRateMB)
+		    .detail("TargetBytesMB", batchData->targetWriteRateBytes / 1024 / 1024)
 		    .detail("InflightBytesMB", batchData->applyingDataBytes)
 		    .detail("ReceivedBytes", batchData->receivedBytes);
 		wait(delay(5.0));

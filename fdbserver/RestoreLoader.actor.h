@@ -152,6 +152,10 @@ struct RestoreLoaderSchedSendLoadParamRequest {
 	}
 };
 
+// enum class FileProcessState {
+// 	FILE_NOT_PROCESSED, FILE_IN_PROCESSING, FILE_PROCESSED
+// };
+
 struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoaderData> {
 	// buffered data per version batch
 	std::map<int, Reference<LoaderBatchData>> batch;
@@ -162,6 +166,21 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 
 	Reference<IBackupContainer> bc; // Backup container is used to read backup files
 	Key bcUrl; // The url used to get the bc
+
+	// load range files
+	double targetParseFileQueueBytes;
+	double targetWriteBytes;
+	double totalFileBytes; // bytes of all received files from controller
+	double totalProcessedBytes; // file bytes that have been parsed and written to DB
+	double applyingDataBytes; // bytes of outstanding transactions
+	double appliedBytes; // aggregated amount of data written to DB, used to calculate average write bw
+	double currentParsingBytes; // bytes of files that are currently being parsed and writing to DB
+	std::set<LoadingParam>
+	    processedRangeFiles; // processed range files for a key range and version range restore request
+	std::vector<LoadingParam> rangeFilesToProcess; // queue of unprocessed range file loading commands
+	AsyncTrigger releaseTxnTrigger;
+	AsyncTrigger loadRangeFilesTrigger;
+	bool isLoadRangeFileFinished;
 
 	// Request scheduler
 	std::priority_queue<RestoreLoadFileRequest> loadingQueue; // request queue of loading files
@@ -184,7 +203,12 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 	void delref() { return ReferenceCounted<RestoreLoaderData>::delref(); }
 
 	explicit RestoreLoaderData(UID loaderInterfID, int assignedIndex, RestoreControllerInterface ci)
-	  : ci(ci), finishedLoadingVB(0), finishedSendingVB(0), inflightSendingReqs(0), inflightLoadingReqs(0) {
+	  : ci(ci), finishedLoadingVB(0), finishedSendingVB(0), inflightSendingReqs(0), inflightLoadingReqs(0),
+	    targetParseFileQueueBytes(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024),
+	    targetWriteBytes(SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024 /
+	                     SERVER_KNOBS->FASTRESTORE_NUM_LOADERS),
+	    totalFileBytes(0), totalProcessedBytes(0), applyingDataBytes(0), appliedBytes(0), currentParsingBytes(0),
+	    isLoadRangeFileFinished(false) {
 		nodeID = loaderInterfID;
 		nodeIndex = assignedIndex;
 		role = RestoreRole::Loader;
@@ -192,6 +216,8 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 	}
 
 	~RestoreLoaderData() = default;
+
+	double getRemainingFileBytes() { return totalFileBytes - totalProcessedBytes; }
 
 	std::string describeNode() {
 		std::stringstream ss;

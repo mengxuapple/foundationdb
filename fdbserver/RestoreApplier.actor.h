@@ -257,7 +257,7 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 	// Stats
 	double receivedBytes; // received mutation size
 	double appliedBytes; // after coalesce, how many bytes to write to DB
-	double targetWriteRateMB; // target amount of data outstanding for DB;
+	double targetWriteRateBytes; // target amount of data outstanding for DB;
 	double totalBytesToWrite; // total amount of data in bytes to write
 	double applyingDataBytes; // amount of data in flight of committing
 	AsyncTrigger releaseTxnTrigger; // trigger to release more txns
@@ -287,8 +287,8 @@ struct ApplierBatchData : public ReferenceCounted<ApplierBatchData> {
 	void delref() { return ReferenceCounted<ApplierBatchData>::delref(); }
 
 	explicit ApplierBatchData(UID nodeID, int batchIndex)
-	  : counters(this, nodeID, batchIndex),
-	    targetWriteRateMB(SERVER_KNOBS->FASTRESTORE_WRITE_BW_MB / SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS),
+	  : counters(this, nodeID, batchIndex), targetWriteRateBytes(SERVER_KNOBS->FASTRESTORE_WRITE_BW_MB * 1024 * 1024 /
+	                                                             SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS),
 	    totalBytesToWrite(-1), applyingDataBytes(0), vbState(ApplierVersionBatchState::NOT_INIT),
 	    receiveMutationReqs(0), receivedBytes(0), appliedBytes(0) {
 		pollMetrics = traceCounters(format("FastRestoreApplierMetrics%d", batchIndex), nodeID,
