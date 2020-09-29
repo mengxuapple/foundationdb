@@ -78,43 +78,56 @@ ACTOR static Future<KeyRange> parseRangeFileAndWriteDB(Reference<IBackupContaine
 // it is also started when loader finishes processing a loading param (range file)
 ACTOR Future<Void> updateRateInfo(Reference<RestoreLoaderData> self,
                                   LoadRangeFileOption cmd = LoadRangeFileOption::LoadRangeFile_Continue,
-                                  KeyRange range = KeyRange(), Version version = -1) {
+                                  std::string filename = "", KeyRange range = KeyRange(), Version version = -1) {
 	loop {
+		if (self->isLoadRangeFileFinished) {
+			break;
+		}
+
 		if (cmd != LoadRangeFileOption::LoadRangeFile_Done) {
 			cmd = self->getRemainingFileBytes() < 1 ? LoadRangeFileOption::LoadRangeFile_Complete
 			                                        : LoadRangeFileOption::LoadRangeFile_Continue;
 		}
 
-		RestoreLoaderRateInfoReply reply = wait(self->ci.getRateInfo.getReply(RestoreLoaderRateInfoRequest(
-		    deterministicRandom()->randomUniqueID(), self->id(), self->getRemainingFileBytes(), cmd, range, version)));
-
-		if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Invalid) {
-			TraceEvent(SevError, "FastRestoreLoaderRestoreLoaderRateInfoReplyInvalid", self->id())
-			    .detail("RestoreLoaderRateInfoReply", reply.toString());
-		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Complete) {
-			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderRateInfoReplyDone", self->id())
-			    .detail("RestoreLoaderRateInfoReply", reply.toString());
-			self->isLoadRangeFileFinished = true;
-			break;
-		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Wait) {
-			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderRateInfoReplyStart", self->id())
-			    .suppressFor(10.0)
-			    .detail("RestoreLoaderRateInfoReply", reply.toString());
-		} else if (reply.cmd == LoadRangeFileOption::LoadRangeFile_Continue ||
-		           reply.cmd == LoadRangeFileOption::LoadRangeFile_Done) {
-			self->targetParseFileQueueBytes = reply.targetParseFileQueueBytes;
-			self->targetWriteBytes = reply.targetWriteBytes;
-			for (auto& param : reply.params) {
-				self->rangeFilesToProcess.push_back(param);
-			}
-			self->loadRangeFilesTrigger.trigger();
-		}
+		RestoreCommonReply reply = wait(self->ci.getRateInfo.getReply(
+		    RestoreLoaderProgressInfoRequest(deterministicRandom()->randomUniqueID(), self->id(),
+		                                     self->getRemainingFileBytes(), cmd, filename, range, version)));
 
 		if (cmd == LoadRangeFileOption::LoadRangeFile_Done) {
 			break;
 		}
-		wait(delay(SERVER_KNOBS->FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY));
+		wait(delay(SERVER_KNOBS->FASTRESTORE_LOADER_UPDATE_RATEINFO_DELAY));
 	}
+
+	return Void();
+}
+
+ACTOR Future<Void> setRateInfo(RestoreLoaderRateInfoRequest req, Reference<RestoreLoaderData> self) {
+	wait(delay(0.0));
+	if (self->updateRateRequests.find(req.id) == self->updateRateRequests.end()) { // new requests
+		self->updateRateRequests.insert(req.id);
+		if (req.cmd == LoadRangeFileOption::LoadRangeFile_Invalid) {
+			TraceEvent(SevError, "FastRestoreLoaderRestoreLoaderSetRateInfoRequestInvalid", self->id())
+			    .detail("RestoreLoaderRateInfoRequest", req.toString());
+		} else if (req.cmd == LoadRangeFileOption::LoadRangeFile_Complete) {
+			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderSetRateInfoRequestComplete", self->id())
+			    .detail("RestoreLoaderRateInfoRequest", req.toString());
+			self->isLoadRangeFileFinished = true;
+		} else if (req.cmd == LoadRangeFileOption::LoadRangeFile_Wait) {
+			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderSetRateInfoRequestStart", self->id())
+			    .suppressFor(10.0)
+			    .detail("RestoreLoaderRateInfoRequest", req.toString());
+		} else if (req.cmd == LoadRangeFileOption::LoadRangeFile_Continue) {
+			self->targetParseFileQueueBytes = req.targetParseFileQueueBytes;
+			self->targetWriteBytes = req.targetWriteBytes;
+			for (auto& param : req.params) {
+				self->rangeFilesToProcess.push_back(param); // Deduplicate request
+			}
+			self->loadRangeFilesTrigger.trigger();
+		}
+	}
+
+	req.reply.send(RestoreCommonReply(req.id, false));
 
 	return Void();
 }
@@ -123,6 +136,12 @@ ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database 
 	try {
 		int index = deterministicRandom()->randomInt(0, self->rangeFilesToProcess.size());
 		state LoadingParam param = self->rangeFilesToProcess[index];
+		if (self->processedRangeFiles.find(param) != self->processedRangeFiles.end()) {
+			TraceEvent(SevError, "FastRestoreLoaderProcessSameFileTwice", self->id())
+			    .detail("LoadingParam", param.toString());
+			return Void();
+		}
+		self->processedRangeFiles.insert(param);
 		self->currentParsingBytes += param.asset.len;
 		self->initBackupContainer(param.url);
 		state Future<KeyRange> range = parseRangeFileAndWriteDB(
@@ -131,7 +150,8 @@ ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database 
 		wait(success(range));
 
 		self->currentParsingBytes -= param.asset.len;
-		wait(updateRateInfo(self, LoadRangeFileOption::LoadRangeFile_Done, range.get(), param.rangeVersion.get()));
+		wait(updateRateInfo(self, LoadRangeFileOption::LoadRangeFile_Done, param.asset.filename, range.get(),
+		                    param.rangeVersion.get()));
 
 		self->loadRangeFilesTrigger.trigger();
 	} catch (Error& e) {
@@ -351,6 +371,10 @@ ACTOR Future<Void> restoreLoaderCore(RestoreLoaderInterface loaderInterf, int no
 				when(RestoreSysInfoRequest req = waitNext(loaderInterf.updateRestoreSysInfo.getFuture())) {
 					requestTypeStr = "updateRestoreSysInfo";
 					handleRestoreSysInfoRequest(req, self);
+				}
+				when(RestoreLoaderRateInfoRequest req = waitNext(loaderInterf.setRateInfo.getFuture())) {
+					requestTypeStr = "setRateInfo";
+					actors.add(setRateInfo(req, self));
 				}
 				when(RestoreLoadFileRequest req = waitNext(loaderInterf.loadFile.getFuture())) {
 					requestTypeStr = "loadFile";

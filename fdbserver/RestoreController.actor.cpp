@@ -109,62 +109,51 @@ ACTOR Future<Void> sampleBackups(Reference<RestoreControllerData> self, RestoreC
 }
 
 // Periodically update rate info for all loaders
-ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self) {
-	// Initialize loaderRateInfos
-	ASSERT(self->loadersInterf.size() == SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
-	for (auto& loader : self->loadersInterf) {
-		self->loaderRateInfos[loader.first] = LoaderRateInfo(); // Init it to default knob values
-	}
+void calculateLoaderRateInfo(Reference<RestoreControllerData> self) {
+	ASSERT(self->loaderRateInfos.size() == SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
 
-	loop {
-		try {
-			double totalRemainingBytes = 0;
-			for (auto& info : self->loaderRateInfos) {
-				totalRemainingBytes += info.second.remainingFileBytes;
-			}
-			double newTargetParseFileQueueBytes =
-			    std::min(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024,
-			             (self->rangeFilesBytes - self->dispatchedRangeFilesBytes) * 1.0 /
-			                 SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
-			newTargetParseFileQueueBytes =
-			    std::max(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB * 1024 * 1024, newTargetParseFileQueueBytes);
-			for (auto& info : self->loaderRateInfos) {
-				info.second.targetWriteBytes = (info.second.remainingFileBytes * 1.0 / totalRemainingBytes) *
-				                               SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024;
-				info.second.targetParseFileQueueBytes = newTargetParseFileQueueBytes;
-			}
+	try {
+		double totalRemainingBytes = 0;
+		for (auto& info : self->loaderRateInfos) {
+			totalRemainingBytes += info.second.remainingFileBytes;
+		}
+		double newTargetParseFileQueueBytes = std::min(
+		    SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024,
+		    (self->rangeFilesBytes - self->dispatchedRangeFilesBytes) * 1.0 / SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
+		newTargetParseFileQueueBytes =
+		    std::max(SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB * 1024 * 1024, newTargetParseFileQueueBytes);
+		for (auto& info : self->loaderRateInfos) {
+			info.second.targetWriteBytes = (info.second.remainingFileBytes * 1.0 / totalRemainingBytes) *
+			                               SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024;
+			info.second.targetParseFileQueueBytes = newTargetParseFileQueueBytes;
+		}
 
-			wait(delay(SERVER_KNOBS->FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY));
-		} catch (Error& e) {
-			if (e.code() != error_code_operation_cancelled) {
-				TraceEvent(SevError, "FastRestoreControllerUpdateLoaderRateInfoError", self->id()).error(e);
-				// g_network->isSimulated() ? SevWarnAlways : SevError
-			}
+	} catch (Error& e) {
+		if (e.code() != error_code_operation_cancelled) {
+			TraceEvent(SevError, "FastRestoreControllerUpdateLoaderRateInfoError", self->id()).error(e);
+			// g_network->isSimulated() ? SevWarnAlways : SevError
 		}
 	}
 }
 
-// Loader send RestoreLoaderRateInfoRequest request to controller for (1) updating rate info or
+// Loader send RestoreLoaderProgressInfoRequest request to controller for (1) updating its remaining work info or
 // (2) acking processed range file's keyrange-version info;
-// Controller respond to request by (1) serving loader with its rate info and which range files to load; and
-// (2) updating its key-range version map, which will be used to load log files
-ACTOR Future<Void> serverGetRateInfo(Reference<RestoreControllerData> self, RestoreRequest request) {
-	state Future<Void> updater = updateLoaderRateInfo(self);
-	loop {
+ACTOR Future<Void> serverUpdateLoaderWorkProgressInfo(Reference<RestoreControllerData> self, RestoreRequest request) {
+	loop { // alway run to ensure last reply is received
 		try {
-			RestoreLoaderRateInfoRequest req = waitNext(self->ci.getRateInfo.getFuture());
+			RestoreLoaderProgressInfoRequest req = waitNext(self->ci.getRateInfo.getFuture());
 			TraceEvent(SevDebug, "FastRestoreControllerGetRateInfo")
 			    .detail("RequestID", req.id)
 			    .detail("Loader", req.loaderID)
 			    .detail("RemainingFileBytes", req.remainingFileBytes);
 
 			if (req.cmd == LoadRangeFileOption::LoadRangeFile_Done) {
+				self->insertRangeVersion(req.range, req.version);
 				if (self->rangeFiles.empty()) {
 					TraceEvent("FastRestoreControllerDetectOneLoaderFinishRangeFiles", self->id())
 					    .detail("Loader", req.loaderID)
-					    .detail("RestoreLoaderRateInfoRequest", req.toString());
+					    .detail("RestoreLoaderProgressInfoRequest", req.toString());
 					self->finishedLoaders.insert(req.loaderID);
-					self->insertRangeVersion(req.range, req.version);
 
 					if (self->finishedLoaders.size() == self->loadersInterf.size()) {
 						// Sanity check loader ID matches
@@ -175,7 +164,6 @@ ACTOR Future<Void> serverGetRateInfo(Reference<RestoreControllerData> self, Rest
 						    .detail("FinishedLoaders", self->finishedLoaders.size());
 						// TODO: send LoadRangeFileOption::LoadRangeFile_Done to loaders so that loaders can stop trying
 						// to load files
-						break;
 					}
 				} else {
 					TraceEvent("FastRestoreControllerLoaderLeftIdle", self->id())
@@ -183,66 +171,87 @@ ACTOR Future<Void> serverGetRateInfo(Reference<RestoreControllerData> self, Rest
 					    .detail("Suggestion", "Increase targetParseFileQueueBytes");
 				}
 			}
+			self->loaderRateInfos[req.loaderID].remainingFileBytes = req.remainingFileBytes;
 
-			// Create RestoreLoaderRateInfoReply for the loader
-			LoaderRateInfo& rateInfo = self->loaderRateInfos[req.loaderID];
-			rateInfo.remainingFileBytes = req.remainingFileBytes;
-
-			RestoreLoaderRateInfoReply rateReply;
-			rateReply.id = req.id;
-			rateReply.cmd = LoadRangeFileOption::LoadRangeFile_Continue;
-			rateReply.targetWriteBytes = rateInfo.targetWriteBytes;
-			rateReply.targetParseFileQueueBytes = rateInfo.targetParseFileQueueBytes;
-			double dispatchBytes = 0;
-			while (1) {
-				if (dispatchBytes + req.remainingFileBytes >= rateInfo.targetParseFileQueueBytes ||
-				    self->rangeFiles.empty()) {
-					break;
-				}
-				// Random choose a file
-				int index = deterministicRandom()->randomInt(0, self->rangeFiles.size());
-				std::list<RestoreFileFR>::iterator file = self->rangeFiles.begin();
-				advance(file, index);
-
-				LoadingParam param;
-				param.url = request.url;
-				ASSERT(file->isRange);
-				param.isRangeFile = file->isRange;
-				param.rangeVersion = file->version;
-				param.blockSize = file->blockSize;
-				param.asset.uid = deterministicRandom()->randomUniqueID();
-				param.asset.filename = file->fileName;
-				param.asset.fileIndex = file->fileIndex; // TODO: Verify it has been set
-				param.asset.partitionId = file->partitionId;
-				param.asset.offset = 0;
-				param.asset.len = file->fileSize;
-				param.asset.range = request.range;
-				param.asset.beginVersion = file->version; // range file's version
-				param.asset.endVersion = file->version + 1; // exclusive
-				param.asset.addPrefix = request.addPrefix;
-				param.asset.removePrefix = request.removePrefix;
-				param.asset.batchIndex = -1; // unused
-
-				rateReply.params.push_back(param);
-				dispatchBytes += file->fileSize;
-
-				self->rangeFiles.erase(file);
-			}
-			if (dispatchBytes < 1) {
-				ASSERT(self->rangeFiles.empty());
-				rateReply.cmd = LoadRangeFileOption::LoadRangeFile_Complete;
-			}
-
-			req.reply.send(rateReply); // TODO: Must ensure the reply is received. Otherwise, we lose files
-			// We probably need to use a RequestStream to get it
+			req.reply.send(RestoreCommonReply(req.id, false));
 		} catch (Error& e) {
 			TraceEvent(g_network->isSimulated() ? SevWarnAlways : SevError, "FastRestoreControllerGetRateInfoError",
 			           self->id())
 			    .error(e);
 		}
 	}
-	// return when all range files have been dispatched and processed by loaders
-	return Void();
+}
+
+ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self, RestoreRequest restoreRequest) {
+	// Initialize loaderRateInfos
+	ASSERT(self->loadersInterf.size() == SERVER_KNOBS->FASTRESTORE_NUM_LOADERS);
+	for (auto& loader : self->loadersInterf) {
+		self->loaderRateInfos[loader.first] = LoaderRateInfo(); // Init it to default knob values
+	}
+
+	loop {
+		try {
+			calculateLoaderRateInfo(self);
+
+			std::vector<std::pair<UID, RestoreLoaderRateInfoRequest>> requests;
+			for (auto& loader : self->loaderRateInfos) {
+				// Create RestoreLoaderRateInfoReply for the loader
+				LoaderRateInfo& rateInfo = loader.second;
+
+				RestoreLoaderRateInfoRequest request;
+				request.id = deterministicRandom()->randomUniqueID();
+				request.cmd = LoadRangeFileOption::LoadRangeFile_Continue;
+				request.targetWriteBytes = rateInfo.targetWriteBytes;
+				request.targetParseFileQueueBytes = rateInfo.targetParseFileQueueBytes;
+				double dispatchBytes = 0;
+				while (1) {
+					if (dispatchBytes + rateInfo.remainingFileBytes >= rateInfo.targetParseFileQueueBytes ||
+					    self->rangeFiles.empty()) {
+						break;
+					}
+					// Random choose a file
+					int index = deterministicRandom()->randomInt(0, self->rangeFiles.size());
+					std::list<RestoreFileFR>::iterator file = self->rangeFiles.begin();
+					advance(file, index);
+
+					LoadingParam param;
+					param.url = restoreRequest.url;
+					ASSERT(file->isRange);
+					param.isRangeFile = file->isRange;
+					param.rangeVersion = file->version;
+					param.blockSize = file->blockSize;
+					param.asset.uid = deterministicRandom()->randomUniqueID();
+					param.asset.filename = file->fileName;
+					param.asset.fileIndex = file->fileIndex; // TODO: Verify it has been set
+					param.asset.partitionId = file->partitionId;
+					param.asset.offset = 0;
+					param.asset.len = file->fileSize;
+					param.asset.range = restoreRequest.range;
+					param.asset.beginVersion = file->version; // range file's version
+					param.asset.endVersion = file->version + 1; // exclusive
+					param.asset.addPrefix = restoreRequest.addPrefix;
+					param.asset.removePrefix = restoreRequest.removePrefix;
+					param.asset.batchIndex = -1; // unused
+
+					request.params.push_back(param);
+					dispatchBytes += file->fileSize;
+
+					self->rangeFiles.erase(file);
+				}
+				if (dispatchBytes < 1) {
+					ASSERT(self->rangeFiles.empty());
+					request.cmd = LoadRangeFileOption::LoadRangeFile_Complete;
+				}
+				requests.emplace_back(loader.first, request);
+			}
+			wait(sendBatchRequests(&RestoreLoaderInterface::setRateInfo, self->loadersInterf, requests));
+			wait(delay(SERVER_KNOBS->FASTRESTORE_CONTROLLER_UPDATE_RATEINFO_DELAY));
+		} catch (Error& e) {
+			TraceEvent(g_network->isSimulated() ? SevWarnAlways : SevError, "FastRestoreControllerGetRateInfoError",
+			           self->id())
+			    .error(e);
+		}
+	}
 }
 
 ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controllerWorker, Database cx) {
@@ -454,7 +463,8 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreControllerDa
 	self->rangeVersions = KeyRangeMap<Version>(minRangeVersion, allKeys.end); // initialize with correct minRangeVersion
 
 	// Load range files first
-	state Future<Void> fLoadRangeFiles = serverGetRateInfo(self, request);
+	state Future<Void> fLoadRangeFiles = serverUpdateLoaderWorkProgressInfo(self, request);
+	state Future<Void> fUpdateRateInfo = updateLoaderRateInfo(self, request);
 
 	// std::sort(rangeFiles.begin(), rangeFiles.end());
 	std::sort(logFiles.begin(), logFiles.end(), [](RestoreFileFR const& f1, RestoreFileFR const& f2) -> bool {
@@ -480,7 +490,7 @@ ACTOR static Future<Version> processRestoreRequest(Reference<RestoreControllerDa
 	// 	}
 	// }
 
-	wait(fLoadRangeFiles);
+	wait(fLoadRangeFiles && fUpdateRateInfo);
 
 	wait(distributeRestoreSysInfo(self));
 

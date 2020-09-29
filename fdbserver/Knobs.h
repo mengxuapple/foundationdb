@@ -31,6 +31,7 @@ static const int _PAGE_SIZE = 4096;
 
 class ServerKnobs : public Knobs {
 public:
+	// clang-format off
 	// Versions
 	int64_t VERSIONS_PER_SECOND;
 	int64_t MAX_VERSIONS_IN_FLIGHT;
@@ -596,9 +597,9 @@ public:
 	double FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB; // loader keeps so many MB of range files oustanding to parse
 	double FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB; // minimum outsanding range file bytes each loader should keep
 	double FASTRESTORE_WRITE_RANGE_TARGET_MB; // loaders' aggregated target write bandwidth
-	double
-	    FASTRESTORE_PARSE_RANGEQUEUE_RATIO; // ratio of FASTRESTORE_PARSE_RANGEQUEUE_* amount of data to parse currently
-	double FASTRESTORE_UPDATE_LOADER_RATEINFO_DELAY; // period (seconds) of updating loader rate info
+	double FASTRESTORE_PARSE_RANGEQUEUE_RATIO; // ratio of FASTRESTORE_PARSE_RANGEQUEUE_* amount of data to parse currently
+	double FASTRESTORE_LOADER_UPDATE_RATEINFO_DELAY; // period (seconds) for loader to send its workload info to controller
+	double FASTRESTORE_CONTROLLER_UPDATE_RATEINFO_DELAY; // period in seconds of updating loader rate info
 
 	int REDWOOD_DEFAULT_PAGE_SIZE;  // Page size for new Redwood files
 	int REDWOOD_KVSTORE_CONCURRENT_READS;  // Max number of simultaneous point or range reads in progress.
@@ -614,6 +615,7 @@ public:
 	// Server request latency measurement
 	int LATENCY_SAMPLE_SIZE;
 	double LATENCY_METRICS_LOGGING_INTERVAL;
+	// clang-format on
 
 	ServerKnobs();
 	void initialize(bool randomize = false, ClientKnobs* clientKnobs = NULL, bool isSimulated = false);

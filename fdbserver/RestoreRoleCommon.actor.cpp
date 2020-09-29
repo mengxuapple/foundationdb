@@ -156,8 +156,7 @@ bool okToReleaseTxns(double targetBytes, double applyingDataBytes) {
 	return applyingDataBytes < targetBytes;
 }
 
-ACTOR static Future<Void> shouldReleaseTransaction(double* targetBytes, double* applyingDataBytes,
-                                                   AsyncTrigger* releaseTxns) {
+ACTOR Future<Void> shouldReleaseTransaction(double* targetBytes, double* applyingDataBytes, AsyncTrigger* releaseTxns) {
 	loop {
 		if (okToReleaseTxns(*targetBytes, *applyingDataBytes)) {
 			break;

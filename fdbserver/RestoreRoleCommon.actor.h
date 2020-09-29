@@ -128,8 +128,7 @@ void updateProcessStats(Reference<RestoreRoleData> self);
 ACTOR Future<Void> updateProcessMetrics(Reference<RestoreRoleData> self);
 ACTOR Future<Void> traceProcessMetrics(Reference<RestoreRoleData> self, std::string role);
 ACTOR Future<Void> traceRoleVersionBatchProgress(Reference<RestoreRoleData> self, std::string role);
-ACTOR static Future<Void> shouldReleaseTransaction(double* targetBytes, double* applyingDataBytes,
-                                                   AsyncTrigger* releaseTxns);
+ACTOR Future<Void> shouldReleaseTransaction(double* targetBytes, double* applyingDataBytes, AsyncTrigger* releaseTxns);
 bool okToReleaseTxns(double targetBytes, double applyingDataBytes);
 
 #include "flow/unactorcompiler.h"

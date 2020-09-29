@@ -55,6 +55,7 @@ struct RestoreApplierInterface;
 struct RestoreFinishRequest;
 struct RestoreSamplesRequest;
 struct RestoreUpdateRateRequest;
+struct RestoreLoaderProgressInfoRequest;
 struct RestoreLoaderRateInfoRequest;
 
 // RestoreSysInfo includes information each (type of) restore roles should know.
@@ -137,6 +138,7 @@ struct RestoreLoaderInterface : RestoreRoleInterface {
 	RequestStream<RestoreVersionBatchRequest> finishVersionBatch;
 	RequestStream<RestoreSimpleRequest> collectRestoreRoleInterfaces;
 	RequestStream<RestoreFinishRequest> finishRestore;
+	RequestStream<RestoreLoaderRateInfoRequest> setRateInfo;
 
 	bool operator==(RestoreWorkerInterface const& r) const { return id() == r.id(); }
 	bool operator!=(RestoreWorkerInterface const& r) const { return id() != r.id(); }
@@ -158,12 +160,13 @@ struct RestoreLoaderInterface : RestoreRoleInterface {
 		finishVersionBatch.getEndpoint(TaskPriority::RestoreLoaderFinishVersionBatch);
 		collectRestoreRoleInterfaces.getEndpoint(TaskPriority::LoadBalancedEndpoint);
 		finishRestore.getEndpoint(TaskPriority::LoadBalancedEndpoint);
+		setRateInfo.getEndpoint(TaskPriority::LoadBalancedEndpoint);
 	}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar, *(RestoreRoleInterface*)this, heartbeat, updateRestoreSysInfo, loadFile, sendMutations,
-		           initVersionBatch, finishVersionBatch, collectRestoreRoleInterfaces, finishRestore);
+		           initVersionBatch, finishVersionBatch, collectRestoreRoleInterfaces, finishRestore, setRateInfo);
 	}
 };
 
@@ -212,7 +215,7 @@ struct RestoreControllerInterface : RestoreRoleInterface {
 	constexpr static FileIdentifier file_identifier = 54253047;
 
 	RequestStream<RestoreSamplesRequest> samples;
-	RequestStream<RestoreLoaderRateInfoRequest> getRateInfo;
+	RequestStream<RestoreLoaderProgressInfoRequest> getRateInfo;
 
 	bool operator==(RestoreWorkerInterface const& r) const { return id() == r.id(); }
 	bool operator!=(RestoreWorkerInterface const& r) const { return id() != r.id(); }
@@ -485,7 +488,8 @@ enum class LoadRangeFileOption {
 
 extern std::vector<std::string> LoadRangeFileOptionStr;
 
-struct RestoreLoaderRateInfoReply : TimedRequest {
+// Restore Controller sends workload (LoadingParams) and target work rate to loaders
+struct RestoreLoaderRateInfoRequest : TimedRequest {
 	constexpr static FileIdentifier file_identifier = 34077903;
 	UID id;
 	std::vector<LoadingParam> params; // Each element is a parameter to load a range file;
@@ -493,42 +497,44 @@ struct RestoreLoaderRateInfoReply : TimedRequest {
 	double targetWriteBytes; // The amount of txn bytes kept outstanding to DB; for write traffic control
 	LoadRangeFileOption cmd;
 
-	RestoreLoaderRateInfoReply() = default;
-	explicit RestoreLoaderRateInfoReply(UID id, std::vector<LoadingParam> params, double targetParseFileQueueBytes,
-	                                    double targetWriteBytes, LoadRangeFileOption cmd)
+	ReplyPromise<RestoreCommonReply> reply;
+
+	RestoreLoaderRateInfoRequest() = default;
+	explicit RestoreLoaderRateInfoRequest(UID id, std::vector<LoadingParam> params, double targetParseFileQueueBytes,
+	                                      double targetWriteBytes, LoadRangeFileOption cmd)
 	  : id(id), params(params), targetParseFileQueueBytes(targetParseFileQueueBytes),
 	    targetWriteBytes(targetWriteBytes), cmd(cmd) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, id, params, targetParseFileQueueBytes, targetWriteBytes, cmd);
+		serializer(ar, id, params, targetParseFileQueueBytes, targetWriteBytes, cmd, reply);
 	}
 
 	std::string toString() const {
 		std::stringstream ss;
-		ss << "ID:" << id.toString() << " params:" << params.size()
+		ss << "RestoreLoaderRateInfoRequest ID:" << id.toString() << " params:" << params.size()
 		   << " targetParseFileQueueBytes:" << targetParseFileQueueBytes << " targetWriteBytes:" << targetWriteBytes
 		   << " cmd:" << LoadRangeFileOptionStr[(int)cmd];
 		return ss.str();
 	}
 };
 
-// loader pulls from controller what files to load at which rate via this request
-struct RestoreLoaderRateInfoRequest : TimedRequest {
+// loader sends controller its status and result of parsing a range file
+struct RestoreLoaderProgressInfoRequest : TimedRequest {
 	constexpr static FileIdentifier file_identifier = 34077904;
 	UID id;
 	UID loaderID;
 	double remainingFileBytes; // remaining files that has not been parsed
 	LoadRangeFileOption cmd;
-	std::string filename; // range file name
+	std::string filename; // range file name; not used for now
 	KeyRange range; // key range of range file name
 	Version version; // version of the key range
 
-	ReplyPromise<RestoreLoaderRateInfoReply> reply;
+	ReplyPromise<RestoreCommonReply> reply;
 
-	RestoreLoaderRateInfoRequest() = default;
-	explicit RestoreLoaderRateInfoRequest(UID id, UID loaderID, double remainingFileBytes, LoadRangeFileOption cmd,
-	                                      KeyRange range, Version version)
+	RestoreLoaderProgressInfoRequest() = default;
+	explicit RestoreLoaderProgressInfoRequest(UID id, UID loaderID, double remainingFileBytes, LoadRangeFileOption cmd,
+	                                          std::string filename, KeyRange range, Version version)
 	  : id(id), loaderID(loaderID), remainingFileBytes(remainingFileBytes), cmd(cmd), range(range), version(version) {
 		if (cmd == LoadRangeFileOption::LoadRangeFile_Done) {
 			ASSERT_WE_THINK(filename.size() > 0 && range != KeyRange() && version != Version());
@@ -542,7 +548,7 @@ struct RestoreLoaderRateInfoRequest : TimedRequest {
 
 	std::string toString() const {
 		std::stringstream ss;
-		ss << "ID:" << id.toString() << " Loader:" << loaderID.toString()
+		ss << "RestoreLoaderProgressInfoRequest ID:" << id.toString() << " Loader:" << loaderID.toString()
 		   << " RemainingFileBytes:" << remainingFileBytes << " cmd:" << LoadRangeFileOptionStr[(int)cmd];
 		if (cmd == LoadRangeFileOption::LoadRangeFile_Done) {
 			ss << " rangeFilename:" << filename << " keyRange:" << range.toString() << " version:" << version;
