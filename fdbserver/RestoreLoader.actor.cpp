@@ -74,7 +74,7 @@ ACTOR static Future<KeyRange> parseRangeFileAndWriteDB(Reference<IBackupContaine
                                                        double* applyingDataBytes, double* targetWriteBytes,
                                                        AsyncTrigger* releaseTxnTrigger, Database cx, UID loaderID);
 
-// updateRateInfo is used periodically in the background to fetch loading params, and
+// updateRateInfo is used periodically in the background to send loader's current load information to controller
 // it is also started when loader finishes processing a loading param (range file)
 ACTOR Future<Void> updateRateInfo(Reference<RestoreLoaderData> self,
                                   LoadRangeFileOption cmd = LoadRangeFileOption::LoadRangeFile_Continue,
@@ -82,11 +82,6 @@ ACTOR Future<Void> updateRateInfo(Reference<RestoreLoaderData> self,
 	loop {
 		if (self->isLoadRangeFileFinished) {
 			break;
-		}
-
-		if (cmd != LoadRangeFileOption::LoadRangeFile_Done) {
-			cmd = self->getRemainingFileBytes() < 1 ? LoadRangeFileOption::LoadRangeFile_Complete
-			                                        : LoadRangeFileOption::LoadRangeFile_Continue;
 		}
 
 		RestoreCommonReply reply = wait(self->ci.getRateInfo.getReply(
@@ -102,6 +97,7 @@ ACTOR Future<Void> updateRateInfo(Reference<RestoreLoaderData> self,
 	return Void();
 }
 
+// setRateInfo receives LoadingParams from controller
 ACTOR Future<Void> setRateInfo(RestoreLoaderRateInfoRequest req, Reference<RestoreLoaderData> self) {
 	wait(delay(0.0));
 	if (self->updateRateRequests.find(req.id) == self->updateRateRequests.end()) { // new requests
@@ -138,7 +134,7 @@ ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database 
 		int index = deterministicRandom()->randomInt(0, self->rangeFilesToProcess.size());
 		state std::list<LoadingParam>::iterator paramIter = self->rangeFilesToProcess.begin();
 		std::advance(paramIter, index);
-		LoadingParam param = *paramIter;
+		state LoadingParam param = *paramIter;
 		self->rangeFilesToProcess.erase(paramIter); // Remove param from rangeFilesToProcess
 
 		if (self->processedRangeFiles.find(param) != self->processedRangeFiles.end()) {
@@ -182,7 +178,6 @@ ACTOR Future<Void> traceRateInfo(Reference<RestoreLoaderData> self) {
 
 		wait(delay(5.0));
 	}
-	return Void();
 }
 
 // Load range files and apply parsed kv to DB

@@ -118,10 +118,9 @@ void calculateLoaderRateInfo(Reference<RestoreControllerData> self) {
 			totalRemainingBytes += info.second.remainingFileBytes;
 		}
 		for (auto& info : self->loaderRateInfos) {
-			double newTargetParseFileQueueBytes = std::max(
+			info.second.targetParseFileQueueBytes = std::max(
 			    SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB * 1024 * 1024,
 			    SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 1024 * 1024 - info.second.remainingFileBytes);
-			info.second.targetParseFileQueueBytes = newTargetParseFileQueueBytes;
 			info.second.targetWriteBytes = std::max(SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MIN_MB,
 			                                        (info.second.remainingFileBytes * 1.0 / totalRemainingBytes) *
 			                                            SERVER_KNOBS->FASTRESTORE_WRITE_RANGE_TARGET_MB * 1024 * 1024);
