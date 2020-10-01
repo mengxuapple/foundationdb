@@ -379,7 +379,8 @@ ACTOR Future<Void> _restoreWorker(Database cx, LocalityData locality) {
 
 	wait(monitorleader(leader, cx, myWorkerInterf));
 
-	TraceEvent("FastRestoreWorker", myWorkerInterf.id()).detail("LeaderElection", "WaitForLeader");
+	TraceEvent("FastRestoreWorkerLeaderElectionDone", myWorkerInterf.id())
+	    .detail("IamLeader", leader->get() == myWorkerInterf);
 	if (leader->get() == myWorkerInterf) {
 		// Restore controller worker: doLeaderThings();
 		myWork = startRestoreWorkerLeader(self, myWorkerInterf, cx);

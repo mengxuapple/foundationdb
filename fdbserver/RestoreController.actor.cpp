@@ -137,10 +137,11 @@ void calculateLoaderRateInfo(Reference<RestoreControllerData> self) {
 // Loader send RestoreLoaderProgressInfoRequest request to controller for (1) updating its remaining work info or
 // (2) acking processed range file's keyrange-version info;
 ACTOR Future<Void> serverUpdateLoaderWorkProgressInfo(Reference<RestoreControllerData> self, RestoreRequest request) {
+	TraceEvent(SevInfo, "FastRestoreControllerUpdateLoaderWorkProgresInfoStart", self->id());
 	loop { // alway run to ensure last reply is received
 		try {
 			RestoreLoaderProgressInfoRequest req = waitNext(self->ci.getRateInfo.getFuture());
-			TraceEvent(SevDebug, "FastRestoreControllerGetRateInfo")
+			TraceEvent(SevDebug, "FastRestoreControllerGetRateInfo", self->id())
 			    .detail("RequestID", req.id)
 			    .detail("Loader", req.loaderID)
 			    .detail("RemainingFileBytes", req.remainingFileBytes);
@@ -178,6 +179,7 @@ ACTOR Future<Void> serverUpdateLoaderWorkProgressInfo(Reference<RestoreControlle
 			    .error(e);
 		}
 	}
+	//TraceEvent(SevInfo, "FastRestoreControllerUpdateLoaderWorkProgresInfoDone", self->id());
 }
 
 ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self, RestoreRequest restoreRequest) {
@@ -187,6 +189,7 @@ ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self, R
 		self->loaderRateInfos[loader.first] = LoaderRateInfo(); // Init it to default knob values
 	}
 
+	TraceEvent(SevInfo, "FastRestoreControllerUpdateLoaderRateInfoStart", self->id());
 	loop {
 		try {
 			calculateLoaderRateInfo(self);
@@ -240,6 +243,9 @@ ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self, R
 					ASSERT(self->rangeFiles.empty());
 					request.cmd = LoadRangeFileOption::LoadRangeFile_Complete;
 				}
+				TraceEvent(SevInfo, "FastRestoreControllerUpdateLoaderRateInfo", self->id())
+				    .detail("Loader", loader.first)
+				    .detail("RestoreLoaderRateInfoRequest", request.toString());
 				requests.emplace_back(loader.first, request);
 			}
 			wait(sendBatchRequests(&RestoreLoaderInterface::setRateInfo, self->loadersInterf, requests));
@@ -250,6 +256,7 @@ ACTOR Future<Void> updateLoaderRateInfo(Reference<RestoreControllerData> self, R
 			    .error(e);
 		}
 	}
+	// raceEvent(SevInfo, "FastRestoreControllerUpdateLoaderRateInfoDone", self->id());
 }
 
 ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controllerWorker, Database cx) {
@@ -260,6 +267,7 @@ ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controlle
 	state Future<Void> error = actorCollection(self->addActor.getFuture());
 
 	try {
+		TraceEvent("FastRestoreControllerStart", self->id());
 		// recruitRestoreRoles must come after controllerWorker has finished collectWorkerInterface
 		wait(recruitRestoreRoles(controllerWorker, self));
 
@@ -275,6 +283,7 @@ ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controlle
 			TraceEvent(SevError, "FastRestoreControllerStart").detail("Reason", "Unexpected unhandled error").error(e);
 		}
 	}
+	TraceEvent("FastRestoreControllerTerminated", self->id());
 
 	return Void();
 }
@@ -285,7 +294,7 @@ ACTOR Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> controllerWo
 	state int nodeIndex = 0;
 	state RestoreRole role = RestoreRole::Invalid;
 
-	TraceEvent("FastRestoreController", controllerData->id())
+	TraceEvent("FastRestoreControllerRecruitRoles", controllerData->id())
 	    .detail("RecruitRestoreRoles", controllerWorker->workerInterfaces.size())
 	    .detail("NumLoaders", SERVER_KNOBS->FASTRESTORE_NUM_LOADERS)
 	    .detail("NumAppliers", SERVER_KNOBS->FASTRESTORE_NUM_APPLIERS);
@@ -312,7 +321,7 @@ ACTOR Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> controllerWo
 			break;
 		}
 
-		TraceEvent("FastRestoreController", controllerData->id())
+		TraceEvent("FastRestoreControllerRecruitRoles", controllerData->id())
 		    .detail("WorkerNode", workerInterf.first)
 		    .detail("NodeRole", role)
 		    .detail("NodeIndex", nodeIndex);
@@ -335,7 +344,7 @@ ACTOR Future<Void> recruitRestoreRoles(Reference<RestoreWorkerData> controllerWo
 		}
 	}
 	controllerData->recruitedRoles.send(Void());
-	TraceEvent("FastRestoreRecruitRestoreRolesDone", controllerData->id())
+	TraceEvent("FastRestoreControllerRecruitRolesDone", controllerData->id())
 	    .detail("Workers", controllerWorker->workerInterfaces.size())
 	    .detail("RecruitedRoles", replies.size());
 

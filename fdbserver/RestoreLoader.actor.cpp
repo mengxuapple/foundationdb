@@ -131,6 +131,7 @@ ACTOR Future<Void> setRateInfo(RestoreLoaderRateInfoRequest req, Reference<Resto
 
 ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database cx) {
 	try {
+		ASSERT(self->rangeFilesToProcess.size() > 0);
 		int index = deterministicRandom()->randomInt(0, self->rangeFilesToProcess.size());
 		state std::list<LoadingParam>::iterator paramIter = self->rangeFilesToProcess.begin();
 		std::advance(paramIter, index);
@@ -189,7 +190,8 @@ ACTOR Future<Void> loadRangeFiles(Reference<RestoreLoaderData> self, Database cx
 			break;
 		}
 		if (self->currentParsingBytes <=
-		    SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_RATIO * self->targetParseFileQueueBytes) {
+		        SERVER_KNOBS->FASTRESTORE_PARSE_RANGEQUEUE_RATIO * self->targetParseFileQueueBytes &&
+		    self->rangeFilesToProcess.size() > 0) {
 			// Parse RHS amount of range files concurrently.
 			// If we process too small amount of range files concurrently, loader will not fully utilize its CPU;
 			// but if we process too much, loaders won't get new range file's LoadingParam in time and waste its CPU
