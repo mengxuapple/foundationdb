@@ -114,14 +114,15 @@ ACTOR Future<Void> setRateInfo(RestoreLoaderRateInfoRequest req, Reference<Resto
 			    .detail("RestoreLoaderRateInfoRequest", req.toString());
 			self->isLoadRangeFileFinished = true;
 		} else if (req.cmd == LoadRangeFileOption::LoadRangeFile_Wait) {
-			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderSetRateInfoRequestStart", self->id())
+			TraceEvent(SevInfo, "FastRestoreLoaderRestoreLoaderSetRateInfoRequestWait", self->id())
 			    .suppressFor(10.0)
 			    .detail("RestoreLoaderRateInfoRequest", req.toString());
 		} else if (req.cmd == LoadRangeFileOption::LoadRangeFile_Continue) {
 			self->targetParseFileQueueBytes = req.targetParseFileQueueBytes;
 			self->targetWriteBytes = req.targetWriteBytes;
 			for (auto& param : req.params) {
-				self->rangeFilesToProcess.push_back(param); // Deduplicate request
+				self->rangeFilesToProcess.push_back(param);
+				self->totalFileBytes += param.asset.len;
 			}
 			self->loadRangeFilesTrigger.trigger();
 		}
@@ -135,7 +136,11 @@ ACTOR Future<Void> setRateInfo(RestoreLoaderRateInfoRequest req, Reference<Resto
 ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database cx) {
 	try {
 		int index = deterministicRandom()->randomInt(0, self->rangeFilesToProcess.size());
-		state LoadingParam param = self->rangeFilesToProcess[index];
+		state std::list<LoadingParam>::iterator paramIter = self->rangeFilesToProcess.begin();
+		std::advance(paramIter, index);
+		LoadingParam param = *paramIter;
+		self->rangeFilesToProcess.erase(paramIter); // Remove param from rangeFilesToProcess
+
 		if (self->processedRangeFiles.find(param) != self->processedRangeFiles.end()) {
 			TraceEvent(SevError, "FastRestoreLoaderProcessSameFileTwice", self->id())
 			    .detail("LoadingParam", param.toString());
@@ -150,9 +155,9 @@ ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database 
 		wait(success(range));
 
 		self->currentParsingBytes -= param.asset.len;
+		self->totalProcessedBytes += param.asset.len; // TODO: Account in each txn
 		wait(updateRateInfo(self, LoadRangeFileOption::LoadRangeFile_Done, param.asset.filename, range.get(),
 		                    param.rangeVersion.get()));
-
 		self->loadRangeFilesTrigger.trigger();
 	} catch (Error& e) {
 		if (e.code() != error_code_actor_cancelled) {
@@ -160,6 +165,23 @@ ACTOR Future<Void> loadOneRangeFile(Reference<RestoreLoaderData> self, Database 
 		}
 	}
 
+	return Void();
+}
+
+ACTOR Future<Void> traceRateInfo(Reference<RestoreLoaderData> self) {
+	loop {
+		TraceEvent("FastRestoreLoaderTraceRateInfo", self->id())
+		    .detail("TargetParseFileQueueBytes", self->targetParseFileQueueBytes)
+		    .detail("TotalFileBytes", self->totalFileBytes)
+		    .detail("TotalProcessedBytes", self->totalProcessedBytes)
+		    .detail("ApplyingDataBytes", self->applyingDataBytes)
+		    .detail("AppliedBytes", self->appliedBytes)
+		    .detail("CurrentParsingBytes", self->currentParsingBytes)
+		    .detail("ProcessedRangeFiles", self->processedRangeFiles.size())
+		    .detail("RangeFilesToProcess", self->rangeFilesToProcess.size());
+
+		wait(delay(5.0));
+	}
 	return Void();
 }
 
@@ -177,6 +199,8 @@ ACTOR Future<Void> loadRangeFiles(Reference<RestoreLoaderData> self, Database cx
 			// If we process too small amount of range files concurrently, loader will not fully utilize its CPU;
 			// but if we process too much, loaders won't get new range file's LoadingParam in time and waste its CPU
 			// while it waits for new loading params each time it finishes processing a bunch of range files.
+			// This value should be significantly bigger than targetWriteBytes so that
+			// loader can keep a constant write pressure to DB
 			fLoads.push_back(loadOneRangeFile(self, cx));
 		} else {
 			wait(self->loadRangeFilesTrigger.onTrigger());
@@ -357,6 +381,7 @@ ACTOR Future<Void> restoreLoaderCore(RestoreLoaderInterface loaderInterf, int no
 
 	self->addActor.send(dispatchRequests(self));
 	self->addActor.send(updateRateInfo(self));
+	self->addActor.send(traceRateInfo(self));
 	self->addActor.send(loadRangeFiles(self, cx));
 
 	loop {

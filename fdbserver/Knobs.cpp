@@ -663,6 +663,7 @@ void ServerKnobs::initialize(bool randomize, ClientKnobs* clientKnobs, bool isSi
 	init( FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB,              4096 ); if( randomize && BUGGIFY ) { FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB = deterministicRandom()->random01() * 2 * 4096;}
 	init( FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB,                    10 ); if( randomize && BUGGIFY ) { FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB = FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB * 0.01;}
 	init( FASTRESTORE_WRITE_RANGE_TARGET_MB,                     100 ); if( randomize && BUGGIFY ) { FASTRESTORE_WRITE_RANGE_TARGET_MB = deterministicRandom()->random01() * 200 + 10;}
+	init( FASTRESTORE_WRITE_RANGE_TARGET_MIN_MB,                   5 ); if( randomize && BUGGIFY ) { FASTRESTORE_WRITE_RANGE_TARGET_MIN_MB = deterministicRandom()->random01() * 200 + 10;}
 	init( FASTRESTORE_PARSE_RANGEQUEUE_RATIO,                    0.2 ); if( randomize && BUGGIFY ) { FASTRESTORE_PARSE_RANGEQUEUE_RATIO = deterministicRandom()->random01() + 0.01;}
 	init( FASTRESTORE_LOADER_UPDATE_RATEINFO_DELAY,              1.0 ); if( randomize && BUGGIFY ) { FASTRESTORE_LOADER_UPDATE_RATEINFO_DELAY = deterministicRandom()->random01() * 2 + 0.1;}
 	init( FASTRESTORE_CONTROLLER_UPDATE_RATEINFO_DELAY,          1.0 ); if( randomize && BUGGIFY ) { FASTRESTORE_CONTROLLER_UPDATE_RATEINFO_DELAY = deterministicRandom()->random01() * 2 + 0.1;}

@@ -815,7 +815,8 @@ ACTOR Future<Void> commitBatch(
 
 	// Queuing pre-resolution commit processing
 	TEST(self->latestLocalCommitBatchResolving.get() < localBatchNumber - 1);
-	wait(self->latestLocalCommitBatchResolving.whenAtLeast(localBatchNumber-1));
+	wait(self->latestLocalCommitBatchResolving.whenAtLeast(
+	    localBatchNumber - 1)); // make sure master has only one outstanding GetCommitVersion request per proxy
 	state Future<Void> releaseDelay = delay(std::min(SERVER_KNOBS->MAX_PROXY_COMPUTE, batchOperations*self->commitComputePerOperation[latencyBucket]), TaskPriority::ProxyMasterVersionReply);
 
 	if (debugID.present())

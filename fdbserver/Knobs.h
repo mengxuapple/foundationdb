@@ -597,6 +597,7 @@ public:
 	double FASTRESTORE_PARSE_RANGEQUEUE_DEFAULT_MB; // loader keeps so many MB of range files oustanding to parse
 	double FASTRESTORE_PARSE_RANGEQUEUE_MIN_MB; // minimum outsanding range file bytes each loader should keep
 	double FASTRESTORE_WRITE_RANGE_TARGET_MB; // loaders' aggregated target write bandwidth
+	double FASTRESTORE_WRITE_RANGE_TARGET_MIN_MB; // minimum outstanding txn writes to DB
 	double FASTRESTORE_PARSE_RANGEQUEUE_RATIO; // ratio of FASTRESTORE_PARSE_RANGEQUEUE_* amount of data to parse currently
 	double FASTRESTORE_LOADER_UPDATE_RATEINFO_DELAY; // period (seconds) for loader to send its workload info to controller
 	double FASTRESTORE_CONTROLLER_UPDATE_RATEINFO_DELAY; // period in seconds of updating loader rate info

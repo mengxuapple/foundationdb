@@ -177,7 +177,7 @@ struct RestoreLoaderData : RestoreRoleData, public ReferenceCounted<RestoreLoade
 	double currentParsingBytes; // bytes of files that are currently being parsed and writing to DB
 	std::set<LoadingParam>
 	    processedRangeFiles; // processed range files for a key range and version range restore request
-	std::vector<LoadingParam> rangeFilesToProcess; // queue of unprocessed range file loading commands
+	std::list<LoadingParam> rangeFilesToProcess; // queue of unprocessed range file loading commands
 	std::set<UID> updateRateRequests; // received update rate requests. Used to filter out duplicate requests
 	AsyncTrigger releaseTxnTrigger;
 	AsyncTrigger loadRangeFilesTrigger;
