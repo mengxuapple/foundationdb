@@ -235,6 +235,7 @@ ACTOR Future<Void> waitForVersion( LogRouterData *self, Version ver ) {
 	return Void();
 }
 
+// Guess: read data from source queue and commit it on the self's queue
 ACTOR Future<Void> pullAsyncData( LogRouterData *self ) {
 	state Future<Void> dbInfoChange = Void();
 	state Reference<ILogSystem::IPeekCursor> r;

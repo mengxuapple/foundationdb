@@ -546,6 +546,7 @@ ACTOR Future<Void> commitBatch(
 
 	++self->stats.commitBatchIn;
 
+	// Create a debugID for th txn batch
 	for (int t = 0; t<trs.size(); t++) {
 		if (trs[t].debugID.present()) {
 			if (!debugID.present())
@@ -992,6 +993,7 @@ ACTOR Future<Void> commitBatch(
 
 	state LogSystemDiskQueueAdapter::CommitMessage msg = storeCommits.back().first.get();
 
+	// AfterStoreCommits: work has been done with the transaction state store,
 	if (debugID.present())
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.AfterStoreCommits");
 

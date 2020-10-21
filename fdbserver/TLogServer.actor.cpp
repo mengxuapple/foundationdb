@@ -67,6 +67,7 @@ struct TLogQueueEntryRef {
 	}
 };
 
+// Q: what is AlternativeTLogQueueEntryRef? Why do we need it?
 struct AlternativeTLogQueueEntryRef {
 	UID id;
 	Version version;
@@ -1794,7 +1795,8 @@ ACTOR Future<Void> tLogCommit(
 	{
 		tlogDebugID = nondeterministicRandom()->randomUniqueID();
 		g_traceBatch.addAttach("CommitAttachID", req.debugID.get().first(), tlogDebugID.get().first());
-		g_traceBatch.addEvent("CommitDebug", tlogDebugID.get().first(), "TLog.tLogCommit.BeforeWaitForVersion");
+		g_traceBatch.addEvent("CommitDebug", tlogDebugID.get().first(),
+		                      "TLog.tLogCommit.BeforeWaitForVersion"); // Add the req.debugID in the field as well
 	}
 
 	logData->minKnownCommittedVersion = std::max(logData->minKnownCommittedVersion, req.minKnownCommittedVersion);
@@ -2265,6 +2267,7 @@ ACTOR Future<Void> pullAsyncData( TLogData* self, Reference<LogData> logData, st
 		state double waitStartT = 0;
 		while( self->bytesInput - self->bytesDurable >= SERVER_KNOBS->TLOG_HARD_LIMIT_BYTES && !logData->stopped ) {
 			if (now() - waitStartT >= 1) {
+				// SevWarn should be SevWarnAlways. It means tLog's data is not peeked and popped by SS
 				TraceEvent(SevWarn, "TLogUpdateLag", logData->logId)
 					.detail("Version", logData->version.get())
 					.detail("PersistentDataVersion", logData->persistentDataVersion)

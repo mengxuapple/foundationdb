@@ -1184,6 +1184,7 @@ ACTOR Future<Void> bufferedGetMore( ILogSystem::BufferedCursor* self, TaskPriori
 	return Void();
 }
 
+// Returned future waits for messages to be ready
 Future<Void> ILogSystem::BufferedCursor::getMore(TaskPriority taskID) {
 	if( hasMessage() ) {
 		return Void();
