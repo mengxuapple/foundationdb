@@ -535,6 +535,7 @@ struct ClientStatusStats {
 	}
 };
 
+// Q: Why do we need clientStatusInfoMap?
 OpenDatabaseRequest ClientData::getRequest() {
 	OpenDatabaseRequest req;
 
@@ -621,7 +622,7 @@ ACTOR Future<Void> getClientInfoFromLeader( Reference<AsyncVar<Optional<ClusterC
 }
 
 ACTOR Future<Void> monitorLeaderForProxies( Key clusterKey, vector<NetworkAddress> coordinators, ClientData* clientData ) {
-	state vector< ClientLeaderRegInterface > clientLeaderServers;
+	state vector<ClientLeaderRegInterface> clientLeaderServers; // Coordinators' interfaces
 	state AsyncTrigger nomineeChange;
 	state std::vector<Optional<LeaderInfo>> nominees;
 	state Future<Void> allActors;
@@ -645,7 +646,7 @@ ACTOR Future<Void> monitorLeaderForProxies( Key clusterKey, vector<NetworkAddres
 		Optional<std::pair<LeaderInfo, bool>> leader = getLeader(nominees);
 		TraceEvent("MonitorLeaderForProxiesChange").detail("NewLeader", leader.present() ? leader.get().first.changeID : UID(1,1)).detail("Key", clusterKey.printable());
 		if (leader.present()) {
-			if( leader.get().first.forward ) {
+			if (leader.get().first.forward) { // Why do we need forward field?
 				ClientDBInfo outInfo;
 				outInfo.id = deterministicRandom()->randomUniqueID();
 				outInfo.forward = leader.get().first.serializedInfo;
@@ -682,6 +683,7 @@ void shrinkProxyList( ClientDBInfo& ni, std::vector<UID>& lastProxyUIDs, std::ve
 			deterministicRandom()->randomShuffle(lastProxies);
 			lastProxies.resize(CLIENT_KNOBS->MAX_PROXY_CONNECTIONS);
 			for(int i = 0; i < lastProxies.size(); i++) {
+				// Q: Can we put proxy index in the Proxy field?
 				TraceEvent("ConnectedProxy").detail("Proxy", lastProxies[i].id());
 			}
 		}
@@ -691,6 +693,8 @@ void shrinkProxyList( ClientDBInfo& ni, std::vector<UID>& lastProxyUIDs, std::ve
 }
 
 // Leader is the process that will be elected by coordinators as the cluster controller
+// connFile: The latest cluster file provided by DBA to connect. It may have incorrect coordinators. A valid
+// coordinator will return the correct cluster file to overwrite the wrong one and update info.intermediateConnFile
 ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration( Reference<ClusterConnectionFile> connFile, Reference<AsyncVar<ClientDBInfo>> clientInfo, MonitorLeaderInfo info, Reference<ReferencedObject<Standalone<VectorRef<ClientVersionRef>>>> supportedVersions, Key traceLogGroup) {
 	state ClusterConnectionString cs = info.intermediateConnFile->getConnectionString();
 	state vector<NetworkAddress> addrs = cs.coordinators();
@@ -702,7 +706,8 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration( Reference<ClusterCo
 
 	deterministicRandom()->randomShuffle(addrs);
 	loop {
-		state ClientLeaderRegInterface clientLeaderServer( addrs[idx] );
+		state ClientLeaderRegInterface clientLeaderServer(
+		    addrs[idx]); // The randomly chosen coordinator to get ClientDBInfo
 		state OpenDatabaseCoordRequest req;
 		req.clusterKey = cs.clusterKey();
 		req.coordinators = cs.coordinators();
@@ -720,9 +725,9 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration( Reference<ClusterCo
 			if(connFile->canGetFilename()) {
 				// Don't log a SevWarnAlways initially to account for transient issues (e.g. someone else changing the file right before us)
 				TraceEvent(now() - incorrectTime.get() > 300 ? SevWarnAlways : SevWarn, "IncorrectClusterFileContents")
-					.detail("Filename", connFile->getFilename())
-					.detail("ConnectionStringFromFile", fileConnectionString.toString())
-					.detail("CurrentConnectionString", connectionString);
+				    .detail("Filename", connFile->getFilename())
+				    .detail("ConnectionStringFromFile", fileConnectionString.toString()) // new connection string
+				    .detail("CurrentConnectionString", connectionString); // old connection string in memory
 			}
 		}
 		else {
@@ -730,14 +735,17 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration( Reference<ClusterCo
 		}
 
 		state ErrorOr<CachedSerialization<ClientDBInfo>> rep = wait( clientLeaderServer.openDatabase.tryGetReply( req, TaskPriority::CoordinationReply ) );
-		if (rep.present()) {
-			if( rep.get().read().forward.present() ) {
+		if (rep.present()) { // If rep.present is false, does it mean the client connects to an invalid or unavailable
+			                 // coordinator?
+			if (rep.get().read().forward.present()) { // CD asks client to try a different connection string.
+				// Why is this necessary?
 				TraceEvent("MonitorProxiesForwarding").detail("NewConnStr", rep.get().read().forward.get().toString()).detail("OldConnStr", info.intermediateConnFile->getConnectionString().toString());
 				info.intermediateConnFile = Reference<ClusterConnectionFile>(new ClusterConnectionFile(connFile->getFilename(), ClusterConnectionString(rep.get().read().forward.get().toString())));
 				return info;
 			}
-			if(connFile != info.intermediateConnFile) {
+			if (connFile != info.intermediateConnFile) { // when will this be not equal? Why cannot we
 				if(!info.hasConnected) {
+					// Shouldn't this be SevError? When is this not an error?
 					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection").detail("Filename", connFile->getFilename())
 						.detail("ConnectionStringFromFile", connFile->getConnectionString().toString())
 						.detail("CurrentConnectionString", info.intermediateConnFile->getConnectionString().toString());
@@ -749,11 +757,13 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration( Reference<ClusterCo
 			info.hasConnected = true;
 			connFile->notifyConnected();
 
-			auto& ni = rep.get().mutate();
+			auto& ni = rep.get().mutate(); // ni is the shrinked New-client-Interfaces used by the client
 			shrinkProxyList(ni, lastProxyUIDs, lastProxies);
 			clientInfo->set( ni );
 			successIdx = idx;
-		} else if(idx == successIdx) {
+		} else if (idx == successIdx) {
+			// Q: Shall we report error if client cannot connect to a cluster for a long time (say 2 min)?
+			// It means all CDs are done or client got an incorrect cluster file.
 			wait(delay(CLIENT_KNOBS->COORDINATOR_RECONNECTION_DELAY));
 		}
 		idx = (idx+1)%addrs.size();

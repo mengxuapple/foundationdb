@@ -88,8 +88,8 @@ public:
 	bool fileContentsUpToDate(ClusterConnectionString &fileConnectionString) const;
 	void notifyConnected();
 private:
-	ClusterConnectionString cs;
-	std::string filename;
+	ClusterConnectionString cs; // connection string saved from most recent DB request
+	std::string filename; // most recent cluster file name. It is used to update cs
 	bool setConn;
 };
 
@@ -98,7 +98,7 @@ struct LeaderInfo {
 	UID changeID;
 	static const uint64_t mask = ~(127ll << 57);
 	Value serializedInfo;
-	bool forward;  // If true, serializedInfo is a connection string instead!
+	bool forward; // If true, serializedInfo is a connection string instead! used in coordinator change logic
 
 	LeaderInfo() : forward(false) {}
 	LeaderInfo(UID changeID) : changeID(changeID), forward(false) {}
