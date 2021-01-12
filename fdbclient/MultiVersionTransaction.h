@@ -187,6 +187,7 @@ private:
 	ThreadFuture<Void> ready;
 };
 
+// Q: What does DL mean?
 class DLApi : public IClientApi {
 public:
 	DLApi(std::string fdbCPath);
@@ -313,6 +314,8 @@ private:
 	struct DatabaseState;
 
 	struct Connector : ThreadCallback, ThreadSafeReferenceCounted<Connector> {
+		// client is an instance for a version (local or external clients).
+		// multi-version clients can have multiple client instances.
 		Connector(Reference<DatabaseState> dbState, Reference<ClientInfo> client, std::string clusterFilePath) : dbState(dbState), client(client), clusterFilePath(clusterFilePath), connected(false), cancelled(false) {}
 
 		void connect();
@@ -322,7 +325,7 @@ private:
 		void fire(const Void &unused, int& userParam);
 		void error(const Error& e, int& userParam);
 
-		const Reference<ClientInfo> client;
+		const Reference<ClientInfo> client; // versioned client instance used to create database and connect to cluster
 		const std::string clusterFilePath;
 
 		const Reference<DatabaseState> dbState;
@@ -345,7 +348,7 @@ private:
 		void cancelConnections();
 
 		Reference<IDatabase> db;
-		const Reference<ThreadSafeAsyncVar<Reference<IDatabase>>> dbVar;
+		const Reference<ThreadSafeAsyncVar<Reference<IDatabase>>> dbVar; // Q: Why do we need both db and dbVar
 
 		ThreadFuture<Void> changed;
 
@@ -403,7 +406,7 @@ private:
 	void setNetworkOptionInternal(FDBNetworkOptions::Option option, Optional<StringRef> value);
 
 	Reference<ClientInfo> localClient;
-	std::map<std::string, Reference<ClientInfo>> externalClients;
+	std::map<std::string, Reference<ClientInfo>> externalClients; // key:client lib path
 
 	bool networkStartSetup;
 	volatile bool networkSetup;

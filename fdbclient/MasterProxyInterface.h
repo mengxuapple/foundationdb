@@ -50,7 +50,8 @@ struct MasterProxyInterface {
 
 	RequestStream<ReplyPromise<Void>> waitFailure;
 
-	RequestStream< struct GetRawCommittedVersionRequest > getRawCommittedVersion;
+	RequestStream<struct GetRawCommittedVersionRequest>
+	    getRawCommittedVersion; // RawCommittedVersion, aka LiveCommittedVersion, is a proxy's local committed version
 	RequestStream< struct TxnStateRequest >  txnState;
 	RequestStream< struct GetHealthMetricsRequest > getHealthMetrics;
 	RequestStream< struct ProxySnapRequest > proxySnapReq;
@@ -209,7 +210,7 @@ struct GetReadVersionRequest : TimedRequest {
 		FLAG_PRIORITY_MASK = PRIORITY_SYSTEM_IMMEDIATE,
 	};
 
-	uint32_t transactionCount;
+	uint32_t transactionCount; // number of txns in the txn batch that share the same GRV
 	uint32_t flags;
 	TransactionPriority priority;
 

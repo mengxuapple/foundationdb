@@ -173,17 +173,17 @@ if(WITH_PYTHON)
     TEST_FILES restarting/from_5.0.0/StorefrontTestRestart-1.txt
                restarting/from_5.0.0/StorefrontTestRestart-2.txt)
   add_fdb_test(
-    TEST_FILES restarting/from_6.2.0/SnapTestAttrition-1.txt
-               restarting/from_6.2.0/SnapTestAttrition-2.txt)
+    TEST_FILES restarting/from_6.2.29/SnapTestAttrition-1.txt
+               restarting/from_6.2.29/SnapTestAttrition-2.txt)
   add_fdb_test(
-    TEST_FILES restarting/from_6.2.0/SnapTestSimpleRestart-1.txt
-               restarting/from_6.2.0/SnapTestSimpleRestart-2.txt)
+    TEST_FILES restarting/from_6.2.29/SnapTestSimpleRestart-1.txt
+               restarting/from_6.2.29/SnapTestSimpleRestart-2.txt)
   add_fdb_test(
-    TEST_FILES restarting/from_6.2.0/SnapTestRestart-1.txt
-               restarting/from_6.2.0/SnapTestRestart-2.txt)
+    TEST_FILES restarting/from_6.2.29/SnapTestRestart-1.txt
+               restarting/from_6.2.29/SnapTestRestart-2.txt)
   add_fdb_test(
-    TEST_FILES restarting/from_6.2.0/SnapCycleRestart-1.txt
-               restarting/from_6.2.0/SnapCycleRestart-2.txt)
+    TEST_FILES restarting/from_6.2.29/SnapCycleRestart-1.txt
+               restarting/from_6.2.29/SnapCycleRestart-2.txt)
   add_fdb_test(
     TEST_FILES restarting/from_5.1.7/DrUpgradeRestart-1.txt
                restarting/from_5.1.7/DrUpgradeRestart-2.txt)
@@ -191,8 +191,8 @@ if(WITH_PYTHON)
     TEST_FILES restarting/from_5.2.0/ClientTransactionProfilingCorrectness-1.txt
                restarting/from_5.2.0/ClientTransactionProfilingCorrectness-2.txt)
   add_fdb_test(
-    TEST_FILES restarting/to_6.3.5/CycleTestRestart-1.txt
-               restarting/to_6.3.5/CycleTestRestart-2.txt)
+    TEST_FILES restarting/to_6.3.10/CycleTestRestart-1.txt
+               restarting/to_6.3.10/CycleTestRestart-2.txt)
   add_fdb_test(TEST_FILES slow/ApiCorrectness.txt)
   add_fdb_test(TEST_FILES slow/ApiCorrectnessAtomicRestore.txt)
   add_fdb_test(TEST_FILES slow/ApiCorrectnessSwitchover.txt)
@@ -232,7 +232,7 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES slow/ParallelRestoreOldBackupCorrectnessCycle.txt)
   add_fdb_test(TEST_FILES slow/ParallelRestoreOldBackupCorrectnessMultiCycles.txt)
   add_fdb_test(TEST_FILES slow/ParallelRestoreOldBackupWriteDuringReadAtomicRestore.txt)
-  add_fdb_test(TEST_FILES slow/ParallelRestoreOldBackupApiCorrectnessAtomicRestore.txt)
+  add_fdb_test(TEST_FILES ParallelRestoreOldBackupApiCorrectnessAtomicRestore.txt IGNORE)
   # Note that status tests are not deterministic.
   add_fdb_test(TEST_FILES status/invalid_proc_addresses.txt)
   add_fdb_test(TEST_FILES status/local_6_machine_no_replicas_remain.txt)

@@ -464,9 +464,9 @@ void MultiVersionTransaction::updateTransaction() {
 				newTr.transaction->setOption(option.first, option.second.castTo<StringRef>());
 			}
 		}
-	
-		// Setting a timeout can immediately cause a transaction to fail. The only timeout 
-		// that matters is the one most recently set, so we ignore any earlier set timeouts
+
+		// Setting a timeout can immediately cause a transaction to fail. The only timeout
+		// that matters is the one most recent set, so we ignore any earlier set timeouts
 		// that might inadvertently fail the transaction.
 		if(timeout.present()) {
 			newTr.transaction->setOption(FDBTransactionOptions::TIMEOUT, timeout);
@@ -909,6 +909,7 @@ bool MultiVersionApi::apiVersionAtLeast(int minVersion) {
 }
 
 // runOnFailedClients should be used cautiously. Some failed clients may not have successfully loaded all symbols.
+// Run func on each external client
 void MultiVersionApi::runOnExternalClients(std::function<void(Reference<ClientInfo>)> func, bool runOnFailedClients) {
 	bool newFailure = false;
 
@@ -1378,7 +1379,7 @@ void ClientInfo::loadProtocolVersion() {
 	}
 
 	char *next;
-	std::string protocolVersionStr = ClientVersionRef(version).protocolVersion.toString();
+	std::string protocolVersionStr = ClientVersionRef(StringRef(version)).protocolVersion.toString();
 	protocolVersion = ProtocolVersion(strtoull(protocolVersionStr.c_str(), &next, 16));
 
 	ASSERT(protocolVersion.version() != 0 && protocolVersion.version() != ULLONG_MAX);

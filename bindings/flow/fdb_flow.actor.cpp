@@ -31,7 +31,7 @@
 using namespace FDB;
 
 THREAD_FUNC networkThread(void* fdb) {
-	((FDB::API*)fdb)->runNetwork();
+	((FDB::API*)fdb)->runNetwork(); // To read
 	THREAD_RETURN;
 }
 
@@ -95,21 +95,21 @@ void fdb_flow_test() {
 }
 
 namespace FDB {
-	class DatabaseImpl : public Database, NonCopyable {
-	public:
-		virtual ~DatabaseImpl() { fdb_database_destroy(db); }
+class DatabaseImpl : public Database, NonCopyable { // Q: Is this the DB created by app?
+public:
+	virtual ~DatabaseImpl() { fdb_database_destroy(db); }
 
-		Reference<Transaction> createTransaction() override;
-		void setDatabaseOption(FDBDatabaseOption option, Optional<StringRef> value = Optional<StringRef>()) override;
+	Reference<Transaction> createTransaction() override;
+	void setDatabaseOption(FDBDatabaseOption option, Optional<StringRef> value = Optional<StringRef>()) override;
 
-	private:
-		FDBDatabase* db;
-		explicit DatabaseImpl(FDBDatabase* db) : db(db) {}
+private:
+	FDBDatabase* db;
+	explicit DatabaseImpl(FDBDatabase* db) : db(db) {}
 
-		friend class API;
-	};
+	friend class API;
+};
 
-	class TransactionImpl : public Transaction, private NonCopyable, public FastAllocated<TransactionImpl> {
+    class TransactionImpl : public Transaction, private NonCopyable, public FastAllocated<TransactionImpl> {
 		friend class DatabaseImpl;
 
 	public:

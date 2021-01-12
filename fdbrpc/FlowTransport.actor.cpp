@@ -195,16 +195,7 @@ struct PingReceiver : NetworkMessageReceiver {
 
 class TransportData {
 public:
-	TransportData(uint64_t transportId)
-	  : endpointNotFoundReceiver(endpoints),
-		pingReceiver(endpoints),
-		warnAlwaysForLargePacket(true),
-		lastIncompatibleMessage(0),
-		transportId(transportId),
-		numIncompatibleConnections(0)
-	{
-		degraded = Reference<AsyncVar<bool>>( new AsyncVar<bool>(false) );
-	}
+	TransportData(uint64_t transportId);
 
 	~TransportData();
 
@@ -228,6 +219,7 @@ public:
 	std::unordered_map<NetworkAddress, Reference<struct Peer>> peers;
 	std::unordered_map<NetworkAddress, std::pair<double, double>> closedPeers;
 	HealthMonitor healthMonitor;
+	std::set<NetworkAddress> orderedAddresses;
 	Reference<AsyncVar<bool>> degraded;
 	bool warnAlwaysForLargePacket;
 
@@ -252,7 +244,75 @@ public:
 	uint64_t transportId;
 
 	Future<Void> multiVersionCleanup;
+	Future<Void> pingLogger;
 };
+
+ACTOR Future<Void> pingLatencyLogger(TransportData* self) {
+	state NetworkAddress lastAddress = NetworkAddress();
+	loop {
+		if(self->orderedAddresses.size()) {
+			auto it = self->orderedAddresses.upper_bound(lastAddress);
+			if(it == self->orderedAddresses.end()) {
+				it = self->orderedAddresses.begin();
+			}
+			lastAddress = *it;
+			auto peer = self->getPeer(lastAddress);
+			if(!peer) {
+				TraceEvent(SevWarnAlways, "MissingNetworkAddress").suppressFor(10.0).detail("PeerAddr", lastAddress);
+			}
+			if (peer->lastLoggedTime <= 0.0) {
+				peer->lastLoggedTime = peer->lastConnectTime;
+			}
+
+			if(peer && peer->pingLatencies.getPopulationSize() >= 10) {
+				TraceEvent("PingLatency")
+				    .detail("Elapsed", now() - peer->lastLoggedTime)
+				    .detail("PeerAddr", lastAddress)
+				    .detail("MinLatency", peer->pingLatencies.min())
+				    .detail("MaxLatency", peer->pingLatencies.max())
+				    .detail("MeanLatency", peer->pingLatencies.mean())
+				    .detail("MedianLatency", peer->pingLatencies.median())
+				    .detail("P90Latency", peer->pingLatencies.percentile(0.90))
+				    .detail("Count", peer->pingLatencies.getPopulationSize())
+				    .detail("BytesReceived", peer->bytesReceived - peer->lastLoggedBytesReceived)
+				    .detail("BytesSent", peer->bytesSent - peer->lastLoggedBytesSent)
+				    .detail("ConnectOutgoingCount", peer->connectOutgoingCount)
+				    .detail("ConnectIncomingCount", peer->connectIncomingCount)
+				    .detail("ConnectFailedCount", peer->connectFailedCount)
+				    .detail("ConnectMinLatency", peer->connectLatencies.min())
+				    .detail("ConnectMaxLatency", peer->connectLatencies.max())
+				    .detail("ConnectMeanLatency", peer->connectLatencies.mean())
+				    .detail("ConnectMedianLatency", peer->connectLatencies.median())
+				    .detail("ConnectP90Latency", peer->connectLatencies.percentile(0.90));
+				peer->lastLoggedTime = now();
+				peer->connectOutgoingCount = 0;
+				peer->connectIncomingCount = 0;
+				peer->connectFailedCount = 0;
+				peer->pingLatencies.clear();
+				peer->connectLatencies.clear();
+				peer->lastLoggedBytesReceived = peer->bytesReceived;
+				peer->lastLoggedBytesSent = peer->bytesSent;
+				wait(delay(FLOW_KNOBS->PING_LOGGING_INTERVAL));
+			} else if(it == self->orderedAddresses.begin()) {
+				wait(delay(FLOW_KNOBS->PING_LOGGING_INTERVAL));
+			}
+		} else {
+			wait(delay(FLOW_KNOBS->PING_LOGGING_INTERVAL));
+		}
+	}
+}
+
+TransportData::TransportData(uint64_t transportId)
+	  : endpointNotFoundReceiver(endpoints),
+		pingReceiver(endpoints),
+		warnAlwaysForLargePacket(true),
+		lastIncompatibleMessage(0),
+		transportId(transportId),
+		numIncompatibleConnections(0)
+{
+	degraded = Reference<AsyncVar<bool>>( new AsyncVar<bool>(false) );
+	pingLogger = pingLatencyLogger(this);
+}
 
 #define CONNECT_PACKET_V0 0x0FDB00A444020001LL
 #define CONNECT_PACKET_V0_SIZE 14
@@ -379,10 +439,14 @@ ACTOR Future<Void> connectionMonitor( Reference<Peer> peer ) {
 		FlowTransport::transport().sendUnreliable( SerializeSource<ReplyPromise<Void>>(reply), remotePingEndpoint, true );
 		state int64_t startingBytes = peer->bytesReceived;
 		state int timeouts = 0;
+		state double startTime = now();
 		loop {
 			choose {
 				when (wait( delay( FLOW_KNOBS->CONNECTION_MONITOR_TIMEOUT ) )) {
 					if(startingBytes == peer->bytesReceived) {
+						if(peer->destination.isPublic()) {
+							peer->pingLatencies.addSample(now() - startTime);
+						}
 						TraceEvent("ConnectionTimeout").suppressFor(1.0).detail("WithAddr", peer->destination);
 						throw connection_failed();
 					}
@@ -396,6 +460,9 @@ ACTOR Future<Void> connectionMonitor( Reference<Peer> peer ) {
 					timeouts++;
 				}
 				when (wait( reply.getFuture() )) {
+					if(peer->destination.isPublic()) {
+						peer->pingLatencies.addSample(now() - startTime);
+					}
 					break;
 				}
 				when (wait( peer->resetPing.onTrigger())) {
@@ -418,9 +485,9 @@ ACTOR Future<Void> connectionWriter( Reference<Peer> self, Reference<IConnection
 		loop {
 			lastWriteTime = now();
 
-			int sent = conn->write(self->unsent.getUnsent(), FLOW_KNOBS->MAX_PACKET_SEND_BYTES);
-
-			if (sent != 0) {
+			int sent = conn->write(self->unsent.getUnsent(), /* limit= */ FLOW_KNOBS->MAX_PACKET_SEND_BYTES);
+			if (sent) {
+				self->bytesSent += sent;
 				self->transport->bytesSent += sent;
 				self->unsent.sent(sent);
 			}
@@ -518,6 +585,7 @@ ACTOR Future<Void> connectionKeeper( Reference<Peer> self,
 				    .detail("FailureStatus", IFailureMonitor::failureMonitor().getState(self->destination).isAvailable()
 				                                 ? "OK"
 				                                 : "FAILED");
+				++self->connectOutgoingCount;
 
 				try {
 					choose {
@@ -525,6 +593,10 @@ ACTOR Future<Void> connectionKeeper( Reference<Peer> self,
 						         wait(INetworkConnections::net()->connect(self->destination))) {
 							conn = _conn;
 							wait(conn->connectHandshake());
+							self->connectLatencies.addSample(now() - self->lastConnectTime);
+							if (FlowTransport::isClient()) {
+								IFailureMonitor::failureMonitor().setStatus(self->destination, FailureStatus(false));
+							}
 							if (self->unsent.empty()) {
 								delayedHealthUpdateF = delayedHealthUpdate(self->destination);
 								choose {
@@ -548,8 +620,9 @@ ACTOR Future<Void> connectionKeeper( Reference<Peer> self,
 							throw connection_failed();
 						}
 					}
-				} catch (Error& e) {
-					if (e.code() != error_code_connection_failed) {
+				} catch(Error &e) {
+					++self->connectFailedCount;
+					if(e.code() != error_code_connection_failed) {
 						throw;
 					}
 					TraceEvent("ConnectionTimedOut", conn ? conn->getDebugID() : UID())
@@ -667,6 +740,7 @@ ACTOR Future<Void> connectionKeeper( Reference<Peer> self,
 				TraceEvent("PeerDestroy").error(e).suppressFor(1.0).detail("PeerAddr", self->destination);
 				self->connect.cancel();
 				self->transport->peers.erase(self->destination);
+				self->transport->orderedAddresses.erase(self->destination);
 				return Void();
 			}
 		}
@@ -676,8 +750,10 @@ ACTOR Future<Void> connectionKeeper( Reference<Peer> self,
 Peer::Peer(TransportData* transport, NetworkAddress const& destination)
   : transport(transport), destination(destination), outgoingConnectionIdle(true), lastConnectTime(0.0),
     reconnectionDelay(FLOW_KNOBS->INITIAL_RECONNECTION_TIME), compatible(true), outstandingReplies(0),
-    incompatibleProtocolVersionNewer(false), peerReferences(-1), bytesReceived(0), lastDataPacketSentTime(now()) {
-
+    incompatibleProtocolVersionNewer(false), peerReferences(-1), bytesReceived(0), lastDataPacketSentTime(now()),
+    pingLatencies(destination.isPublic() ? FLOW_KNOBS->PING_SAMPLE_AMOUNT : 1), lastLoggedBytesReceived(0),
+    bytesSent(0), lastLoggedBytesSent(0), lastLoggedTime(0.0), connectOutgoingCount(0), connectIncomingCount(0),
+	connectFailedCount(0), connectLatencies(destination.isPublic() ? FLOW_KNOBS->NETWORK_CONNECT_SAMPLE_AMOUNT : 1) {
 	IFailureMonitor::failureMonitor().setStatus(destination, FailureStatus(false));
 }
 
@@ -728,6 +804,7 @@ void Peer::discardUnreliablePackets() {
 void Peer::onIncomingConnection( Reference<Peer> self, Reference<IConnection> conn, Future<Void> reader ) {
 	// In case two processes are trying to connect to each other simultaneously, the process with the larger canonical NetworkAddress
 	// gets to keep its outgoing connection.
+	++self->connectIncomingCount;
 	if ( !destination.isPublic() && !outgoingConnectionIdle ) throw address_in_use();
 	NetworkAddress compatibleAddr = transport->localAddresses.address;
 	if(transport->localAddresses.secondaryAddress.present() && transport->localAddresses.secondaryAddress.get().isTLS() == destination.isTLS()) {
@@ -1155,6 +1232,9 @@ Reference<Peer> TransportData::getOrOpenPeer( NetworkAddress const& address, boo
 			peer->connect = connectionKeeper(peer);
 		}
 		peers[address] = peer;
+		if(address.isPublic()) {
+			orderedAddresses.insert(address);
+		}
 	}
 
 	return peer;
