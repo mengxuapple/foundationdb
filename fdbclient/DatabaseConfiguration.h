@@ -148,6 +148,7 @@ struct DatabaseConfiguration {
 		if(usableRegions > 1 && fullyReplicatedRegions > 1 && worstSatellite > 0 && (!forAvailability || regionsWithNonNegativePriority > 1)) {
 			return 1 + std::min(std::max(tLogReplicationFactor - 1 - tLogWriteAntiQuorum, worstSatellite - 1), storageTeamSize - 1);
 		} else if(worstSatellite > 0) {
+			// Why this one is different from the above if calculation
 			return std::min(tLogReplicationFactor + worstSatellite - 2 - tLogWriteAntiQuorum, storageTeamSize - 1);
 		}
 		return std::min(tLogReplicationFactor - 1 - tLogWriteAntiQuorum, storageTeamSize - 1);

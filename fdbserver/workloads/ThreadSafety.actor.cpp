@@ -224,7 +224,7 @@ struct ThreadSafetyWorkload : TestWorkload {
 		mutex.enter();
 		if(!tr) {
 			try {
-				tr = db->createTransaction();
+				tr = db->createTransaction(); // Q: mutex is needed because db is not thread safe?
 			}
 			catch(Error &) {
 				mutex.leave();

@@ -507,10 +507,13 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 	}
 
+	// Reset connection to addr if enough replies from the push-to addr are slow during PUSH_STATS_INTERVAL time window
 	ACTOR static Future<Void> pushResetChecker( Reference<ConnectionResetInfo> self, NetworkAddress addr ) {
 		self->slowReplies = 0;
 		self->fastReplies = 0;
 		wait(delay(SERVER_KNOBS->PUSH_STATS_INTERVAL));
+		// From the first time when push to address is slower than PUSH_MAX_LATENCY, how many replies from the push-to
+		// addr is slow and fast
 		TraceEvent("SlowPushStats").detail("PeerAddress", addr).detail("SlowReplies", self->slowReplies).detail("FastReplies", self->fastReplies);
 		if(self->slowReplies >= SERVER_KNOBS->PUSH_STATS_SLOW_AMOUNT && self->slowReplies/double(self->slowReplies+self->fastReplies) >= SERVER_KNOBS->PUSH_STATS_SLOW_RATIO) {
 			FlowTransport::transport().resetConnection(addr);

@@ -275,6 +275,7 @@ ThreadFuture<T> mapThreadFuture(ThreadFuture<S> source, std::function<ErrorOr<T>
 	return ThreadFuture<T>(new MapSingleAssignmentVar<S, T>(source, mapValue));
 }
 
+// Q: Why do we need FlatMapSingleAssignmentVar class?
 template<class S, class T>
 class FlatMapSingleAssignmentVar : public ThreadSingleAssignmentVar<T>, ThreadCallback {
 public:

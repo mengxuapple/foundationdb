@@ -40,6 +40,7 @@
 // 	g_network->onMainThread( std::move(signal), TaskPriority::DefaultOnMainThread );
 // }
 
+// Put the function f into main thread's task queue to execute at taskID priority.
 template <class F>
 void onMainThreadVoid( F f, Error* err, TaskPriority taskID = TaskPriority::DefaultOnMainThread ) {
 	Promise<Void> signal;
@@ -339,6 +340,7 @@ private:
 
 protected:
 	// The caller of any of these *Unsafe functions should be holding |mutex|
+	// Unsafe means "not thread safe"
 	bool isReadyUnsafe() const { return status >= Set; }
 	bool isErrorUnsafe() const { return status == ErrorSet; }
 	bool canBeSetUnsafe() const { return status == Unset; }
@@ -409,7 +411,7 @@ public:
 		} else {
 			this->mutex.leave();
 
-			//Thread safe because status is now Set and callback is NULL, meaning than callback cannot change
+			// Thread safe because status is now Set and callback is NULL, meaning that callback cannot change
 			int userParam = 0;
 			func->fire(Void(), userParam);
 		}

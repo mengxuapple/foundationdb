@@ -233,25 +233,25 @@ ACTOR Future<Void> databaseLogger( DatabaseContext *cx ) {
 		cx->cc.logToTraceEvent(ev);
 
 		ev.detail("MeanLatency", cx->latencies.mean())
-			.detail("MedianLatency", cx->latencies.median())
-			.detail("Latency90", cx->latencies.percentile(0.90))
-			.detail("Latency98", cx->latencies.percentile(0.98))
-			.detail("MaxLatency", cx->latencies.max())
-			.detail("MeanRowReadLatency", cx->readLatencies.mean())
-			.detail("MedianRowReadLatency", cx->readLatencies.median())
-			.detail("MaxRowReadLatency", cx->readLatencies.max())
-			.detail("MeanGRVLatency", cx->GRVLatencies.mean())
-			.detail("MedianGRVLatency", cx->GRVLatencies.median())
-			.detail("MaxGRVLatency", cx->GRVLatencies.max())
-			.detail("MeanCommitLatency", cx->commitLatencies.mean())
-			.detail("MedianCommitLatency", cx->commitLatencies.median())
-			.detail("MaxCommitLatency", cx->commitLatencies.max())
-			.detail("MeanMutationsPerCommit", cx->mutationsPerCommit.mean())
-			.detail("MedianMutationsPerCommit", cx->mutationsPerCommit.median())
-			.detail("MaxMutationsPerCommit", cx->mutationsPerCommit.max())
-			.detail("MeanBytesPerCommit", cx->bytesPerCommit.mean())
-			.detail("MedianBytesPerCommit", cx->bytesPerCommit.median())
-			.detail("MaxBytesPerCommit", cx->bytesPerCommit.max());
+		    .detail("MedianLatency", cx->latencies.median())
+		    .detail("Latency90", cx->latencies.percentile(0.90))
+		    .detail("Latency98", cx->latencies.percentile(0.98))
+		    .detail("MaxLatency", cx->latencies.max()) // latency to process an entire transaction
+		    .detail("MeanRowReadLatency", cx->readLatencies.mean()) // latency to read data from a chosen SS
+		    .detail("MedianRowReadLatency", cx->readLatencies.median())
+		    .detail("MaxRowReadLatency", cx->readLatencies.max())
+		    .detail("MeanGRVLatency", cx->GRVLatencies.mean())
+		    .detail("MedianGRVLatency", cx->GRVLatencies.median())
+		    .detail("MaxGRVLatency", cx->GRVLatencies.max())
+		    .detail("MeanCommitLatency", cx->commitLatencies.mean())
+		    .detail("MedianCommitLatency", cx->commitLatencies.median())
+		    .detail("MaxCommitLatency", cx->commitLatencies.max())
+		    .detail("MeanMutationsPerCommit", cx->mutationsPerCommit.mean())
+		    .detail("MedianMutationsPerCommit", cx->mutationsPerCommit.median())
+		    .detail("MaxMutationsPerCommit", cx->mutationsPerCommit.max())
+		    .detail("MeanBytesPerCommit", cx->bytesPerCommit.mean())
+		    .detail("MedianBytesPerCommit", cx->bytesPerCommit.median())
+		    .detail("MaxBytesPerCommit", cx->bytesPerCommit.max());
 
 		cx->latencies.clear();
 		cx->readLatencies.clear();
