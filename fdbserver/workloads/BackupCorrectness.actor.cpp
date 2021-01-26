@@ -94,11 +94,13 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		}
 
 		// prefixesMandatory is the prefix keyspaces that have data
-		// Test idea: Randomly generate a set of keyranges that are continuous.
-		// The overlap between the randomly generated keyranges and prefixesMandatory will be backup and restored;
-		// The other randomly generated keyranges will not be backup and restored.
-		// TODO: Make the randomly generated keyranges not continuous.
+		// Test idea: A random set of ranges that is a subset of normalkeys is generated, AND is definitely backed up.
+		// Restore ranges are all of the random ranges which overlap with prefixesMandatory,
+		// plus 50% of the non overlapping ones.
+		// TODO 1: Make the randomly generated keyranges not continuous.
 		//       Still backup and restore some data while leave the other data untouched by the backup restore workload.
+		// TODO 2: Randomly choose the restore ranges that are not exactly a subset of whole random (backup) ranges.
+		// For example, backup range [a,d), restore range can be [a,b) and [c,d), instead of restore range is [a,d)
 		if (performRestore && !prefixesMandatory.empty() && shouldSkipRestoreRanges) {
 			for (auto &range : backupRanges) {
 				bool intersection = false;
