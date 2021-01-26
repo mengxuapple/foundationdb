@@ -93,6 +93,12 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			}
 		}
 
+		// prefixesMandatory is the prefix keyspaces that have data
+		// Test idea: Randomly generate a set of keyranges that are continuous.
+		// The overlap between the randomly generated keyranges and prefixesMandatory will be backup and restored;
+		// The other randomly generated keyranges will not be backup and restored.
+		// TODO: Make the randomly generated keyranges not continuous.
+		//       Still backup and restore some data while leave the other data untouched by the backup restore workload.
 		if (performRestore && !prefixesMandatory.empty() && shouldSkipRestoreRanges) {
 			for (auto &range : backupRanges) {
 				bool intersection = false;
