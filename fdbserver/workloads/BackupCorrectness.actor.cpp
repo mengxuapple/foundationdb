@@ -86,6 +86,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			for (auto i = sortedEndpoints.begin(); i != sortedEndpoints.end(); ++i) {
 				const std::string &start = *i++;
 				backupRanges.push_back_deep(backupRanges.arena(), KeyRangeRef(start, *i));
+				// TODO: Only backup the to-be-restored key-ranges, specified as prefixesMandatory
 
 				// Track the added range
 				TraceEvent("BARW_BackupCorrectnessRange", randomID).detail("RangeBegin", start).detail("RangeEnd", *i);
@@ -225,7 +226,9 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		state Future<Void> status = statusLoop(cx, tag.toString());
 
 		try {
-			wait(backupAgent->submitBackup(cx, StringRef(backupContainer), deterministicRandom()->randomInt(0, 100), tag.toString(), backupRanges, stopDifferentialDelay ? false : true));
+			/ Submit backup request that will backup the backupRanges wait(
+			      backupAgent->submitBackup(cx, StringRef(backupContainer), deterministicRandom()->randomInt(0, 100),
+			                                tag.toString(), backupRanges, stopDifferentialDelay ? false : true));
 		}
 		catch (Error& e) {
 			TraceEvent("BARW_DoBackupSubmitBackupException", randomID).error(e).detail("Tag", printable(tag));
