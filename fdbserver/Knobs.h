@@ -99,6 +99,7 @@ public:
 	double PUSH_STATS_INTERVAL;
 	double PUSH_STATS_SLOW_AMOUNT;
 	double PUSH_STATS_SLOW_RATIO;
+	int TLOG_POP_BATCH_SIZE;
 
 	// Data distribution queue
 	double HEALTH_POLL_TIME;
@@ -191,6 +192,9 @@ public:
 	int64_t DD_SS_FAILURE_VERSIONLAG; // Allowed SS version lag from the current read version before marking it as failed.
 	int64_t DD_SS_ALLOWED_VERSIONLAG; // SS will be marked as healthy if it's version lag goes below this value.
 	double DD_SS_STUCK_TIME_LIMIT; // If a storage server is not getting new versions for this amount of time, then it becomes undesired.
+	int DD_TEAMS_INFO_PRINT_INTERVAL;
+	int DD_TEAMS_INFO_PRINT_YIELD_COUNT;
+	int DD_TEAM_ZERO_SERVER_LEFT_LOG_DELAY;
 
 	// TeamRemover to remove redundant teams
 	bool TR_FLAG_DISABLE_MACHINE_TEAM_REMOVER; // disable the machineTeamRemover actor
@@ -250,7 +254,10 @@ public:
 
 	// KeyValueStoreRocksDB
 	int ROCKSDB_BACKGROUND_PARALLELISM;
+	int ROCKSDB_READ_PARALLELISM;
 	int64_t ROCKSDB_MEMTABLE_BYTES;
+	bool ROCKSDB_UNSAFE_AUTO_FSYNC;
+	int64_t ROCKSDB_PERIODIC_COMPACTION_SECONDS;
 
 	// Leader election
 	int MAX_NOTIFICATIONS;
@@ -299,11 +306,17 @@ public:
 	double REQUIRED_MIN_RECOVERY_DURATION;
 	bool ALWAYS_CAUSAL_READ_RISKY;
 	int MAX_COMMIT_UPDATES;
-	double MIN_PROXY_COMPUTE;
 	double MAX_PROXY_COMPUTE;
+	double MAX_COMPUTE_PER_OPERATION;
 	int PROXY_COMPUTE_BUCKETS;
 	double PROXY_COMPUTE_GROWTH_RATE;
 	int TXN_STATE_SEND_AMOUNT;
+	bool PROXY_REJECT_BATCH_QUEUED_TOO_LONG;
+
+	int RESET_MASTER_BATCHES;
+	int RESET_RESOLVER_BATCHES;
+	double RESET_MASTER_DELAY;
+	double RESET_RESOLVER_DELAY;
 
 	// Master Server
 	double COMMIT_SLEEP_TIME;
@@ -497,6 +510,9 @@ public:
 	double READ_TAG_MEASUREMENT_INTERVAL;
 	int64_t OPERATION_COST_BYTE_FACTOR;
 	bool PREFIX_COMPRESS_KVS_MEM_SNAPSHOTS;
+	bool REPORT_DD_METRICS;
+	double DD_METRICS_REPORT_INTERVAL;
+	double FETCH_KEYS_TOO_LONG_TIME_CRITERIA;
 
 	//Wait Failure
 	int MAX_OUTSTANDING_WAIT_FAILURE_REQUESTS;
@@ -529,6 +545,7 @@ public:
 	double MAX_STATUS_REQUESTS_PER_SECOND;
 	int CONFIGURATION_ROWS_TO_FETCH;
 	bool DISABLE_DUPLICATE_LOG_WARNING;
+	double HISTOGRAM_REPORT_INTERVAL;
 
 	// IPager
 	int PAGER_RESERVED_PAGES;

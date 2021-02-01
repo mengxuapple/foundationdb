@@ -28,6 +28,7 @@
 #include "flow/network.h"
 #include "flow/FileIdentifier.h"
 #include "flow/Net2Packet.h"
+#include "fdbrpc/ContinuousSample.h"
 
 #pragma pack(push, 4)
 class Endpoint {
@@ -140,8 +141,18 @@ struct Peer : public ReferenceCounted<Peer> {
 	int peerReferences;
 	bool incompatibleProtocolVersionNewer;
 	int64_t bytesReceived;
+	int64_t bytesSent;
 	double lastDataPacketSentTime;
 	int outstandingReplies;
+	ContinuousSample<double> pingLatencies;
+	double lastLoggedTime;
+	int64_t lastLoggedBytesReceived;
+	int64_t lastLoggedBytesSent;
+	// Cleared every time stats are logged for this peer.
+	int connectOutgoingCount;
+	int connectIncomingCount;
+	int connectFailedCount;
+	ContinuousSample<double> connectLatencies;
 
 	explicit Peer(TransportData* transport, NetworkAddress const& destination);
 

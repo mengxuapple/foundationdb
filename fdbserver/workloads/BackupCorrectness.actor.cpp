@@ -86,12 +86,21 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			for (auto i = sortedEndpoints.begin(); i != sortedEndpoints.end(); ++i) {
 				const std::string &start = *i++;
 				backupRanges.push_back_deep(backupRanges.arena(), KeyRangeRef(start, *i));
+				// TODO: Only backup the to-be-restored key-ranges, specified as prefixesMandatory
 
 				// Track the added range
 				TraceEvent("BARW_BackupCorrectnessRange", randomID).detail("RangeBegin", start).detail("RangeEnd", *i);
 			}
 		}
 
+		// prefixesMandatory is the prefix keyspaces that have data
+		// Test idea: A random set of ranges that is a subset of normalkeys is generated, AND is definitely backed up.
+		// Restore ranges are all of the random ranges which overlap with prefixesMandatory,
+		// plus 50% of the non overlapping ones.
+		// TODO 1: Make the randomly generated keyranges not continuous.
+		//       Still backup and restore some data while leave the other data untouched by the backup restore workload.
+		// TODO 2: Randomly choose the restore ranges that are not exactly a subset of whole random (backup) ranges.
+		// For example, backup range [a,d), restore range can be [a,b) and [c,d), instead of restore range is [a,d)
 		if (performRestore && !prefixesMandatory.empty() && shouldSkipRestoreRanges) {
 			for (auto &range : backupRanges) {
 				bool intersection = false;
@@ -225,7 +234,9 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		state Future<Void> status = statusLoop(cx, tag.toString());
 
 		try {
-			wait(backupAgent->submitBackup(cx, StringRef(backupContainer), deterministicRandom()->randomInt(0, 100), tag.toString(), backupRanges, stopDifferentialDelay ? false : true));
+			/ Submit backup request that will backup the backupRanges wait(
+			      backupAgent->submitBackup(cx, StringRef(backupContainer), deterministicRandom()->randomInt(0, 100),
+			                                tag.toString(), backupRanges, stopDifferentialDelay ? false : true));
 		}
 		catch (Error& e) {
 			TraceEvent("BARW_DoBackupSubmitBackupException", randomID).error(e).detail("Tag", printable(tag));
