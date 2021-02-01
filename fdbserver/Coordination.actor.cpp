@@ -396,7 +396,7 @@ struct LeaderRegisterCollection {
 	// SOMEDAY: Factor this into a generic tool?  Extend ActorCollection to support removal actions?  What?
 	ActorCollection actors;
 	Map<Key, LeaderElectionRegInterface> registerInterfaces;
-	Map<Key, LeaderInfo> forward;
+	Map<Key, LeaderInfo> forward; // Key: clusterID, LoaderInfo:CC in the clusterID cluster
 	OnDemandStore *pStore;
 
 	LeaderRegisterCollection( OnDemandStore *pStore ) : actors( false ), pStore( pStore ) {}
@@ -439,6 +439,8 @@ struct LeaderRegisterCollection {
 		auto i = registerInterfaces.find( key );
 		if (i == registerInterfaces.end()) {
 			Key k = key;
+			// Q: How is registerInterfaces[k] set for the clusterID key?
+			// leaderRegister seems not set the interface
 			Future<Void> a = wrap(this, k, leaderRegister(registerInterfaces[k], k), id);
 			if (a.isError()) throw a.getError();
 			ASSERT( !a.isReady() );
