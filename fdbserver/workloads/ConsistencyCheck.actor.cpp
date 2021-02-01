@@ -1074,12 +1074,11 @@ struct ConsistencyCheckWorkload : TestWorkload
 
 		//SOMEDAY: when background data distribution is implemented, include this test
 		//In a quiescent database, check that the sizes of storage servers are roughly the same
-		/*if(self->performQuiescentChecks)
-		{
+		if (self->performQuiescentChecks) {
 			auto minStorageServer = std::min_element(storageServerSizes.begin(), storageServerSizes.end(), ConsistencyCheckWorkload::compareByValue<UID, int64_t>);
 			auto maxStorageServer = std::max_element(storageServerSizes.begin(), storageServerSizes.end(), ConsistencyCheckWorkload::compareByValue<UID, int64_t>);
 
-			int bias = SERVER_KNOBS->MIN_SHARD_BYTES;
+			// int bias = SERVER_KNOBS->MIN_SHARD_BYTES;
 			if(1.1 * (minStorageServer->second + SERVER_KNOBS->MIN_SHARD_BYTES) < maxStorageServer->second + SERVER_KNOBS->MIN_SHARD_BYTES)
 			{
 				TraceEvent("ConsistencyCheck_InconsistentStorageServerSizes").detail("MinSize", minStorageServer->second).detail("MaxSize", maxStorageServer->second)
@@ -1088,7 +1087,7 @@ struct ConsistencyCheckWorkload : TestWorkload
 				self->testFailure(format("Storage servers differ significantly in size by a factor of %f", ((double)maxStorageServer->second) / minStorageServer->second));
 				return false;
 			}
-		}*/
+		}
 
 		self->bytesReadInPreviousRound = bytesReadInthisRound;
 		return true;
