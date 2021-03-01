@@ -908,16 +908,19 @@ inline bool addressExcluded( std::set<AddressExclusion> const& exclusions, Netwo
 struct ClusterControllerPriorityInfo {
 	enum DCFitness { FitnessPrimary, FitnessRemote, FitnessPreferred, FitnessUnknown, FitnessNotPreferred, FitnessBad }; //cannot be larger than 7 because of leader election mask
 
+	// dcPriority is list of dcIds in decreasing order of preference to host CC.
+	// dcPriority[0] is the preferred primary DC calculated by CC based on current workers' healthness.
+	// Return how fit the dcId is in the dcPriority list
 	static DCFitness calculateDCFitness(Optional<Key> const& dcId, std::vector<Optional<Key>> const& dcPriority) {
 		if(!dcPriority.size()) {
 			return FitnessUnknown;
-		} else if(dcPriority.size() == 1) {
+		} else if (dcPriority.size() == 1) { // single DC
 			if(dcId == dcPriority[0]) {
 				return FitnessPreferred;
 			} else {
 				return FitnessNotPreferred;
 			}
-		} else {
+		} else { // HA
 			if(dcId == dcPriority[0]) {
 				return FitnessPrimary;
 			} else if(dcId == dcPriority[1]) {
@@ -928,9 +931,9 @@ struct ClusterControllerPriorityInfo {
 		}
 	}
 
-	uint8_t processClassFitness;
+	uint8_t processClassFitness; // Q: How fit the process is for CC role?
 	bool isExcluded;
-	uint8_t dcFitness;
+	uint8_t dcFitness; // Q: How fit the process's dc is as the primary dc?
 
 	bool operator== (ClusterControllerPriorityInfo const& r) const { return processClassFitness == r.processClassFitness && isExcluded == r.isExcluded && dcFitness == r.dcFitness; }
 	ClusterControllerPriorityInfo()

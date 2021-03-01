@@ -1965,6 +1965,7 @@ ACTOR Future<Void> initPersistentState( TLogData* self, Reference<LogData> logDa
 	return Void();
 }
 
+// Tlog registers itself to master and monitor if the tLog is inside the logSystemConfig. If not, it will die
 ACTOR Future<Void> rejoinMasters( TLogData* self, TLogInterface tli, DBRecoveryCount recoveryCount, Future<Void> registerWithMaster, bool isPrimary ) {
 	state UID lastMasterID(0,0);
 	loop {

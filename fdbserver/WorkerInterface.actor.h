@@ -184,7 +184,7 @@ struct RegisterMasterRequest {
 	DBRecoveryCount recoveryCount;
 	int64_t registrationCount;
 	Optional<DatabaseConfiguration> configuration;
-	std::vector<UID> priorCommittedLogServers;
+	std::vector<UID> priorCommittedLogServers; // Q: Definition?
 	RecoveryState recoveryState;
 	bool recoveryStalled;
 
@@ -256,7 +256,7 @@ struct RecruitRemoteFromConfigurationReply {
 struct RecruitRemoteFromConfigurationRequest {
 	constexpr static FileIdentifier file_identifier = 3235995;
 	DatabaseConfiguration configuration;
-	Optional<Key> dcId;
+	Optional<Key> dcId; // Id of the datacenter from which workers are recruited
 	int logRouterCount;
 	std::vector<UID> exclusionWorkerIds;
 	ReplyPromise< RecruitRemoteFromConfigurationReply > reply;

@@ -379,6 +379,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		    epoch != oldestBackupEpoch) {
 			for (const auto& oldData : oldLogData) {
 				newState.oldTLogData.emplace_back(oldData);
+				// TODO: Change BWToCore event name to MasterRecoveryProgressOldTLogData
 				TraceEvent("BWToCore")
 				    .detail("Epoch", newState.oldTLogData.back().epoch)
 				    .detail("TotalTags", newState.oldTLogData.back().logRouterTags)
@@ -416,6 +417,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 		for(auto& t : newState.tLogs) {
 			if(!t.isLocal) {
+				// Consider to add prefix RecoveryProgress to these recovery related events
 				TraceEvent("RemoteLogsWritten", dbgid);
 				remoteLogsWrittenToCoreState = true;
 				break;

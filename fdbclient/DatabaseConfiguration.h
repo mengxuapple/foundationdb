@@ -66,6 +66,7 @@ struct RegionInfo {
 	// Number of satellite datacenters for current region, as set by `satellite_redundancy_mode`.
 	int32_t satelliteTLogUsableDcs;
 
+	// Q: What is fallback mechanism?
 	Reference<IReplicationPolicy> satelliteTLogPolicyFallback;
 	int32_t satelliteTLogReplicationFactorFallback;
 	int32_t satelliteTLogWriteAntiQuorumFallback;
@@ -191,7 +192,7 @@ struct DatabaseConfiguration {
 	// TLogs
 	Reference<IReplicationPolicy> tLogPolicy;
 	int32_t desiredTLogCount;
-	int32_t autoDesiredTLogCount;
+	int32_t autoDesiredTLogCount; // what is different from desiredTLogCount?
 	int32_t tLogWriteAntiQuorum;
 	int32_t tLogReplicationFactor;
 	TLogVersion tLogVersion;

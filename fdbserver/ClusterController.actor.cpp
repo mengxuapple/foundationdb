@@ -332,8 +332,14 @@ public:
 		return results;
 	}
 
+	// required: replication factor
+	// desired: the desired number of tLog workers
+	// policy: tLog's replication policy
+	// id_used: key: worker_id; value: number of times the worker is used by a role
+	// dcIds: ID of datacenters where the workers live
 	std::vector<WorkerDetails> getWorkersForTlogs( DatabaseConfiguration const& conf, int32_t required, int32_t desired, Reference<IReplicationPolicy> const& policy, std::map< Optional<Standalone<StringRef>>, int>& id_used, bool checkStable = false, std::set<Optional<Key>> dcIds = std::set<Optional<Key>>(), std::vector<UID> exclusionWorkerIds = {}) {
-		std::map<std::pair<ProcessClass::Fitness,bool>, vector<WorkerDetails>> fitness_workers;
+		std::map<std::pair<ProcessClass::Fitness, bool>, vector<WorkerDetails>>
+		    fitness_workers; // bool: is worker in degraded state
 		std::vector<WorkerDetails> results;
 		std::vector<LocalityData> unavailableLocals;
 		Reference<LocalitySet> logServerSet;
@@ -342,6 +348,7 @@ public:
 
 		logServerSet = Reference<LocalitySet>(new LocalityMap<WorkerDetails>());
 		logServerMap = (LocalityMap<WorkerDetails>*) logServerSet.getPtr();
+		// Calculate each worker's fitness for tLog role and save it to fitness_workers
 		for( auto& it : id_worker ) {
 			if (std::find(exclusionWorkerIds.begin(), exclusionWorkerIds.end(), it.second.details.interf.id()) == exclusionWorkerIds.end()) {
 				auto fitness = it.second.details.processClass.machineClassFitness(ProcessClass::TLog);
@@ -355,6 +362,8 @@ public:
 		}
 
 		results.reserve(results.size() + id_worker.size());
+		// Find desired or required number of workers that can satisfy the replication policy.
+		// Prefer workers with smaller Fitness value (i.e., better fit)
 		for (int fitness = ProcessClass::BestFit; fitness != ProcessClass::NeverAssign && !bCompleted; fitness++)
 		{
 			auto fitnessEnum = (ProcessClass::Fitness) fitness;
@@ -376,6 +385,7 @@ public:
 						bCompleted = true;
 						break;
 					}
+					// What is GWFTADNotAcceptable short for?
 					TraceEvent(SevWarn,"GWFTADNotAcceptable", id).detail("Fitness", fitness).detail("Processes", logServerSet->size()).detail("Required", required).detail("TLogPolicy",policy->info()).detail("DesiredLogs", desired).detail("AddingDegraded", addingDegraded);
 				}
 				// Try to select the desired size, if larger
@@ -393,6 +403,8 @@ public:
 							results.push_back(*object);
 							tLocalities.push_back(object->interf.locality);
 						}
+						// GWFTAD is short for?
+						// TODO: Change all events with the prefix
 						TraceEvent("GWFTADBestResults", id).detail("Fitness", fitness).detail("Processes", logServerSet->size()).detail("BestCount", bestSet.size()).detail("BestZones", ::describeZones(tLocalities))
 							.detail("BestDataHalls", ::describeDataHalls(tLocalities)).detail("TLogPolicy", policy->info()).detail("TotalResults", results.size()).detail("DesiredLogs", desired).detail("AddingDegraded", addingDegraded);
 						bCompleted = true;
@@ -431,12 +443,16 @@ public:
 		return results;
 	}
 
-	//FIXME: This logic will fallback unnecessarily when usable dcs > 1 because it does not check all combinations of potential satellite locations
+	// FIXME: This logic will fallback unnecessarily when usable dcs > 1 because it does not check all combinations of
+	// potential satellite locations
+	// What is satelliteTLogFallback?
 	std::vector<WorkerDetails> getWorkersForSatelliteLogs( const DatabaseConfiguration& conf, const RegionInfo& region, const RegionInfo& remoteRegion, std::map< Optional<Standalone<StringRef>>, int>& id_used, bool& satelliteFallback, bool checkStable = false ) {
 		int startDC = 0;
 		loop {
 			if(startDC > 0 && startDC >= region.satellites.size() + 1 - (satelliteFallback ? region.satelliteTLogUsableDcsFallback : region.satelliteTLogUsableDcs)) {
 				if(satelliteFallback || region.satelliteTLogUsableDcsFallback == 0) {
+					// TODO: Add warning wheneve we throw error in getWorkersXXX failed. Reference code:
+					// GetTLogTeamFailed
 					throw no_more_servers();
 				} else {
 					if(!goodRecruitmentTime.isReady()) {
@@ -524,11 +540,13 @@ public:
 			}
 		}
 
+		// TODO: Add a trace event here. It should be rare to throw error
 		throw no_more_servers();
 	}
 
 	vector<WorkerDetails> getWorkersForRoleInDatacenter(Optional<Standalone<StringRef>> const& dcId, ProcessClass::ClusterRole role, int amount, DatabaseConfiguration const& conf, std::map< Optional<Standalone<StringRef>>, int>& id_used, Optional<WorkerFitnessInfo> minWorker = Optional<WorkerFitnessInfo>(), bool checkStable = false ) {
-		std::map<std::pair<ProcessClass::Fitness,int>, std::pair<vector<WorkerDetails>,vector<WorkerDetails>>> fitness_workers;
+		std::map<std::pair<ProcessClass::Fitness, int>, std::pair<vector<WorkerDetails>, vector<WorkerDetails>>>
+		    fitness_workers; // second.second: long lived stateless worker; second.first: other workers
 		vector<WorkerDetails> results;
 		if(minWorker.present()) {
 			results.push_back(minWorker.get().worker);
@@ -537,6 +555,7 @@ public:
 			return results;
 		}
 
+		// Sort workers based on their fitness for the role and the number of roles already on the worker;
 		for( auto& it : id_worker ) {
 			auto fitness = it.second.details.processClass.machineClassFitness( role );
 			if( workerAvailable(it.second, checkStable) && !conf.isExcludedServer(it.second.details.interf.addresses()) && it.second.details.interf.locality.dcId() == dcId &&
@@ -549,6 +568,7 @@ public:
 			}
 		}
 
+		// Return n workers in increasing order of their fitness and used times
 		for( auto& it : fitness_workers ) {
 			for( int j=0; j < 2; j++ ) {
 				auto& w = j==0 ? it.second.first : it.second.second;
@@ -565,6 +585,8 @@ public:
 		return results;
 	}
 
+	// RoleFitness represents how fit a set of workers are for a role.
+	// It is used to decide if a recruited set of workers are good enough for a role.
 	struct RoleFitness {
 		ProcessClass::Fitness bestFit;
 		ProcessClass::Fitness worstFit;
@@ -578,16 +600,18 @@ public:
 
 		RoleFitness() : bestFit(ProcessClass::NeverAssign), worstFit(ProcessClass::NeverAssign), role(ProcessClass::NoRole), count(0), worstIsDegraded(false) {}
 
+		// Calculate the worst fitness and best fitness of the workers for the role;
+		// Set worstIsDegraded as true if the worst fitness worker is degraded for tLog role
 		RoleFitness( vector<WorkerDetails> workers, ProcessClass::ClusterRole role ) : role(role) {
 			worstFit = ProcessClass::GoodFit;
 			worstIsDegraded = false;
 			bestFit = ProcessClass::NeverAssign;
 			for(auto& it : workers) {
 				auto thisFit = it.processClass.machineClassFitness( role );
-				if(thisFit > worstFit) {
+				if (thisFit > worstFit) { // fitness is worse
 					worstFit = thisFit;
 					worstIsDegraded = it.degraded;
-				} else if(thisFit == worstFit) {
+				} else if (thisFit == worstFit) {
 					worstIsDegraded = worstIsDegraded || it.degraded;
 				}
 				bestFit = std::min(bestFit, thisFit);
@@ -663,6 +687,8 @@ public:
 		return result;
 	}
 
+	// id_used: key is process's id, value is the number of times the process has been used.
+	// a process is a worker
 	void updateKnownIds(std::map< Optional<Standalone<StringRef>>, int>* id_used) {
 		(*id_used)[masterProcessId]++;
 		(*id_used)[clusterControllerProcessId]++;
@@ -691,12 +717,17 @@ public:
 		if( !goodRemoteRecruitmentTime.isReady() &&
 			( ( RoleFitness(SERVER_KNOBS->EXPECTED_TLOG_FITNESS, req.configuration.getDesiredRemoteLogs(), ProcessClass::TLog).betterCount(RoleFitness(remoteLogs, ProcessClass::TLog)) ) ||
 			  ( RoleFitness(SERVER_KNOBS->EXPECTED_LOG_ROUTER_FITNESS, req.logRouterCount, ProcessClass::LogRouter).betterCount(RoleFitness(logRouters, ProcessClass::LogRouter)) ) ) ) {
+			// throw error if recruitment times out and the number of recruited tLogs or log routers are less than the
+			// desired number required in the req.configuration
 			throw operation_failed();
 		}
 
 		return result;
 	}
 
+	// Find workers in dcId for database configuration defined in req.
+	// dcId is the primary DC's id
+	// Return error if CC cannot find enough workers for a role
 	ErrorOr<RecruitFromConfigurationReply> findWorkersForConfiguration( RecruitFromConfigurationRequest const& req, Optional<Key> dcId ) {
 		RecruitFromConfigurationReply result;
 		std::map< Optional<Standalone<StringRef>>, int> id_used;
@@ -751,11 +782,12 @@ public:
 			result.proxies.push_back(proxies[i].interf);
 
 		if(req.maxOldLogRouters > 0) {
-			if(tlogs.size() == 1) {
+			if (tlogs.size() == 1) { // Q:Why is this a special case?
 				result.oldLogRouters.push_back(tlogs[0].interf);
 			} else {
 				for(int i = 0; i < tlogs.size(); i++) {
 					if(tlogs[i].interf.locality.processId() != clusterControllerProcessId) {
+						// Q: Why do we use tLog's interfaces for old log routers?
 						result.oldLogRouters.push_back(tlogs[i].interf);
 					}
 				}
@@ -777,19 +809,23 @@ public:
 			  ( region.satelliteTLogReplicationFactor > 0 && req.configuration.usableRegions > 1 && RoleFitness(SERVER_KNOBS->EXPECTED_TLOG_FITNESS, req.configuration.getDesiredSatelliteLogs(dcId), ProcessClass::TLog).betterCount(RoleFitness(satelliteLogs, ProcessClass::TLog)) ) ||
 			  RoleFitness(SERVER_KNOBS->EXPECTED_PROXY_FITNESS, req.configuration.getDesiredProxies(), ProcessClass::Proxy).betterCount(RoleFitness(proxies, ProcessClass::Proxy)) ||
 			  RoleFitness(SERVER_KNOBS->EXPECTED_RESOLVER_FITNESS, req.configuration.getDesiredResolvers(), ProcessClass::Resolver).betterCount(RoleFitness(resolvers, ProcessClass::Resolver)) ) ) {
+			// TODO: Add trace about what is the reason, tLog, proxy, or resolver, for the operation_failed error
 			return operation_failed();
 		}
 
 		return result;
 	}
 
+	// Recruit workers for various roles in the primary DC, where CC lives.
+	// Throw error if there is not enough fitable workers for txn roles, i.e., proxy, tLog, or resolver
 	RecruitFromConfigurationReply findWorkersForConfiguration( RecruitFromConfigurationRequest const& req ) {
-		if(req.configuration.regions.size() > 1) {
+		if (req.configuration.regions.size() > 1) { // This one has no backup worker recruitment. Is this if deprecated?
 			std::vector<RegionInfo> regions = req.configuration.regions;
 			if(regions[0].priority == regions[1].priority && regions[1].dcId == clusterControllerDcId.get()) {
 				std::swap(regions[0], regions[1]);
 			}
 
+			// Q: Why can we switch DC when DClag is high? or datacenterVersionDifference is region1 - region0?
 			if(regions[1].dcId == clusterControllerDcId.get() && regions[1].priority >= 0 && (!versionDifferenceUpdated || datacenterVersionDifference >= SERVER_KNOBS->MAX_VERSION_DIFFERENCE)) {
 				std::swap(regions[0], regions[1]);
 			}
@@ -825,13 +861,14 @@ public:
 					desiredDcIds.set(dcPriority);
 				}
 				if(reply.isError()) {
+					// TODO: Add SevWarnAlways trace: recruitment stucks because cannot find workers in either DC
 					throw reply.getError();
 				} else if (regions[1].dcId == clusterControllerDcId.get()) {
 					return reply.get();
 				}
 				throw;
 			}
-		} else if(req.configuration.regions.size() == 1) {
+		} else if (req.configuration.regions.size() == 1) {
 			vector<Optional<Key>> dcPriority;
 			dcPriority.push_back(req.configuration.regions[0].dcId);
 			desiredDcIds.set(dcPriority);
@@ -842,7 +879,7 @@ public:
 				return reply.get();
 			}
 			throw no_more_servers();
-		} else {
+		} else { // req.configuration.regions.size() < 1, regions are not set by DBA
 			RecruitFromConfigurationReply result;
 			std::map< Optional<Standalone<StringRef>>, int> id_used;
 			updateKnownIds(&id_used);
@@ -911,10 +948,14 @@ public:
 							numEquivalent = 1;
 							bestDC = dcId;
 						} else if( fitness == bestFitness && deterministicRandom()->random01() < 1.0/++numEquivalent ) {
+							// Log we found two dcIds that are best and randomly choose one.
+							// This log is useful because SRE may confuse why CC is killed and recruited in a different
+							// DC
 							bestDC = dcId;
 						}
 					}
 				} catch( Error &e ) {
+					// Recruitment in the dcId fails. Log the failure code and why it fails
 					if(e.code() != error_code_no_more_servers) {
 						throw;
 					}
@@ -922,6 +963,7 @@ public:
 			}
 
 			if(bestDC != clusterControllerDcId) {
+				// Log BetterDCExist message. The message helps us know why a CC is killed and re-recruited
 				vector<Optional<Key>> dcPriority;
 				dcPriority.push_back(bestDC);
 				desiredDcIds.set(dcPriority);
@@ -929,6 +971,7 @@ public:
 			}
 			//If this cluster controller dies, do not prioritize recruiting the next one in the same DC
 			desiredDcIds.set(vector<Optional<Key>>());
+			// TODO: Can we use a common prefix, say Recruitment, for all recruitment related trace event?
 			TraceEvent("FindWorkersForConfig").detail("Replication", req.configuration.tLogReplicationFactor)
 				.detail("DesiredLogs", req.configuration.getDesiredLogs()).detail("ActualLogs", result.tLogs.size())
 				.detail("DesiredProxies", req.configuration.getDesiredProxies()).detail("ActualProxies", result.proxies.size())
@@ -938,6 +981,8 @@ public:
 				( RoleFitness(SERVER_KNOBS->EXPECTED_TLOG_FITNESS, req.configuration.getDesiredLogs(), ProcessClass::TLog).betterCount(RoleFitness(tlogs, ProcessClass::TLog)) ||
 				  RoleFitness(SERVER_KNOBS->EXPECTED_PROXY_FITNESS, req.configuration.getDesiredProxies(), ProcessClass::Proxy).betterCount(bestFitness.proxy) ||
 				  RoleFitness(SERVER_KNOBS->EXPECTED_RESOLVER_FITNESS, req.configuration.getDesiredResolvers(), ProcessClass::Resolver).betterCount(bestFitness.resolver) ) ) {
+				// Recruitment times out and we do not find enough fitable workers for either tLog or proxy or resolver
+				// TODO: Log the error reason
 				throw operation_failed();
 			}
 
@@ -1315,8 +1360,11 @@ public:
 	Optional<Standalone<StringRef>> masterProcessId;
 	Optional<Standalone<StringRef>> clusterControllerProcessId;
 	Optional<Standalone<StringRef>> clusterControllerDcId;
-	AsyncVar<Optional<vector<Optional<Key>>>> desiredDcIds; //desired DC priorities
-	AsyncVar<std::pair<bool,Optional<vector<Optional<Key>>>>> changingDcIds; //current DC priorities to change first, and whether that is the cluster controller
+	AsyncVar<Optional<vector<Optional<Key>>>>
+	    desiredDcIds; // desired DCs. The first one is the primary dc recruited by CC.
+	AsyncVar<std::pair<bool, Optional<vector<Optional<Key>>>>>
+	    changingDcIds; // key: shall we change CC's DC?
+	                   // value: if key is true, the dcIds, where CC should live, in decreasing order of preference
 	AsyncVar<std::pair<bool,Optional<vector<Optional<Key>>>>> changedDcIds; //current DC priorities to change second, and whether the cluster controller has been changed
 	UID id;
 	std::vector<RecruitFromConfigurationRequest> outstandingRecruitmentRequests;
@@ -1511,6 +1559,7 @@ void checkOutstandingRecruitmentRequests( ClusterControllerData* self ) {
 			swapAndPop( &self->outstandingRecruitmentRequests, i-- );
 		} catch (Error& e) {
 			if (e.code() == error_code_no_more_servers || e.code() == error_code_operation_failed) {
+				// Recruitment fails due to not enough workers for either proxy, tLog or resolver
 				TraceEvent(SevWarn, "RecruitTLogMatchingSetNotAvailable", self->id).error(e);
 			} else {
 				TraceEvent(SevError, "RecruitTLogsRequestError", self->id).error(e);
@@ -1839,7 +1888,8 @@ ACTOR Future<Void> clusterRecruitFromConfiguration( ClusterControllerData* self,
 				TraceEvent(SevWarn, "RecruitFromConfigurationNotAvailable", self->id).error(e);
 				return Void();
 			} else if(e.code() == error_code_operation_failed || e.code() == error_code_no_more_servers) {
-				//recruitment not good enough, try again
+				// recruitment not good enough, try again
+				// TODO: Log a SevWarn message here and promote it to SevError if it fails for say 20 times
 			}
 			else {
 				TraceEvent(SevError, "RecruitFromConfigurationError", self->id).error(e);
@@ -1974,6 +2024,7 @@ void clusterRegisterMaster( ClusterControllerData* self, RegisterMasterRequest c
 	checkOutstandingRequests(self);
 }
 
+// HERE
 void registerWorker( RegisterWorkerRequest req, ClusterControllerData *self ) {
 	const WorkerInterface& w = req.wi;
 	ProcessClass newProcessClass = req.processClass;
@@ -2057,6 +2108,9 @@ void registerWorker( RegisterWorkerRequest req, ClusterControllerData *self ) {
 		TEST(true); // Received an old worker registration request.
 	}
 
+	// Q: What if there is a DD, CC will never proactively kill the DD?
+	// Q: What if CC fail over to remote, while DD is still alive; CC and DD will be in different DCs unless SRE kills
+	// DD manually. Is it correct?
 	if (req.distributorInterf.present() && !self->db.serverInfo->get().distributor.present() &&
 			self->clusterControllerDcId == req.distributorInterf.get().locality.dcId() &&
 			!self->recruitingDistributor) {
@@ -2536,6 +2590,7 @@ ACTOR Future<Void> monitorClientTxnInfoConfigs(ClusterControllerData::DBInfo* db
 	}
 }
 
+// CC decides it will die to switch datacenters
 ACTOR Future<Void> updatedChangingDatacenters(ClusterControllerData *self) {
 	//do not change the cluster controller until all the processes have had a chance to register
 	wait( delay(SERVER_KNOBS->WAIT_FOR_GOOD_RECRUITMENT_DELAY) );
@@ -2548,8 +2603,9 @@ ACTOR Future<Void> updatedChangingDatacenters(ClusterControllerData *self) {
 			uint8_t newFitness = ClusterControllerPriorityInfo::calculateDCFitness( worker.details.interf.locality.dcId(), self->desiredDcIds.get().get() );
 			self->changingDcIds.set(std::make_pair(worker.priorityInfo.dcFitness > newFitness,self->desiredDcIds.get()));
 
+			// TODO: Log old dc id worker.details.interf.locality.dcId() and new dc id self->desiredDcIds.get().get()[0]
 			TraceEvent("UpdateChangingDatacenter", self->id).detail("OldFitness", worker.priorityInfo.dcFitness).detail("NewFitness", newFitness);
-			if ( worker.priorityInfo.dcFitness > newFitness ) {
+			if (worker.priorityInfo.dcFitness > newFitness) { // The CC's dc's fitness to be primary DC improves
 				worker.priorityInfo.dcFitness = newFitness;
 				if(!worker.reply.isSet()) {
 					worker.reply.send( RegisterWorkerReply( worker.details.processClass, worker.priorityInfo, worker.storageCacheInfo ) );
@@ -2635,6 +2691,8 @@ ACTOR Future<Void> updatedChangedDatacenters(ClusterControllerData *self) {
 	}
 }
 
+// Datacenter version difference is the first primary tLog's commited version minus the first remote tLog's commited
+// version
 ACTOR Future<Void> updateDatacenterVersionDifference( ClusterControllerData *self ) {
 	state double lastLogTime = 0;
 	loop {
