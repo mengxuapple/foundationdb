@@ -27,6 +27,7 @@
 #include "flow/actorcompiler.h" // This must be the last #include.
 
 // "ssd" is an alias to the preferred type which skews the random distribution toward it but that's okay.
+// TODO: Add RocksDB into storeTypes
 static const char* storeTypes[] = {
 	"ssd", "ssd-1", "ssd-2", "memory", "memory-1", "memory-2", "memory-radixtree-beta"
 };

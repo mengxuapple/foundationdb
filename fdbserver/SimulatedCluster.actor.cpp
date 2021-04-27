@@ -903,12 +903,12 @@ void SimulationConfig::generateNormalConfig(const TestConfig& testConfig) {
 		db.grvProxyCount = deterministicRandom()->randomInt(1, 4);
 	if (deterministicRandom()->random01() < 0.25)
 		db.resolverCount = deterministicRandom()->randomInt(1, 7);
-	int storage_engine_type = deterministicRandom()->randomInt(0, 4);
+	int storage_engine_type = deterministicRandom()->randomInt(0, 5);
 	// Continuously re-pick the storage engine type if it's the one we want to exclude
 	while (std::find(testConfig.storageEngineExcludeTypes.begin(),
 	                 testConfig.storageEngineExcludeTypes.end(),
 	                 storage_engine_type) != testConfig.storageEngineExcludeTypes.end()) {
-		storage_engine_type = deterministicRandom()->randomInt(0, 4);
+		storage_engine_type = deterministicRandom()->randomInt(0, 5);
 	}
 	switch (storage_engine_type) {
 	case 0: {
@@ -929,6 +929,11 @@ void SimulationConfig::generateNormalConfig(const TestConfig& testConfig) {
 	case 3: {
 		TEST(true); // Simulated cluster using redwood storage engine
 		set_config("ssd-redwood-experimental");
+		break;
+	}
+	case 4: {
+		TEST(true); // Simulated cluster using rocksdb storage engine
+		set_config("ssd-rocksdb-experimental");
 		break;
 	}
 	default:
