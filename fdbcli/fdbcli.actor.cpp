@@ -2318,6 +2318,9 @@ ACTOR Future<bool> exclude(Database db,
                            Reference<ClusterConnectionFile> ccf,
                            Future<Void> warn) {
 	if (tokens.size() <= 1) {
+		// TODO: Modify getExcludedServers(db) to getExcludedServers(db, ExcludeType excludeType)
+		// When second param is Enum ExcludeType::ServerIP, it is the same functionality as getExcludedServers(db);
+		// When second param is ExcludeType::ServerID, it returns the processID of excluded processes
 		vector<AddressExclusion> excl = wait(makeInterruptable(getExcludedServers(db)));
 		if (!excl.size()) {
 			printf("There are currently no servers excluded from the database.\n"

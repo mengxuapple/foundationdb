@@ -96,6 +96,10 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 		                                                std::min(processCount, maxMachinesToKill) + 1);
 		toKill1 = random_subset(processAddrs, nToKill1);
 		toKill2 = random_subset(processAddrs, nToKill2);
+		// TODO: Randomly generate process localities to exclude.
+		// HINT: You can get all processes in the simulator by getServers()
+		// The ProcessInfo->locality has the localityData, defined in Locality.h, which is a set of key-value pairs.
+		// For example, dcID=dc1.
 
 		if (!killProcesses) {
 			std::set<AddressExclusion> processSet;
@@ -140,6 +144,7 @@ struct RemoveServersSafelyWorkload : TestWorkload {
 		if (!enabled)
 			return Void();
 		double delay = deterministicRandom()->random01() * (maxDelay - minDelay) + minDelay;
+		// HINT: This is how we test "exclude" commands in simulation
 		return workloadMain(this, cx, delay, toKill1, toKill2);
 	}
 

@@ -577,6 +577,7 @@ const KeyRef configKeysPrefix = configKeys.begin;
 
 const KeyRef triggerDDTeamInfoPrintKey(LiteralStringRef("\xff/triggerDDTeamInfoPrint"));
 
+// TODO: Add key \xff/conf/excludedByID
 const KeyRangeRef excludedServersKeys(LiteralStringRef("\xff/conf/excluded/"), LiteralStringRef("\xff/conf/excluded0"));
 const KeyRef excludedServersPrefix = excludedServersKeys.begin;
 const KeyRef excludedServersVersionKey = LiteralStringRef("\xff/conf/excluded");
@@ -594,6 +595,7 @@ std::string encodeExcludedServersKey(AddressExclusion const& addr) {
 	return excludedServersPrefix.toString() + addr.toString();
 }
 
+// TODO: Add key \xff/conf/failedByID
 const KeyRangeRef failedServersKeys(LiteralStringRef("\xff/conf/failed/"), LiteralStringRef("\xff/conf/failed0"));
 const KeyRef failedServersPrefix = failedServersKeys.begin;
 const KeyRef failedServersVersionKey = LiteralStringRef("\xff/conf/failed");

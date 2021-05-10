@@ -3639,6 +3639,8 @@ ACTOR Future<Void> trackExcludedServers(DDTeamCollection* self) {
 			    tr.getRange(excludedServersKeys, CLIENT_KNOBS->TOO_MANY);
 			state Future<Standalone<RangeResultRef>> fresultsFailed =
 			    tr.getRange(failedServersKeys, CLIENT_KNOBS->TOO_MANY);
+			// TODO: Get excludedLocalities key:value for excluded and failed list;
+
 			wait(success(fresultsExclude) && success(fresultsFailed));
 
 			Standalone<RangeResultRef> excludedResults = fresultsExclude.get();
@@ -3661,6 +3663,13 @@ ACTOR Future<Void> trackExcludedServers(DDTeamCollection* self) {
 					failed.insert(addr);
 				}
 			}
+			// TODO: Decode excludedLocalities to get the locality key value. For example, processID=abc
+			// Refer to decodeExcludedServersKey()
+
+			// TODO: Get all processes in the cluster.
+
+			// Find IP:Port for the excluded localities and add them to excluded or failed list as above.
+
 
 			// Reset and reassign self->excludedServers based on excluded, but we only
 			// want to trigger entries that are different
@@ -3686,6 +3695,9 @@ ACTOR Future<Void> trackExcludedServers(DDTeamCollection* self) {
 			    .detail("RowsFailed", failedResults.size());
 
 			self->restartRecruiting.trigger();
+			// If we have processes excluded by locality, we need to periodically check if their IP:Port are changed.
+			// If so, we need to retrigger the loop.
+			// TODO: Add an actor for such checking and wait for it as a part of watchFuture condition.
 			state Future<Void> watchFuture = tr.watch(excludedServersVersionKey) || tr.watch(failedServersVersionKey);
 			wait(tr.commit());
 			wait(watchFuture);
