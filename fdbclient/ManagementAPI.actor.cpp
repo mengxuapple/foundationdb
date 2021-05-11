@@ -1348,6 +1348,8 @@ Reference<IQuorumChange> autoQuorumChange(int desired) {
 	return Reference<IQuorumChange>(new AutoQuorumChange(desired));
 }
 
+// TODO: Add a similar actor to exclude processes by locality, i.e., 
+// the second parameter will be vector<std::pair<locality_key, locality_value>>
 ACTOR Future<Void> excludeServers(Database cx, vector<AddressExclusion> servers, bool failed) {
 	state Transaction tr(cx);
 	state Key versionKey = BinaryWriter::toValue(deterministicRandom()->randomUniqueID(), Unversioned());
@@ -1380,6 +1382,7 @@ ACTOR Future<Void> excludeServers(Database cx, vector<AddressExclusion> servers,
 	}
 }
 
+// TODO: Similar to excludeServers, you need to includeServers() for locality-based include operation
 ACTOR Future<Void> includeServers(Database cx, vector<AddressExclusion> servers, bool failed) {
 	state Transaction tr(cx);
 	state std::string versionKey = deterministicRandom()->randomUniqueID().toString();

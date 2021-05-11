@@ -1113,6 +1113,7 @@ ACTOR Future<Void> updatePersistentData(TLogData* self, Reference<LogData> logDa
 	}
 
 	if (logData->bytesDurable.getValue() > logData->bytesInput.getValue() || self->bytesDurable > self->bytesInput) {
+		// Q: bytesDurable definition? Is it the bytes of data durable on tLog disk or SS?
 		TraceEvent(SevError, "BytesDurableTooLarge", logData->logId)
 		    .detail("SharedBytesInput", self->bytesInput)
 		    .detail("SharedBytesDurable", self->bytesDurable)
