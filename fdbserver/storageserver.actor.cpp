@@ -337,7 +337,7 @@ public:
 		    bandwidth(Histogram::getHistogram(STORAGESERVER_HISTOGRAM_GROUP,
 		                                      FETCH_KEYS_BYTES_PER_SECOND_HISTOGRAM,
 		                                      Histogram::Unit::bytes_per_second)) {}
-	} fetchKeysHistograms;
+	} fetchKeysHistograms; // Example of using histogram
 
 	class CurrentRunningFetchKeys {
 		std::unordered_map<UID, double> startTimeMap;
@@ -2354,6 +2354,7 @@ void splitMutation(StorageServer* data, KeyRangeMap<T>& map, MutationRef const& 
 		ASSERT(false); // Unknown mutation type in splitMutations
 }
 
+// Example: How to log a procedure that takes too long
 ACTOR Future<Void> logFetchKeysWarning(AddingShard* shard) {
 	state double startTime = now();
 	loop {

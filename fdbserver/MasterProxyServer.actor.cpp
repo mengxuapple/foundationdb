@@ -450,6 +450,8 @@ ACTOR Future<Void> queueTransactionStartRequests(Reference<AsyncVar<ServerDBInfo
 		}
 		// dynamic batching monitors reply latencies
 		when(double reply_latency = waitNext(replyTimes)) {
+			// reply_latency is batched GRV latency.
+			// TODO: Add histogram on GRV latency
 			double target_latency = reply_latency * SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_LATENCY_FRACTION;
 			*GRVBatchTime = std::max(
 			    SERVER_KNOBS->START_TRANSACTION_BATCH_INTERVAL_MIN,
@@ -735,6 +737,7 @@ ACTOR Future<Void> commitBatcher(ProxyCommitData* commitData,
 		} else {
 			timeout = delayJittered(SERVER_KNOBS->MAX_COMMIT_BATCH_INTERVAL, TaskPriority::ProxyCommitBatcher);
 		}
+
 
 		while (!timeout.isReady() &&
 		       !(batch.size() == SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_COUNT_MAX || batchBytes >= desiredBytes)) {
@@ -1039,6 +1042,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	GetCommitVersionRequest req(
 	    self->commitVersionRequestNumber++, self->mostRecentProcessedRequestNumber, self->dbgid);
+	// TODO: Add latency histogram
 	GetCommitVersionReply versionReply =
 	    wait(brokenPromiseToNever(self->master.getCommitVersion.getReply(req, TaskPriority::ProxyMasterVersionReply)));
 	self->mostRecentProcessedRequestNumber = versionReply.requestNum;
@@ -1080,6 +1084,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	// Sending these requests is the fuzzy border between phase 1 and phase 2; it could conceivably overlap with
 	// resolution processing but is still using CPU
 	self->stats.txnCommitResolving += trs.size();
+	// TODO: Add latency histogram for each resolver. When one resolver is slower, we can still detect
 	vector<Future<ResolveTransactionBatchReply>> replies;
 	for (int r = 0; r < self->resolvers.size(); r++) {
 		requests.requests[r].debugID = debugID;
@@ -1114,6 +1119,9 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	////// Phase 3: Post-resolution processing (CPU bound except for very rare situations; ordered; currently atomic but
 	///doesn't need to be)
 	TEST(self->latestLocalCommitBatchLogging.get() < localBatchNumber - 1); // Queuing post-resolution commit processing
+	// Add historgram for each local commit batch's latency.
+	// If a commit batch is slow due to noisy neighbor or abnormally large batch, commit will be slowed down.
+	// We need to detect that
 	wait(self->latestLocalCommitBatchLogging.whenAtLeast(localBatchNumber - 1));
 	wait(yield(TaskPriority::ProxyCommitYield1));
 
@@ -1440,6 +1448,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	// Storage servers mustn't make durable versions which are not fully committed (because then they are impossible to
 	// roll back) We prevent this by limiting the number of versions which are semi-committed but not fully committed to
 	// be less than the MVCC window
+	// TODO: Add histogram for the wait time on MVCC window, i.e., committedVersion request (see below), and getConsistentReadVersion
 	if (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) {
 		computeDuration += g_network->timer() - computeStart;
 		while (self->committedVersion.get() < commitVersion - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) {
@@ -1450,11 +1459,13 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 			choose {
 				when(wait(self->committedVersion.whenAtLeast(commitVersion -
 				                                             SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS))) {
+					// Measure latency of waiting due to 5s MVCC window limitation
 					wait(yield());
 					break;
 				}
 				when(GetReadVersionReply v = wait(self->getConsistentReadVersion.getReply(GetReadVersionRequest(
 				         0, TransactionPriority::IMMEDIATE, GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)))) {
+					// Measure latency of getConsistentReadVersion
 					if (v.version > self->committedVersion.get()) {
 						self->locked = v.locked;
 						self->metadataVersion = v.metadataVersion;
@@ -1496,6 +1507,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	state double commitStartTime = now();
 	self->lastStartCommit = commitStartTime;
+	// Inside push() implementation, we should log each producer-consumer pair's latencies
 	Future<Version> loggingComplete = self->logSystem->push(
 	    prevVersion, commitVersion, self->committedVersion.get(), self->minKnownCommittedVersion, toCommit, debugID);
 
@@ -1504,6 +1516,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 		self->latestLocalCommitBatchLogging.set(localBatchNumber);
 	}
 
+	// Add histogram on proxy's compute duration, which can catch slow node issue or large-commit-slow-down-commit issue
 	computeDuration += g_network->timer() - computeStart;
 	if (batchOperations > 0) {
 		double computePerOperation =
@@ -1526,9 +1539,12 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	try {
 		choose {
 			when(Version ver = wait(loggingComplete)) {
+				// TODO: Add histogram for latencies of pushing mutations to tLogs
 				self->minKnownCommittedVersion = std::max(self->minKnownCommittedVersion, ver);
 			}
-			when(wait(self->committedVersion.whenAtLeast(commitVersion + 1))) {}
+			when(wait(self->committedVersion.whenAtLeast(commitVersion + 1))) {
+				// Q: Why do we have to wait here? Can we block here?
+			}
 		}
 	} catch (Error& e) {
 		if (e.code() == error_code_broken_promise) {
@@ -1549,7 +1565,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 		self->txsPopVersions.emplace_back(commitVersion, msg.popTo);
 	}
-	self->logSystem->popTxs(msg.popTo);
+	self->logSystem->popTxs(msg.popTo); // Q: Why shall proxy popTxs?
 
 	/////// Phase 5: Replies (CPU bound; no particular order required, though ordered execution would be best for
 	///latency)
@@ -1560,7 +1576,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	if (debugID.present())
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.AfterLogPush");
 
-	for (auto& p : storeCommits) {
+	for (auto& p : storeCommits) { //Q: Why ack txnStateStore's commit until now? Is it because now is after we commit msgs to tLogs
 		ASSERT(!p.second.isReady());
 		p.first.get().acknowledge.send(Void());
 		ASSERT(p.second.isReady());
@@ -1660,6 +1676,8 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	self->commitBatchesMemBytesCount -= currentBatchMemBytesCount;
 	ASSERT_ABORT(self->commitBatchesMemBytesCount >= 0);
+	// Add histogram on the artificial latency introduced to transaction batch that is after the current in-processing one.
+	// The latency is added to reduce the performance interference from later txn batch to the current in-processing one.
 	wait(releaseFuture);
 	return Void();
 }
@@ -1668,6 +1686,7 @@ ACTOR Future<Void> updateLastCommit(ProxyCommitData* self, Optional<UID> debugID
 	state double confirmStart = now();
 	self->lastStartCommit = confirmStart;
 	self->updateCommitRequests++;
+	// Histogram on latency of confirmEpochLive
 	wait(self->logSystem->confirmEpochLive(debugID));
 	self->updateCommitRequests--;
 	self->lastCommitLatency = now() - confirmStart;
@@ -1993,6 +2012,7 @@ ACTOR static Future<Void> transactionStarter(MasterProxyInterface proxy,
 
 				// for now, base dynamic batching on the time for normal requests (not read_risky)
 				if (i == 0) {
+					// HINT: timeReply might be used to measure latency of a reply.
 					addActor.send(timeReply(readVersionReply, replyTimes));
 				}
 				defaultGRVProcessed += defaultPriTransactionsStarted[i];
