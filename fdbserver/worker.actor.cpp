@@ -1897,6 +1897,7 @@ Future<Void> monitorLeaderRemotely(Reference<ClusterConnectionFile> const& connF
 	return m || deserializer(serializedInfo, outKnownLeader);
 }
 
+// TODO: Define
 ACTOR Future<Void> monitorLeaderRemotelyWithDelayedCandidacy(
     Reference<ClusterConnectionFile> connFile,
     Reference<AsyncVar<Optional<ClusterControllerFullInterface>>> currentCC,

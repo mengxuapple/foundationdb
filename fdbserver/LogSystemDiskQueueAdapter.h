@@ -42,6 +42,7 @@ struct PeekTxsInfo {
 
 class LogSystemDiskQueueAdapter : public IDiskQueue {
 public:
+	// LogSystemDiskQueueAdapter is equivalent to the filesystem used to store data for sqlite storage engine.
 	// This adapter is designed to let KeyValueStoreMemory use ILogSystem
 	// as a backing store, so that the transaction subsystem can in
 	// turn use KeyValueStoreMemory to track configuration information as of
@@ -126,14 +127,14 @@ private:
 	// Recovery state (used while readNext() is being called repeatedly)
 	bool enableRecovery;
 	Reference<ILogSystem> logSystem;
-	Version recoveryLoc, recoveryQueueLoc;
+	Version recoveryLoc, recoveryQueueLoc;//Q: Definition?
 	std::vector<Standalone<StringRef>> recoveryQueue;
 	int recoveryQueueDataSize;
 
 	// State for next commit() call
-	Standalone<VectorRef<VectorRef<uint8_t>>> pushedData; // SOMEDAY: better representation?
+	Standalone<VectorRef<VectorRef<uint8_t>>> pushedData; // Memory buffer for data to batch to commit to commitMessages
 	Version poppedUpTo;
-	std::deque<Promise<CommitMessage>> commitMessages;
+	std::deque<Promise<CommitMessage>> commitMessages; // Memory buffer of message to commit. Similar to filesystem memory buffer
 	Version nextCommit;
 	bool hasDiscardedData;
 	int totalRecoveredBytes;

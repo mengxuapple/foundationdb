@@ -176,6 +176,8 @@ ACTOR Future<Void> resetChecker(ILogSystem::ServerPeekCursor* self, NetworkAddre
 	return Void();
 }
 
+// Record latency of how long LR receives reply from its peek request
+// TODO: Shall we record TLogPeekReply latency? Is it duplicate
 ACTOR Future<TLogPeekReply> recordRequestMetrics(ILogSystem::ServerPeekCursor* self,
                                                  NetworkAddress addr,
                                                  Future<TLogPeekReply> in) {
@@ -205,6 +207,10 @@ ACTOR Future<TLogPeekReply> recordRequestMetrics(ILogSystem::ServerPeekCursor* s
 	}
 }
 
+// We can add historgram inside this function to monitor the peek progress
+// self->interf.id() is from which (tLog) server consumer is peeking
+// We may need to pass peek caller's (e.g., remote tLog or SS) id into ServerPeekCursor.
+// Then we get the (peekCaller and its role, peekLocation)'s latency histogram
 ACTOR Future<Void> serverPeekParallelGetMore(ILogSystem::ServerPeekCursor* self, TaskPriority taskID) {
 	if (!self->interf || self->messageVersion >= self->end) {
 		if (self->hasMessage())

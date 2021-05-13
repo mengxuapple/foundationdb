@@ -423,7 +423,7 @@ struct ILogSystem {
 		TagsAndMessage messageAndTags;
 		bool hasMsg;
 		Future<Void> more;
-		UID randomID;
+		UID randomID; // PeekCursor's UID
 		bool returnIfBlocked;
 
 		bool onlySpilled;
@@ -734,6 +734,8 @@ struct ILogSystem {
 	// the preceding changes are durable.  (Later we will need multiple return signals for diffferent durability levels)
 	// If the current epoch has ended, push will not return, and the pushed messages will not be visible in any
 	// subsequent epoch (but may become visible in this epoch)
+	// Q: If proxy sends some data to some tLogs, recovery happens.
+	// How does SS know those inflight data is not committed, since SS can fetch inflight data?
 
 	virtual Reference<IPeekCursor> peek(UID dbgid,
 	                                    Version begin,

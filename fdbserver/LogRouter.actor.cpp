@@ -39,7 +39,7 @@ struct LogRouterData {
 	struct TagData : NonCopyable, public ReferenceCounted<TagData> {
 		std::deque<std::pair<Version, LengthPrefixedStringRef>> version_messages;
 		Version popped;
-		Version durableKnownCommittedVersion;
+		Version durableKnownCommittedVersion; // Version of data that has been made durable on remote tLogs
 		Tag tag;
 
 		TagData(Tag tag, Version popped, Version durableKnownCommittedVersion)
@@ -56,7 +56,7 @@ struct LogRouterData {
 			durableKnownCommittedVersion = r.durableKnownCommittedVersion;
 		}
 
-		// Erase messages not needed to update *from* versions >= before (thus, messages with toversion <= before)
+		// Erase messages with version <= before. yield() for each erase to avoid slow task
 		ACTOR Future<Void> eraseMessagesBefore(TagData* self,
 		                                       Version before,
 		                                       LogRouterData* tlogData,
@@ -88,7 +88,7 @@ struct LogRouterData {
 	NotifiedVersion version; // The largest version at which the log router has peeked mutations
 	                         // from satellite tLog or primary tLogs.
 	NotifiedVersion minPopped; // The minimum version among all tags that has been popped by remote tLogs.
-	const Version startVersion;
+	const Version startVersion; // the lowest version LR needs
 	Version minKnownCommittedVersion; // The minimum durable version among all LRs.
 	                                  // A LR's durable version is the maximum version of mutations that have been
 	                                  // popped by remote tLog.
@@ -206,6 +206,7 @@ struct LogRouterData {
 	}
 };
 
+// Write tagged messages to LR's tag-indexed memory tagData
 void commitMessages(LogRouterData* self, Version version, const std::vector<TagsAndMessage>& taggedMessages) {
 	if (!taggedMessages.size()) {
 		return;
@@ -257,6 +258,7 @@ void commitMessages(LogRouterData* self, Version version, const std::vector<Tags
 	self->messageBlocks.emplace_back(version, block);
 }
 
+// Wait for LR's peekCursorServer to get data newer than ver from tLog
 ACTOR Future<Void> waitForVersion(LogRouterData* self, Version ver) {
 	// The only time the log router should allow a gap in versions larger than MAX_READ_TRANSACTION_LIFE_VERSIONS is
 	// when processing epoch end. Since one set of log routers is created per generation of transaction logs, the gap
@@ -270,23 +272,27 @@ ACTOR Future<Void> waitForVersion(LogRouterData* self, Version ver) {
 		//       a part of primary tLogs.
 		if (ver > self->startVersion) {
 			self->version.set(self->startVersion);
-			// Wait for remote tLog to peek and pop from LR,
+			// Wait for consumer tLog to peek and pop from LR,
 			// so that LR's minPopped version can increase to self->startVersion
 			wait(self->minPopped.whenAtLeast(self->version.get()));
 		}
-		self->waitForVersionTime += now() - startTime;
+		self->waitForVersionTime += now() - startTime; // TODO: Add histogram for waitForVersionTime
 		self->maxWaitForVersionTime = std::max(self->maxWaitForVersionTime, now() - startTime);
-		return Void();
+		return Void(); //Q: Why return before LR's minPopped version is larger than wait-for-version ver?
 	}
+	// Below if-else wait is to ensure LR does not have more than 5s MVCC window data;
+	// Wait for LR's data being popped.
+	// TODO: Add histogram WaitForPopMVCC
 	if (!self->foundEpochEnd) {
 		// Similar to proxy that does not keep more than MAX_READ_TRANSACTION_LIFE_VERSIONS transactions oustanding;
 		// Log router does not keep more than MAX_READ_TRANSACTION_LIFE_VERSIONS transactions outstanding because
 		// remote SS cannot roll back to more than MAX_READ_TRANSACTION_LIFE_VERSIONS ago.
 		wait(self->minPopped.whenAtLeast(
 		    std::min(self->version.get(), ver - SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS)));
-	} else {
+	} else { // Handle recovery: Use LR to copy data from old generation tLogs to new generation tLogs
 		while (self->minPopped.get() + SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS < ver) {
 			if (self->minPopped.get() + SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS > self->version.get()) {
+				// Set self->version to mark 5s data available for new generation tLogs to consume
 				self->version.set(self->minPopped.get() + SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS);
 				wait(yield(TaskPriority::TLogCommit));
 			} else {
@@ -295,6 +301,8 @@ ACTOR Future<Void> waitForVersion(LogRouterData* self, Version ver) {
 		}
 	}
 	if (ver >= self->startVersion + SERVER_KNOBS->MAX_VERSIONS_IN_FLIGHT) {
+		// Cluster has not finished recovery yet
+		// TODO: Add a trace to signal that?
 		self->foundEpochEnd = true;
 	}
 	self->waitForVersionTime += now() - startTime;
@@ -405,6 +413,7 @@ std::deque<std::pair<Version, LengthPrefixedStringRef>>& get_version_messages(Lo
 	return tagData->version_messages;
 };
 
+// Serve consumer's (i.e., remote tLog) peek request to get data from LR
 void peekMessagesFromMemory(LogRouterData* self,
                             TLogPeekRequest const& req,
                             BinaryWriter& messages,
@@ -443,6 +452,9 @@ Version poppedVersion(LogRouterData* self, Tag tag) {
 	return tagData->popped;
 }
 
+// TLogPeekRequest is from LR's consumer.
+// First pull data from LR's producer (i.e., primary tLogs) into LR's memory;
+// Then peekMessagesFromMemory in LR and reply message back to LR's consumer
 ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest req) {
 	state BinaryWriter messages(Unversioned());
 	state int sequence = -1;
@@ -450,6 +462,7 @@ ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest re
 
 	if (req.sequence.present()) {
 		try {
+			// peekId is PeekCursor's UID. For a LR, each peek caller has a PeekCursor with unique ID
 			peekId = req.sequence.get().first;
 			sequence = req.sequence.get().second;
 			if (sequence >= SERVER_KNOBS->PARALLEL_GET_MORE_REQUESTS &&
@@ -478,7 +491,7 @@ ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest re
 			trackerData.lastUpdate = now();
 			std::pair<Version, bool> prevPeekData = wait(trackerData.sequence_version[sequence].getFuture());
 			req.begin = prevPeekData.first;
-			req.onlySpilled = prevPeekData.second;
+			req.onlySpilled = prevPeekData.second; // If prevPeek peeks from spilled data, next peek is likely to peek from spilled data.
 			wait(yield());
 		} catch (Error& e) {
 			if (e.code() == error_code_timed_out || e.code() == error_code_operation_obsolete) {
@@ -505,6 +518,7 @@ ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest re
 	}
 
 	if (self->version.get() < req.begin) {
+		// Wait for data shipped and got ready in the LR
 		wait(self->version.whenAtLeast(req.begin));
 		wait(delay(SERVER_KNOBS->TLOG_PEEK_DELAY, g_network->getCurrentTask()));
 	}
@@ -512,6 +526,7 @@ ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest re
 	Version poppedVer = poppedVersion(self, req.tag);
 
 	if (poppedVer > req.begin || req.begin < self->startVersion) {
+		// Data at version req.begin has already been consumed.
 		// This should only happen if a packet is sent multiple times and the reply is not needed.
 		// Since we are using popped differently, do not send a reply.
 		TraceEvent(SevWarnAlways, "LogRouterPeekPopped", self->dbgid)
@@ -529,11 +544,12 @@ ACTOR Future<Void> logRouterPeekMessages(LogRouterData* self, TLogPeekRequest re
 		return Void();
 	}
 
+	// Now LR has data up to self->version
 	Version endVersion = self->version.get() + 1;
 	peekMessagesFromMemory(self, req, messages, endVersion);
 
 	TLogPeekReply reply;
-	reply.maxKnownVersion = self->version.get();
+	reply.maxKnownVersion = self->version.get(); // Max version of data ready on the LR
 	reply.minKnownCommittedVersion = self->poppedVersion;
 	reply.messages = messages.toValue();
 	reply.popped = self->minPopped.get() >= self->startVersion ? self->minPopped.get() : 0;
@@ -617,6 +633,8 @@ ACTOR Future<Void> logRouterPop(LogRouterData* self, TLogPopRequest req) {
 	self->poppedVersion = std::min(minKnownCommittedVersion, self->minKnownCommittedVersion);
 	if (self->logSystem->get() && self->allowPops) {
 		const Tag popTag = self->logSystem->get()->getPseudoPopTag(self->routerTag, ProcessClass::LogRouterClass);
+		// LR pop data in primary tLogs or primary satellite tLog.
+		// TODO: logSystem needs to add fields to indicate who (i.e., which role, and id) holds the logSystem interface.
 		self->logSystem->get()->pop(self->poppedVersion, popTag);
 	}
 	req.reply.send(Void());
@@ -644,9 +662,11 @@ ACTOR Future<Void> logRouterCore(TLogInterface interf,
 			logRouterData.logSystem->set(ILogSystem::fromServerDBInfo(logRouterData.dbgid, db->get(), true));
 		}
 		when(TLogPeekRequest req = waitNext(interf.peekMessages.getFuture())) {
+			// remote TLog pullAsyncData() uses LR's peek cursor to fetch data from LR
 			addActor.send(logRouterPeekMessages(&logRouterData, req));
 		}
 		when(TLogPopRequest req = waitNext(interf.popMessages.getFuture())) {
+			// Q: Where is the req sent?
 			// Request from remote tLog to pop data from LR
 			addActor.send(logRouterPop(&logRouterData, req));
 		}

@@ -398,6 +398,8 @@ void applyMetadataMutations(UID const& dbgid,
 						    .detail("PopVersion", popVersion)
 						    .detail("Tag", tag.toString())
 						    .detail("Server", decodeServerTagKey(kv.key));
+						// Q: Why logSystem here only pop for clear op. It does not commit for any set op?
+						// Because set is piggy back through mutation push op?
 						logSystem->pop(popVersion, decodeServerTagValue(kv.value));
 						(*tag_popped)[tag] = popVersion;
 

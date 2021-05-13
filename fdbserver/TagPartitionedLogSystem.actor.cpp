@@ -178,7 +178,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 
 	Optional<Version> recoverAt;
 	Optional<Version> recoveredAt;
-	Version knownCommittedVersion;
+	Version knownCommittedVersion;// Q:Defination
 	Version backupStartVersion = invalidVersion; // max(tLogs[0].startVersion, previous epochEnd).
 	LocalityData locality;
 	// For each currently running popFromLog actor, outstandingPops is
@@ -186,12 +186,12 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 	// Why do we need durableKnownCommittedVersion? knownCommittedVersion gives the lower bound of what data
 	// will need to be copied into the next generation to restore the replication factor.
 	// Guess: It probably serves as a minimum version of what data should be on a TLog in the next generation and
-	// sending a pop for anything less than durableKnownCommittedVersion for the TLog will be absurd.
+	// sending a pop for anything larger than durableKnownCommittedVersion for the TLog will be absurd.
 	std::map<std::pair<UID, Tag>, std::pair<Version, Version>> outstandingPops;
 
 	Optional<PromiseStream<Future<Void>>> addActor;
 	ActorCollection popActors;
-	std::vector<OldLogData> oldLogData; // each element has the log info. in one old epoch.
+	std::vector<OldLogData> oldLogData; // each element has the log info. in one old epoch. Sorted in increasing order of generations
 	AsyncTrigger logSystemConfigChanged;
 
 	TagPartitionedLogSystem(UID dbgid,
@@ -542,6 +542,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		return t;
 	}
 
+	// knownCommittedVersion is the latest committed version on a proxy who is pushing data for inflight uncommitted txns
 	Future<Version> push(Version prevVersion,
 	                     Version version,
 	                     Version knownCommittedVersion,
@@ -728,6 +729,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 	}
 
+	// remote tLog peeks from LRs
 	Reference<IPeekCursor> peekRemote(UID dbgid, Version begin, Optional<Version> end, Tag tag, bool parallelGetMore) {
 		int bestSet = -1;
 		Version lastBegin = recoveredAt.present() ? recoveredAt.get() + 1 : 0;
@@ -847,6 +849,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 
 	Reference<IPeekCursor> peek(UID dbgid, Version begin, Optional<Version> end, Tag tag, bool parallelGetMore) final {
 		if (!tLogs.size()) {
+			// Q: When will this happen?
 			TraceEvent("TLogPeekNoLogSets", dbgid).detail("Tag", tag.toString()).detail("Begin", begin);
 			return Reference<ILogSystem::ServerPeekCursor>(new ILogSystem::ServerPeekCursor(
 			    Reference<AsyncVar<OptionalInterface<TLogInterface>>>(), tag, begin, getPeekEnd(), false, false));
@@ -892,6 +895,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		                                   false));
 	}
 
+	//  Chooses TLogs that have the same locality with the SS to peek from and return the PeekCursor
 	Reference<IPeekCursor> peekLocal(UID dbgid,
 	                                 Tag tag,
 	                                 Version begin,
@@ -903,9 +907,10 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 		ASSERT(peekLocality >= 0 || peekLocality == tagLocalityUpgraded);
 
-		int bestSet = -1;
+		int bestSet = -1; // best set of tLogs are in the same dc with the peek consumer
 		bool foundSpecial = false;
 		int logCount = 0;
+		// Find the tLog set that have the same locality (i.e., dc location) with the peek consumer
 		for (int t = 0; t < tLogs.size(); t++) {
 			if (tLogs[t]->logServers.size() && tLogs[t]->locality != tagLocalitySatellite) {
 				logCount++;
@@ -927,6 +932,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 			    .detail("End", end)
 			    .detail("LogCount", logCount);
 			if (useMergePeekCursors || logCount > 1) {
+				// Why? which situation the consumer worker should be removed?
 				throw worker_removed();
 			} else {
 				return Reference<ILogSystem::ServerPeekCursor>(new ILogSystem::ServerPeekCursor(
@@ -958,7 +964,9 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				return Reference<ILogSystem::ServerPeekCursor>(new ILogSystem::ServerPeekCursor(
 				    tLogs[bestSet]->logServers[tLogs[bestSet]->bestLocationFor(tag)], tag, begin, end, false, false));
 			}
-		} else {
+		} else { // In recovery, the latest generation's tLogs[bestSet] does not have all data, starting from begin version.
+			// data from begin version to tLogs[bestSet].startVersion is in one or more old generations of tLogs.
+			// We iterate each old generation and add its tLogs (local to peek consumer) to the result.
 			std::vector<Reference<ILogSystem::IPeekCursor>> cursors;
 			std::vector<LogMessageVersion> epochEnds;
 
@@ -1024,7 +1032,11 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 							nextFoundSpecial = true;
 						}
 						if (foundSpecial && !oldLogData[i].tLogs[t]->isLocal) {
-							TraceEvent("TLogPeekLocalRemoteBeforeSpecial", dbgid)
+							// foundSpecial: Peeking special tag (i.e., txnState). 
+							// Q: Special tag only exist in primary DC?
+							// Not local: Peek consumer is in remote DC, peeking primary DC's tLogs
+							// Q: txnState does not need to be peeked to remote DC?
+							TraceEvent(SevWarn, "TLogPeekLocalRemoteBeforeSpecial", dbgid)
 							    .detail("Tag", tag.toString())
 							    .detail("Begin", begin)
 							    .detail("End", end)
@@ -1039,7 +1051,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				}
 
 				if (bestOldSet == -1) {
-					TraceEvent("TLogPeekLocalNoBestSet", dbgid)
+					TraceEvent(SevWarn, "TLogPeekLocalNoBestSet", dbgid)
 					    .detail("Tag", tag.toString())
 					    .detail("Begin", begin)
 					    .detail("End", end)
@@ -1060,6 +1072,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				Version thisBegin = std::max(oldLogData[i].tLogs[bestOldSet]->startVersion, begin);
 				if (thisBegin < lastBegin) {
 					if (thisBegin < end) {
+						// Add old generation's tLogs to peek from
 						TraceEvent("TLogPeekLocalAddingOldBest", dbgid)
 						    .detail("Tag", tag.toString())
 						    .detail("Begin", begin)
@@ -1185,6 +1198,8 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 	}
 
+	// history is the history of Tags SS uses in each generation (i.e., version range), in decreasing order of versions
+	// history's each entry: Use Tag up to the Version.
 	Reference<IPeekCursor> peekSingle(UID dbgid,
 	                                  Version begin,
 	                                  Tag tag,
@@ -1211,6 +1226,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 				    .detail("HistoryTag", history[i].second.toString())
 				    .detail("Begin", i + 1 == history.size() ? begin : std::max(history[i + 1].first, begin))
 				    .detail("End", history[i].first);
+				// when i = 0, difference from the above peekLocal(), 5 lines above?
 				cursors.push_back(peekLocal(dbgid,
 				                            history[i].second,
 				                            i + 1 == history.size() ? begin : std::max(history[i + 1].first, begin),
@@ -1419,11 +1435,14 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 	}
 
-	// pop 'tag.locality' type data up to the 'upTo' version
+	// send requests to pop 'tag.locality' type data up to the 'upTo' version
+	// durableKnownCommittedVersion is durable version of the caller (SS or remote tLog)
+	// popLocality is caller's locality who calls pop.
 	void pop(Version upTo, Tag tag, Version durableKnownCommittedVersion, int8_t popLocality) final {
 		if (upTo <= 0)
 			return;
 		if (tag.locality == tagLocalityRemoteLog) {
+			// remote TLog pop LRs
 			popLogRouter(upTo, tag, durableKnownCommittedVersion, popLocality);
 			return;
 		}
@@ -1432,6 +1451,8 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 			    tag.locality == tagLocalityUpgraded ||
 			    (tag.locality < 0 && ((popLocality == tagLocalityInvalid) == t->isLocal))) {
 				for (auto& log : t->logServers) {
+					// every log in the logset (matching target tag's locality) has to index for the tag,
+					// even though the log is not mapped to the SS?
 					Version prev = outstandingPops[std::make_pair(log->get().id(), tag)].first;
 					if (prev < upTo) {
 						// update pop version for popFromLog actor
@@ -1453,6 +1474,13 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 	                                     Tag tag,
 	                                     double time) {
 		state Version last = 0;
+		// TODO: Summarize the pop's progress: which log and tag is being popped at which version?
+		// Trace is recorded on pop's caller process (i.e., SS or remote tLog) 
+		// This can help us to understand why some tLog's space keeps decreasing: Is it because SS does not pop, or 
+		// tLog is slow in handling pop request
+		// The summary is like [consumer role, consumer ID][log->get().id(), tag] = histogram of pop req latency
+		// With Rusty's historgram, we also have the total number of pop requests
+		// Challenge: We may have 500 SS in each DC; 30-50 tLogs in each DC. Most of time, we don't need this info.
 		loop {
 			wait(delay(time, TaskPriority::TLogPop));
 
@@ -1467,6 +1495,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 			try {
 				if (!log->get().present())
 					return Void();
+				// TODO: Add histogram on pop latency. Identify which consumer (e.g., SS) is popping
 				wait(log->get().interf().popMessages.getReply(TLogPopRequest(to.first, to.second, tag),
 				                                              TaskPriority::TLogPop));
 
@@ -1558,6 +1587,8 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 			}
 		}
 
+		// Q: If I have 100 tLogs, replication_factor=3. If 3 tLogs that can form a tLog group returns, we will return?
+		// That does not mean we have a working tLog system.
 		wait(quorum(alive, std::min(logSet->tLogReplicationFactor, numPresent - logSet->tLogWriteAntiQuorum)));
 
 		state std::vector<LocalityEntry> aliveEntries;
@@ -1715,9 +1746,10 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 	}
 
 	Version getPeekEnd() {
-		if (recoverAt.present())
+		if (recoverAt.present()) {
+			// old generation
 			return getEnd();
-		else
+		} else
 			return std::numeric_limits<Version>::max();
 	}
 

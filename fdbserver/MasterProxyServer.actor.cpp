@@ -482,20 +482,26 @@ struct ProxyCommitData {
 	ProxyStats stats;
 	MasterInterface master;
 	vector<ResolverInterface> resolvers;
-	LogSystemDiskQueueAdapter* logAdapter;
+	LogSystemDiskQueueAdapter* logAdapter;// Abstraction of tLogs as the filesystem used by IKeyValueStoreMemory to store txnStateStore
 	Reference<ILogSystem> logSystem;
 	IKeyValueStore* txnStateStore;
 	NotifiedVersion committedVersion; // Provided that this recovery has succeeded or will succeed, this version is
 	                                  // fully committed (durable)
+	// Each proxy tells tLog the latest committed version on the proxy (when proxy pushes data to tLogs);
+	// A proxy's latest committed version can be different on different tLogs due to network latency and reordering.
+	// Each tLog has the latest committed version from each proxy;
+	// Each tLog's knownCommittedVersion is the max of each proxy's latest committed version on the tLog;
+	// Each tLog piggy back its knownCommittedVersion to proxy via push()'s reply;
+	// A proxy's minKnownCommittedVersion is the min of each tLog's knownCommittedVersion.
 	Version minKnownCommittedVersion; // No version smaller than this one will be used as the known committed version
 	                                  // during recovery
 	Version version; // The version at which txnStateStore is up to date
 	Promise<Void> validState; // Set once txnStateStore and version are valid
 	double lastVersionTime;
 	KeyRangeMap<std::set<Key>> vecBackupKeys;
-	uint64_t commitVersionRequestNumber;
-	uint64_t mostRecentProcessedRequestNumber;
-	KeyRangeMap<Deque<std::pair<Version, int>>> keyResolvers;
+	uint64_t commitVersionRequestNumber;//Q:
+	uint64_t mostRecentProcessedRequestNumber; //Q:
+	KeyRangeMap<Deque<std::pair<Version, int>>> keyResolvers;//<Version, int> definition?
 	KeyRangeMap<ServerCacheInfo> keyInfo; // keyrange -> all storage servers in all DCs for the keyrange
 	KeyRangeMap<bool> cacheInfo;
 	std::map<Key, applyMutationsData> uid_applyMutationsData;
@@ -513,7 +519,7 @@ struct ProxyCommitData {
 	RequestStream<CommitTransactionRequest> commit;
 	Database cx;
 	Reference<AsyncVar<ServerDBInfo>> db;
-	EventMetricHandle<SingleKeyMutation> singleKeyMutationEvent;
+	EventMetricHandle<SingleKeyMutation> singleKeyMutationEvent;//Q:
 
 	std::map<UID, Reference<StorageInfo>> storageCache;
 	std::map<Tag, Version> tag_popped;
@@ -1184,8 +1190,9 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 		// These changes to txnStateStore will be committed by the other proxy, so we simply discard the commit message
 		auto fcm = self->logAdapter->getCommitMessage();
-		storeCommits.emplace_back(fcm, self->txnStateStore->commit());
+		storeCommits.emplace_back(fcm, self->txnStateStore->commit()); // make txnStateStore's memory change durable
 		// discardCommit( dbgid, fcm, txnStateStore->commit() );
+		// Q: why the above discardCommit() is commented out? inconsistent with the comment 3 lines above
 
 		if (initialState) {
 			//TraceEvent("ResyncLog", dbgid);
@@ -1288,7 +1295,8 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	state Optional<Value> metadataVersionAfter = self->txnStateStore->readValue(metadataVersionKey).get();
 
 	auto fcm = self->logAdapter->getCommitMessage();
-	storeCommits.emplace_back(fcm, self->txnStateStore->commit());
+	storeCommits.emplace_back(fcm, self->txnStateStore->commit()); // Q: relation between fcm and txnStateStore->commit()?
+	// If we commit msg to logAdapter (tLogs), why do we need to commit txnStateStore to local keyValueMemoryStore?
 	self->version = commitVersion;
 	if (!self->validState.isSet())
 		self->validState.send(Void());
@@ -1469,12 +1477,13 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 		computeStart = g_network->timer();
 	}
 
-	state LogSystemDiskQueueAdapter::CommitMessage msg = storeCommits.back().first.get();
+	state LogSystemDiskQueueAdapter::CommitMessage msg = storeCommits.back().first.get();//Q: Why storeCommits.back().first is ready without wait?
 
 	if (debugID.present())
 		g_traceBatch.addEvent("CommitDebug", debugID.get().first(), "MasterProxyServer.commitBatch.AfterStoreCommits");
 
 	// txnState (transaction subsystem state) tag: message extracted from log adapter
+	// commit local txnStateStore logAdapter msg data to tLog system
 	bool firstMessage = true;
 	for (auto m : msg.messages) {
 		if (firstMessage) {
@@ -1540,6 +1549,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	self->lastCommitTime = std::max(self->lastCommitTime.get(), commitStartTime);
 	wait(yield(TaskPriority::ProxyCommitYield2));
 
+	// Q: why do we need this if?
 	if (self->popRemoteTxs &&
 	    msg.popTo > (self->txsPopVersions.size() ? self->txsPopVersions.back().second : self->lastTxsPop)) {
 		if (self->txsPopVersions.size() >= SERVER_KNOBS->MAX_TXS_POP_VERSION_HISTORY) {

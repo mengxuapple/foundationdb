@@ -184,6 +184,7 @@ struct TLogPeekReply {
 	}
 };
 
+// Peek data at tag from begin version to the latest version that's ready on the server
 struct TLogPeekRequest {
 	constexpr static FileIdentifier file_identifier = 11001131;
 	Arena arena;

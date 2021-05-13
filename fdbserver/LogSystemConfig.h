@@ -91,7 +91,7 @@ struct TLogSet {
 	std::vector<LocalityData> tLogLocalities; // Stores the localities of the log servers
 	TLogVersion tLogVersion;
 	Reference<IReplicationPolicy> tLogPolicy;
-	bool isLocal;
+	bool isLocal; // Compare to who, the TLogSet is local? If isLocal=true, it means the TLogSet and CC are in the same DC? Can master and CC be in different DC?
 	int8_t locality;
 	Version startVersion;
 	std::vector<std::vector<int>> satelliteTagLocations;

@@ -312,7 +312,7 @@ struct TLogData : NonCopyable {
 	// ^committing is the location where the active TLog accepts the pushed data.
 	Deque<UID> popOrder;
 	Deque<UID> spillOrder;
-	std::map<UID, Reference<struct LogData>> id_data;
+	std::map<UID, Reference<struct LogData>> id_data; // Guess: UID is tLog id. LogData is tLog's disk
 
 	UID dbgid;
 	UID workerID;
@@ -507,9 +507,10 @@ struct LogData : NonCopyable, public ReferenceCounted<LogData> {
 	NotifiedVersion version;
 	NotifiedVersion queueCommittedVersion; // The disk queue has committed up until the queueCommittedVersion version.
 	Version queueCommittingVersion;
-	Version knownCommittedVersion; // The maximum version that a proxy has told us that is committed (all TLogs have
-	                               // ack'd a commit for this version).
-	Version durableKnownCommittedVersion, minKnownCommittedVersion;
+	Version knownCommittedVersion; // The maximum committed version that each proxy told us via push();
+									// Each tLog has different knownCommittedVersion
+	Version durableKnownCommittedVersion; // The version of data has been made durable on tLog disk
+	Version minKnownCommittedVersion; // The mim knownCommittedVersion of all tLogs. It is used to decide the max version that can be popped
 	Version queuePoppedVersion; // The disk queue has been popped up until the location which represents this version.
 	Version minPoppedTagVersion;
 	Tag minPoppedTag; // The tag that makes tLog hold its data and cause tLog's disk queue increasing.
@@ -604,7 +605,7 @@ struct LogData : NonCopyable, public ReferenceCounted<LogData> {
 	std::map<UID, PeekTrackerData> peekTracker;
 
 	Reference<AsyncVar<Reference<ILogSystem>>> logSystem;
-	Tag remoteTag;
+	Tag remoteTag; // remote tLog's tag
 	bool isPrimary;
 	int logRouterTags;
 	Version logRouterPoppedVersion, logRouterPopToVersion;
@@ -617,6 +618,8 @@ struct LogData : NonCopyable, public ReferenceCounted<LogData> {
 	bool execOpCommitInProgress;
 	int txsTags;
 
+	// TODO: Add more metrics to TLogMetrics, such as push and peek requests, commit latency, each tag's version (?)
+	// Refer to ProxyMetrics
 	explicit LogData(TLogData* tLogData,
 	                 TLogInterface interf,
 	                 Tag remoteTag,
@@ -1150,6 +1153,7 @@ ACTOR Future<Void> updatePersistentData(TLogData* self, Reference<LogData> logDa
 	return Void();
 }
 
+// TODO: Consider measure tLog's pop progress
 ACTOR Future<Void> tLogPopCore(TLogData* self, Tag inputTag, Version to, Reference<LogData> logData) {
 	state Version upTo = to;
 	int8_t tagLocality = inputTag.locality;
@@ -1172,6 +1176,7 @@ ACTOR Future<Void> tLogPopCore(TLogData* self, Tag inputTag, Version to, Referen
 		tagData->popped = upTo;
 		tagData->poppedRecently = true;
 
+		// Q: What is unpoppedRecovered?
 		if (tagData->unpoppedRecovered && upTo > logData->recoveredAt) {
 			tagData->unpoppedRecovered = false;
 			logData->unpoppedRecoveredTags--;
@@ -1906,6 +1911,7 @@ ACTOR Future<Void> tLogPeekMessages(TLogData* self, TLogPeekRequest req, Referen
 	return Void();
 }
 
+// Write persistentQueue data to disk
 ACTOR Future<Void> doQueueCommit(TLogData* self,
                                  Reference<LogData> logData,
                                  std::vector<Reference<LogData>> missingFinalCommit) {
@@ -1914,12 +1920,15 @@ ACTOR Future<Void> doQueueCommit(TLogData* self,
 	state Version knownCommittedVersion = logData->knownCommittedVersion;
 	self->queueCommitBegin = commitNumber;
 	logData->queueCommittingVersion = ver;
+	// TODO: How to know tLog's progress in writing its data to disk?
+	// We can sample logData's queueCommittingVersion, queueCommitBegin, queueCommitEnd. Is it enough
 
 	g_network->setCurrentTask(TaskPriority::TLogCommitReply);
 	Future<Void> c = self->persistentQueue->commit();
 	self->diskQueueCommitBytes = 0;
 	self->largeDiskQueueCommitBytes.set(false);
 
+	// TODO: Add histogram on latency: tLog persist its data to diskQueue
 	wait(ioDegradedOrTimeoutError(
 	    c, SERVER_KNOBS->MAX_STORAGE_COMMIT_TIME, self->degraded, SERVER_KNOBS->TLOG_DEGRADED_DURATION));
 	if (g_network->isSimulated() && !g_simulator.speedUpSimulation && BUGGIFY_WITH_PROB(0.0001)) {
@@ -1948,6 +1957,7 @@ ACTOR Future<Void> doQueueCommit(TLogData* self,
 	if (logData->logSystem->get() &&
 	    (!logData->isPrimary || logData->logRouterPoppedVersion < logData->logRouterPopToVersion)) {
 		logData->logRouterPoppedVersion = ver;
+		// remote TLog pop data from all LRs
 		logData->logSystem->get()->pop(ver, logData->remoteTag, knownCommittedVersion, logData->locality);
 	}
 
@@ -1981,7 +1991,7 @@ ACTOR Future<Void> commitQueue(TLogData* self) {
 			}
 		}
 
-		ASSERT(foundCount < 2);
+		ASSERT(foundCount < 2);//id_data has at most 1 non-stopped entry
 		if (!foundCount) {
 			wait(self->newLogData.onTrigger());
 			continue;
@@ -2020,6 +2030,9 @@ ACTOR Future<Void> commitQueue(TLogData* self) {
 	}
 }
 
+// Write commit message to tLog's memory via commitMessages() and
+// return the largest durable version (durableKnownCommittedVersion), which is not the commit version.
+// The in-memory data will be written to disk async later and self->durableKnownCommittedVersion will be updated then.
 ACTOR Future<Void> tLogCommit(TLogData* self,
                               TLogCommitRequest req,
                               Reference<LogData> logData,
@@ -2510,9 +2523,12 @@ ACTOR Future<Void> pullAsyncData(TLogData* self,
 	while (!endVersion.present() || logData->version.get() < endVersion.get()) {
 		loop {
 			choose {
+				// Add histogram on the latency of remote tLog's peeking from LRs. We can add histogram in getMore() implementation
+				// Pulling data from LRs to remote tLog's memory (IPeekServer)
 				when(wait(r ? r->getMore(TaskPriority::TLogCommit) : Never())) { break; }
 				when(wait(dbInfoChange)) {
 					if (logData->logSystem->get()) {
+						// call peekRemote() to get LRs' cursors
 						r = logData->logSystem->get()->peek(logData->logId, tagAt, endVersion, tags, true);
 					} else {
 						r = Reference<ILogSystem::IPeekCursor>();
@@ -2522,6 +2538,8 @@ ACTOR Future<Void> pullAsyncData(TLogData* self,
 			}
 		}
 
+		// TODO: Add histogram on the latency of processing data for each batch of pulled message from r->getMore(TaskPriority::TLogCommit)
+		// Latency is from here to the end of this loop
 		state double waitStartT = 0;
 		while (self->bytesInput - self->bytesDurable >= SERVER_KNOBS->TLOG_HARD_LIMIT_BYTES && !logData->stopped) {
 			if (now() - waitStartT >= 1) {
@@ -2661,6 +2679,7 @@ ACTOR Future<Void> tLogCore(TLogData* self,
 	logData->addActor.send(logPeekTrackers(logData.getPtr()));
 
 	if (!logData->isPrimary) {
+		// set up remote tLog to pull data from LRs
 		std::vector<Tag> tags;
 		tags.push_back(logData->remoteTag);
 		logData->addActor.send(

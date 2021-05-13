@@ -140,6 +140,7 @@ public:
 		}
 	}
 
+	// Q: why use sequential?
 	virtual Future<Void> commit(bool sequential) {
 		if (getAvailableSize() <= 0) {
 			TraceEvent(SevError, "KeyValueStoreMemory_OutOfSpace", id);
@@ -191,6 +192,7 @@ public:
 		transactionIsLarge = false;
 		firstCommitWithSnapshot = false;
 
+		// Q: Why pop previousSnapshotEnd
 		addActor.send(commitAndUpdateVersions(this, c, previousSnapshotEnd));
 		return c;
 	}
@@ -849,7 +851,7 @@ private:
 	                                                  Future<Void> commit,
 	                                                  IDiskQueue::location location) {
 		wait(commit);
-		self->log->pop(location);
+		self->log->pop(location);//Q: Why pop previousSnapshot? Ref. to caller
 		return Void();
 	}
 };
@@ -887,7 +889,7 @@ IKeyValueStore* keyValueStoreMemory(std::string const& basename,
 	    .detail("MemoryLimit", memoryLimit)
 	    .detail("StoreType", storeType);
 
-	IDiskQueue* log = openDiskQueue(basename, ext, logID, DiskQueueVersion::V1);
+	IDiskQueue* log = openDiskQueue(basename, ext, logID, DiskQueueVersion::V1); //TODO: How DisQueue is implemented
 	if (storeType == KeyValueStoreType::MEMORY_RADIXTREE) {
 		return new KeyValueStoreMemory<radix_tree>(log, logID, memoryLimit, storeType, false, false, false);
 	} else {
@@ -895,6 +897,7 @@ IKeyValueStore* keyValueStoreMemory(std::string const& basename,
 	}
 }
 
+// The memory storage engine, using tLogs as the backend disk.
 IKeyValueStore* keyValueStoreLogSystem(class IDiskQueue* queue,
                                        UID logID,
                                        int64_t memoryLimit,
