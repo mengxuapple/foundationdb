@@ -1750,6 +1750,10 @@ ClusterControllerPriorityInfo getCCPriorityInfo(std::string filePath, ProcessCla
 	return priorityInfo;
 }
 
+// Update process's priority info
+// HINT: How FDB writes process priority info into local file
+// We can use same mechanism to write a new file about a process A's view on other processes. It answers the question
+// Among processes contacted by process A via RPC, which processes and their links are slow or bad.
 ACTOR Future<Void> monitorAndWriteCCPriorityInfo(std::string filePath,
                                                  Reference<AsyncVar<ClusterControllerPriorityInfo>> asyncPriorityInfo) {
 	loop {
@@ -1974,6 +1978,10 @@ ACTOR Future<Void> fdbd(Reference<ClusterConnectionFile> connFile,
 		localities.set(LocalityData::keyProcessId, processIDUid.toString());
 		// Only one process can execute on a dataFolder from this point onwards
 
+		// Each process has a local file (fitnessFilePath) to store its process priority told by CC
+		// We can create another file to store the grey-failure detection information from each process.
+		// When a process joins a cluster, it reports its view of grey failures to CC;
+		// CC can use that info to make better recruitment decision.
 		std::string fitnessFilePath = joinPath(dataFolder, "fitness");
 		Reference<AsyncVar<Optional<ClusterControllerFullInterface>>> cc(
 		    new AsyncVar<Optional<ClusterControllerFullInterface>>);
