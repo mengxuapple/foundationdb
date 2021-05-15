@@ -506,6 +506,7 @@ ACTOR Future<Void> registrationClient(Reference<AsyncVar<Optional<ClusterControl
 	state Future<Void> cacheErrorsFuture;
 	state Optional<double> incorrectTime;
 	loop {
+		// TODO: Extend RegisterWorkerRequest to include grey-failure detection info, i.e., the failures detected by this worker.
 		RegisterWorkerRequest request(interf,
 		                              initialClass,
 		                              processClass,
@@ -555,6 +556,9 @@ ACTOR Future<Void> registrationClient(Reference<AsyncVar<Optional<ClusterControl
 		loop choose {
 			when(RegisterWorkerReply reply = wait(registrationReply)) {
 				processClass = reply.processClass;
+				// The worker updates the process's priority info, calculated by CC
+				// setting asyncPriorityInfo (AsyncVar) will trigger the monitorAndWriteCCPriorityInfo() actor to write
+				// the new priority info to local "priority" file
 				asyncPriorityInfo->set(reply.priorityInfo);
 
 				if (!reply.storageCache.present()) {
@@ -973,6 +977,8 @@ struct SharedLogsValue {
 	  : actor(actor), uid(uid), requests(requests) {}
 };
 
+// Worker is created for a fdbserver
+// The worker initiates different roles, say proxy and tLog based on the recruit requests, and SS based on the local SS files.
 ACTOR Future<Void> workerServer(Reference<ClusterConnectionFile> connFile,
                                 Reference<AsyncVar<Optional<ClusterControllerFullInterface>>> ccInterface,
                                 LocalityData locality,
@@ -1010,6 +1016,8 @@ ACTOR Future<Void> workerServer(Reference<ClusterConnectionFile> connFile,
 	state WorkerCache<InitializeBackupReply> backupWorkerCache;
 
 	state std::string coordFolder = abspath(_coordFolder);
+	// TODO: Create struct workerData to store the grey-failure detection info,
+	// contributed by roles (e.g., proxy, master, tLog) on the worker.
 
 	state WorkerInterface interf(locality);
 	interf.initEndpoints();
@@ -1041,6 +1049,8 @@ ACTOR Future<Void> workerServer(Reference<ClusterConnectionFile> connFile,
 	                               SERVER_KNOBS->DEGRADED_WARNING_RESET_DELAY,
 	                               "DegradedReset"));
 	errorForwarders.add(loadedPonger(interf.debugPing.getFuture()));
+	// TODO: Add grey failure detection actor, which uses each-role-reported failure detection info to decide 
+	// which workers are bad. Persist the decision to the failure-detection local file; and report it to CC.
 	errorForwarders.add(waitFailureServer(interf.waitFailure.getFuture()));
 	errorForwarders.add(monitorTraceLogIssues(issues));
 	errorForwarders.add(testerServerCore(interf.testerInterface, connFile, dbInfo, locality));
@@ -1503,6 +1513,9 @@ ACTOR Future<Void> workerServer(Reference<ClusterConnectionFile> connFile,
 				DUMPTOKEN(recruited.txnState);
 
 				// printf("Recruited as masterProxyServer\n");
+				// TODO: Pass workerData into masterProxyServer() role, so that masterProxy can report to its worker on
+				// the grey failure detection result, which is calculated based on the latency profile
+				// in the masterProxy's GRV and commit pipeline
 				errorForwarders.add(zombie(recruited,
 				                           forwardError(errors,
 				                                        Role::MASTER_PROXY,
@@ -1764,6 +1777,11 @@ ACTOR Future<Void> monitorAndWriteCCPriorityInfo(std::string filePath,
 		atomicReplace(filePath, contents, false);
 	}
 }
+
+// TODO: Add monitorAndWriteGreyFailures()
+// Based the process's latency profile on its RPCs, the worker decides which other workers have problems?
+// If a worker is isolated from other workers, it will think other workers have problems.
+// We can have logic in CC to figure out which process should be excluded
 
 ACTOR Future<UID> createAndLockProcessIdFile(std::string folder) {
 	state UID processIDUid;

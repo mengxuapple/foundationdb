@@ -3539,6 +3539,7 @@ ACTOR Future<Void> clusterControllerCore(ClusterControllerFullInterface interf,
 			clusterRecruitStorage(&self, req);
 		}
 		when(RegisterWorkerRequest req = waitNext(interf.registerWorker.getFuture())) {
+			// Each worker in a cluster reports itself to CC via the RegisterWorkerRequest
 			++self.registerWorkerRequests;
 			registerWorker(req, &self);
 		}

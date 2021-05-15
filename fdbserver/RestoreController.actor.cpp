@@ -122,6 +122,9 @@ ACTOR Future<Void> startRestoreController(Reference<RestoreWorkerData> controlle
 	state Future<Void> error = actorCollection(self->addActor.getFuture());
 
 	try {
+		// Example that we pass restoreWorkerData (like worker in FDB) to restoreController (like CC in FDB), so that
+		// restoreController pass the recruitment info back to restoreWorker.
+		// TODO: Discuss if this is the best implementation for grey failure detection
 		// recruitRestoreRoles must come after controllerWorker has finished collectWorkerInterface
 		wait(recruitRestoreRoles(controllerWorker, self));
 
