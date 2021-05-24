@@ -133,6 +133,7 @@ public:
 	// and,
 	//   replaceExisting == true, it will be overwritten (and its metric will be replaced). returns the number of items
 	//   inserted.
+	// 
 	int insert(const std::vector<std::pair<T, Metric>>& data, bool replaceExisting = true);
 
 	// Increase the metric for the given item by the given amount.  Inserts data into the set if it
@@ -760,10 +761,12 @@ typename IndexedSet<T, Metric>::iterator IndexedSet<T, Metric>::insert(T_&& data
 	return newNode;
 }
 
+// Efficient insert lots of key-value changes.
+// Speed optimization for txnStateStore
 template <class T, class Metric>
 int IndexedSet<T, Metric>::insert(const std::vector<std::pair<T, Metric>>& dataVector, bool replaceExisting) {
 	int num_inserted = 0;
-	Node* blockStart = NULL;
+	Node* blockStart = NULL; // Remember last found location to speed up the search speed for next key
 	Node* blockEnd = NULL;
 
 	for (int i = 0; i < dataVector.size(); ++i) {

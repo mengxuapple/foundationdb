@@ -400,10 +400,16 @@ void applyMetadataMutations(UID const& dbgid,
 						    .detail("Server", decodeServerTagKey(kv.key));
 						// Q: Why logSystem here only pop for clear op. It does not commit for any set op?
 						// Because set is piggy back through mutation push op?
+						// Pop tLog's data (future) for the SS that is removed.
+						// It's not remove the SS from the txnStateStore
 						logSystem->pop(popVersion, decodeServerTagValue(kv.value));
 						(*tag_popped)[tag] = popVersion;
 
 						if (toCommit) {
+							// Tell SS about the key ownership change
+							// Follow-up: Remove this if and see what happens.
+							// Suspect: This new mutation may never get popped? Then you won't be able to pop this tag?
+							// Maybe the above pop already removed it?
 							MutationRef privatized = m;
 							privatized.param1 = kv.key.withPrefix(systemKeys.begin, arena);
 							privatized.param2 = keyAfter(kv.key, arena).withPrefix(systemKeys.begin, arena);

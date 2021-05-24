@@ -233,7 +233,7 @@ void LogSystemDiskQueueAdapter::dispose() {
 void LogSystemDiskQueueAdapter::close() {
 	delete this;
 }
-
+// proxy tells diskqueue adapater when the commit is durable on tLogs
 Future<LogSystemDiskQueueAdapter::CommitMessage> LogSystemDiskQueueAdapter::getCommitMessage() {
 	Promise<CommitMessage> pcm;
 	commitMessages.push_back(pcm);

@@ -296,6 +296,8 @@ struct TrInfoChunk {
 	Key key;
 };
 
+// Write client transaction profiling event info (e.g. EventCommit_V2 profiling event) into
+// database's fdbClientInfoPrefixRange keyspace
 ACTOR static Future<Void> transactionInfoCommitActor(Transaction* tr, std::vector<TrInfoChunk>* chunks) {
 	state const Key clientLatencyAtomicCtr = CLIENT_LATENCY_INFO_CTR_PREFIX.withPrefix(fdbClientInfoPrefixRange.begin);
 	state int retryCount = 0;
@@ -388,7 +390,7 @@ ACTOR static Future<Void> clientStatusUpdateActor(DatabaseContext* cx) {
 			// Split Transaction Info into chunks
 			state std::vector<TrInfoChunk> trChunksQ;
 			for (auto& entry : cx->clientStatusUpdater.outStatusQ) {
-				auto& bw = entry.second;
+				auto& bw = entry.second; // serialized client trace event
 				int64_t value_size_limit = BUGGIFY
 				                               ? deterministicRandom()->randomInt(1e3, CLIENT_KNOBS->VALUE_SIZE_LIMIT)
 				                               : CLIENT_KNOBS->VALUE_SIZE_LIMIT;
@@ -1698,6 +1700,8 @@ Future<vector<pair<KeyRange, Reference<LocationInfo>>>> getKeyRangeLocations(Dat
 	ASSERT(!keys.empty());
 
 	vector<pair<KeyRange, Reference<LocationInfo>>> locations;
+	// TODO: Add client trace on the latency of get keyrange locations and the reason why it needs to refresh the cache:
+	// not cached or cached SS died?
 	if (!cx->getCachedLocations(keys, locations, limit, reverse)) {
 		return getKeyRangeLocations_internal(cx, keys, limit, reverse, info);
 	}
@@ -1729,6 +1733,7 @@ ACTOR Future<Void> warmRange_impl(Transaction* self, Database cx, KeyRange keys)
 	state int totalRanges = 0;
 	state int totalRequests = 0;
 	loop {
+		// Another place to get range locations. Only used in FDB test workload. We may want to trace as well
 		vector<pair<KeyRange, Reference<LocationInfo>>> locations =
 		    wait(getKeyRangeLocations_internal(cx, keys, CLIENT_KNOBS->WARM_RANGE_SHARD_LIMIT, false, self->info));
 		totalRanges += CLIENT_KNOBS->WARM_RANGE_SHARD_LIMIT;
@@ -2101,6 +2106,7 @@ ACTOR Future<Standalone<RangeResultRef>> getExactRange(Database cx,
 
 	// printf("getExactRange( '%s', '%s' )\n", keys.begin.toString().c_str(), keys.end.toString().c_str());
 	loop {
+		// get a range's SS locations
 		state vector<pair<KeyRange, Reference<LocationInfo>>> locations = wait(getKeyRangeLocations(
 		    cx, keys, CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT, reverse, &StorageServerInterface::getKeyValues, info));
 		ASSERT(locations.size());
@@ -2624,6 +2630,7 @@ ACTOR Future<Standalone<RangeResultRef>> getRange(Database cx,
 
 					wait(delay(CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY, info.taskID));
 				} else {
+					// Example of logging getRange latency
 					if (trLogInfo)
 						trLogInfo->addLog(FdbClientLogEvents::EventGetRangeError(startTime,
 						                                                         cx->clientLocality.dcId(),

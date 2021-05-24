@@ -1190,6 +1190,9 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 		// These changes to txnStateStore will be committed by the other proxy, so we simply discard the commit message
 		auto fcm = self->logAdapter->getCommitMessage();
+		// self->txnStateStore->commit() is the future of fcm.acklodge
+		// whenever we call txnStateStore->commit(), it will call logAdapter->commit();
+		// tie fcm with txnStateStore->commit()
 		storeCommits.emplace_back(fcm, self->txnStateStore->commit()); // make txnStateStore's memory change durable
 		// discardCommit( dbgid, fcm, txnStateStore->commit() );
 		// Q: why the above discardCommit() is commented out? inconsistent with the comment 3 lines above
@@ -1294,6 +1297,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	state Optional<Value> metadataVersionAfter = self->txnStateStore->readValue(metadataVersionKey).get();
 
+	// We must call getCommitMessage() before txnStateStore->commit(), so that the fcm is ready immediately after we call commit()
 	auto fcm = self->logAdapter->getCommitMessage();
 	storeCommits.emplace_back(fcm, self->txnStateStore->commit()); // Q: relation between fcm and txnStateStore->commit()?
 	// If we commit msg to logAdapter (tLogs), why do we need to commit txnStateStore to local keyValueMemoryStore?
@@ -1485,6 +1489,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 	// txnState (transaction subsystem state) tag: message extracted from log adapter
 	// commit local txnStateStore logAdapter msg data to tLog system
 	bool firstMessage = true;
+	// msg.messages also include the snapshot items, beyond what we add in the keyvaluestoreMemory
 	for (auto m : msg.messages) {
 		if (firstMessage) {
 			toCommit.addTxsTag();
@@ -1572,6 +1577,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	for (auto& p : storeCommits) {
 		ASSERT(!p.second.isReady());
+		// No one is waiting on this. We can remove this?
 		p.first.get().acknowledge.send(Void());
 		ASSERT(p.second.isReady());
 	}

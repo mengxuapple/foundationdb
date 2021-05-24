@@ -1178,8 +1178,8 @@ ACTOR Future<Void> tLogPopCore(TLogData* self, Tag inputTag, Version to, Referen
 
 		// Q: What is unpoppedRecovered?
 		if (tagData->unpoppedRecovered && upTo > logData->recoveredAt) {
-			tagData->unpoppedRecovered = false;
-			logData->unpoppedRecoveredTags--;
+			tagData->unpoppedRecovered = false; // This tag's old generation data has been popped. We no longer need this tag
+			logData->unpoppedRecoveredTags--; // The number of tags whose data has not been popped larger than recoveredAt
 			TraceEvent("TLogPoppedTag", logData->logId)
 			    .detail("Tags", logData->unpoppedRecoveredTags)
 			    .detail("Tag", tag.toString())
@@ -1187,7 +1187,7 @@ ACTOR Future<Void> tLogPopCore(TLogData* self, Tag inputTag, Version to, Referen
 			    .detail("RecoveredAt", logData->recoveredAt);
 			if (logData->unpoppedRecoveredTags == 0 && logData->durableKnownCommittedVersion >= logData->recoveredAt &&
 			    logData->recoveryComplete.canBeSet()) {
-				logData->recoveryComplete.send(Void());
+				logData->recoveryComplete.send(Void()); // This tLog tells master that its old generations' data has been popped
 			}
 		}
 

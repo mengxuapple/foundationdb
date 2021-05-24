@@ -178,6 +178,7 @@ public:
 			if (bytesWritten > 0 || committedWriteBytes > notifiedCommittedWriteBytes.get()) {
 				committedWriteBytes += bytesWritten + overheadWriteBytes +
 				                       OP_DISK_OVERHEAD; // OP_DISK_OVERHEAD is for the following log_op(OpCommit)
+					
 				notifiedCommittedWriteBytes.set(committedWriteBytes); // This set will cause snapshot items to be
 				                                                      // written, so it must happen before the OpCommit
 				log_op(OpCommit, StringRef(), StringRef());
@@ -185,7 +186,7 @@ public:
 			}
 		}
 
-		auto c = log->commit();
+		auto c = log->commit(); // intercept
 
 		committedDataSize = data.sumTo(data.end());
 		transactionSize = 0;
@@ -402,6 +403,8 @@ private:
 			total += o->p1.size() + o->p2.size() + OP_DISK_OVERHEAD;
 			if (o->op == OpSet) {
 				if (sequential) {
+					// If committed data is sequential, we can queue it in dataSets sequentially, instead of using the data map,
+					// It optimizes the txnStateStore.commit(). When proxy 
 					KeyValueMapPair pair(o->p1, o->p2);
 					dataSets.push_back(std::make_pair(pair, pair.arena.getSize() + data.getElementBytes()));
 				} else {
@@ -691,6 +694,7 @@ private:
 		TraceEvent("KVSMemStartingSnapshot", self->id).detail("StartKey", nextKey);
 
 		loop {
+			// notifiedCommittedWriteBytes: mutations
 			wait(self->notifiedCommittedWriteBytes.whenAtLeast(snapshotTotalWrittenBytes + 1));
 
 			if (self->resetSnapshot) {
@@ -735,10 +739,12 @@ private:
 					//	.detail("SnapshotSize", snapshotBytes);
 
 					ASSERT(thisSnapshotEnd >= self->currentSnapshotEnd);
-					self->previousSnapshotEnd = self->currentSnapshotEnd;
+					self->previousSnapshotEnd = self->currentSnapshotEnd; // anything before previous snapshot can be popped
 					self->currentSnapshotEnd = thisSnapshotEnd;
 
 					if (++self->snapshotCount == 2) {
+						// Force txnStateStore to replace its content faster than it normally would.
+						
 						self->replaceContent = false;
 					}
 
@@ -852,6 +858,7 @@ private:
 	                                                  IDiskQueue::location location) {
 		wait(commit);
 		self->log->pop(location);//Q: Why pop previousSnapshot? Ref. to caller
+		// location: snapshot location. Most of time, location does not change. 
 		return Void();
 	}
 };
