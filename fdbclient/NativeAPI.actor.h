@@ -176,6 +176,9 @@ struct TransactionInfo {
 };
 
 struct TransactionLogInfo : public ReferenceCounted<TransactionLogInfo>, NonCopyable {
+	// LoggingLocation decides where we put the log.
+	// TRACE_LOG: Put client perf profiling to client's trace file
+	// DATABASE: Write client perf profiling to database fdbClientInfoPrefixRange space
 	enum LoggingLocation { DONT_LOG = 0, TRACE_LOG = 1, DATABASE = 2 };
 
 	TransactionLogInfo() : logLocation(DONT_LOG), maxFieldLength(0) {}

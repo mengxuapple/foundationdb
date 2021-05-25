@@ -279,6 +279,7 @@ struct ClientTransactionProfileCorrectnessWorkload : TestWorkload {
 		return Void();
 	}
 
+	// FYI: This is how the client event is used
 	ACTOR Future<bool> _check(Database cx, ClientTransactionProfileCorrectnessWorkload* self) {
 		wait(self->changeProfilingParameters(cx, self->trInfoSizeLimit, 0)); // Disable sampling
 		// FIXME: Better way to ensure that all client profile data has been flushed to the database

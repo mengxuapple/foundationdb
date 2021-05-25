@@ -103,6 +103,7 @@ struct EventGetVersion_V2 : public Event {
 	}
 };
 
+// HINT: Refer to how this event is used. We need to add a EventGetKeyRangeLocality
 // Version V3 of EventGetVersion starting at 6.3
 struct EventGetVersion_V3 : public Event {
 	EventGetVersion_V3(double ts,
@@ -265,7 +266,7 @@ struct EventCommit : public Event {
 	}
 };
 
-// Version V2 of EventGetVersion starting at 6.3
+// Version V2 of EventCommit starting at 6.3
 struct EventCommit_V2 : public Event {
 	EventCommit_V2(double ts,
 	               const Optional<Standalone<StringRef>>& dcId,
