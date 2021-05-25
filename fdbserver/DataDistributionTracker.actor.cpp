@@ -182,6 +182,9 @@ int64_t getMaxShardSize(double dbSizeEstimate) {
 	                (int64_t)SERVER_KNOBS->MAX_SHARD_BYTES);
 }
 
+// Track a shard's metrics, e.g., shard size.
+// Adjust the cluster's data size and system data size whenever shard size changes.
+// shardMetrics is the most recent metric for the KeyRange (keys).
 ACTOR Future<Void> trackShardMetrics(DataDistributionTracker::SafeAccessor self,
                                      KeyRange keys,
                                      Reference<AsyncVar<Optional<ShardMetrics>>> shardMetrics) {

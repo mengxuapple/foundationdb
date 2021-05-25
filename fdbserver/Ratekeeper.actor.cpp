@@ -1243,6 +1243,8 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 
 	if (deterministicRandom()->random01() < 0.1) {
 		std::string name = "RkUpdate" + limits->context;
+		// tpsLimit can be normalTxnLimit or batchTxnLimit based on input limits
+		// TODO: Add a field to indicate batch limit
 		TraceEvent(name.c_str(), self->id)
 		    .detail("TPSLimit", limits->tpsLimit)
 		    .detail("Reason", limitReason)

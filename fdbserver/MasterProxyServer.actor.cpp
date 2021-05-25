@@ -248,6 +248,7 @@ struct TransactionRateInfo {
 	}
 
 	bool canStart(int64_t numAlreadyStarted, int64_t count) {
+		// budget is the unused txn in previous txn windows or debt (negative) previous window borrows from future windows.
 		return numAlreadyStarted + count <=
 		       std::min(limit + budget, SERVER_KNOBS->START_TRANSACTION_MAX_TRANSACTIONS_TO_START);
 	}
@@ -1876,6 +1877,8 @@ ACTOR static Future<Void> transactionStarter(MasterProxyInterface proxy,
 		stats->transactionLimit = normalRateInfo.limit;
 		stats->batchTransactionLimit = batchRateInfo.limit;
 
+		// first element: non FLAG_CAUSAL_READ_RISKY txn
+		// second element: FLAG_CAUSAL_READ_RISKY txn
 		int transactionsStarted[2] = { 0, 0 };
 		int systemTransactionsStarted[2] = { 0, 0 };
 		int defaultPriTransactionsStarted[2] = { 0, 0 };
@@ -1907,9 +1910,11 @@ ACTOR static Future<Void> transactionStarter(MasterProxyInterface proxy,
 
 			if (req.priority < TransactionPriority::DEFAULT &&
 			    !batchRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1], tc)) {
+					// Cannot start batch txn due to rate limiting
 				break;
 			} else if (req.priority < TransactionPriority::IMMEDIATE &&
 			           !normalRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1], tc)) {
+						   // Cannot start normal txn due to rate limiting
 				break;
 			}
 
