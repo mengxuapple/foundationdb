@@ -3058,6 +3058,7 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 						lastReply[req.myInterface.id()].send(TLogRejoinReply{ false });
 						lastReply[req.myInterface.id()] = req.reply;
 					} else {
+						// New TLog joins me
 						TraceEvent("TLogJoinedMeUnknown", dbgid)
 						    .detail("TLog", req.myInterface.id())
 						    .detail("Address", req.myInterface.commit.getEndpoint().getPrimaryAddress().toString());

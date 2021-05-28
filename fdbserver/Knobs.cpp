@@ -522,7 +522,7 @@ void ServerKnobs::initialize(bool randomize, ClientKnobs* clientKnobs, bool isSi
 	init( TLOG_HARD_LIMIT_BYTES,                              3000e6 ); if( smallTlogTarget ) TLOG_HARD_LIMIT_BYTES = 30e6;
 	init( TLOG_RECOVER_MEMORY_LIMIT, TARGET_BYTES_PER_TLOG + SPRING_BYTES_TLOG );
 
-	init( MAX_TRANSACTIONS_PER_BYTE,                            1000 );
+	init( MAX_TRANSACTIONS_PER_BYTE,                            1000 ); // TODO: Tune
 
 	init( MIN_AVAILABLE_SPACE,                                   1e8 );
 	init( MIN_AVAILABLE_SPACE_RATIO,                            0.05 );
@@ -540,7 +540,7 @@ void ServerKnobs::initialize(bool randomize, ClientKnobs* clientKnobs, bool isSi
 	init( TARGET_DURABILITY_LAG_VERSIONS_BATCH,                150e6 ); // Should be larger than STORAGE_DURABILITY_LAG_SOFT_MAX
 	init( DURABILITY_LAG_UNLIMITED_THRESHOLD,                   50e6 );
 	init( INITIAL_DURABILITY_LAG_MULTIPLIER,                    1.02 );
-	init( DURABILITY_LAG_REDUCTION_RATE,                      0.9999 );
+	init( DURABILITY_LAG_REDUCTION_RATE,                      0.9999 ); // TODO: Does it make sense? Tune.
 	init( DURABILITY_LAG_INCREASE_RATE,                        1.001 );
 	init( STORAGE_SERVER_LIST_FETCH_TIMEOUT,                    20.0 );
 

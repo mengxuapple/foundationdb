@@ -35,16 +35,16 @@
 enum limitReason_t {
 	unlimited, // TODO: rename to workload?
 	storage_server_write_queue_size, // 1
-	storage_server_write_bandwidth_mvcc,
-	storage_server_readable_behind,
-	log_server_mvcc_write_bandwidth,
+	storage_server_write_bandwidth_mvcc, // 2
+	storage_server_readable_behind, // 3
+	log_server_mvcc_write_bandwidth, //4
 	log_server_write_queue, // 5
-	storage_server_min_free_space, // a storage server's normal limits are being reduced by low free space
-	storage_server_min_free_space_ratio, // a storage server's normal limits are being reduced by a low free space ratio
-	log_server_min_free_space,
-	log_server_min_free_space_ratio,
+	storage_server_min_free_space, // 6; a storage server's normal limits are being reduced by low free space
+	storage_server_min_free_space_ratio, // 7;  a storage server's normal limits are being reduced by a low free space ratio
+	log_server_min_free_space, // 8;
+	log_server_min_free_space_ratio, // 9
 	storage_server_durability_lag, // 10
-	storage_server_list_fetch_failed,
+	storage_server_list_fetch_failed, // 11
 	limitReason_t_end
 };
 
@@ -491,7 +491,7 @@ struct RatekeeperLimits {
 	int64_t logSpringBytes;
 	double maxVersionDifference;
 
-	int64_t durabilityLagTargetVersions;
+	int64_t durabilityLagTargetVersions; // max allowed durability lag (in versions) for each SS
 	int64_t lastDurabilityLag;
 	double durabilityLagLimit;
 
@@ -958,6 +958,7 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		ssMetrics.cpuUsage = ss.lastReply.cpuUsage;
 		ssMetrics.diskUsage = ss.lastReply.diskUsage;
 
+		// Q: logic? goal?
 		double targetRateRatio = std::min((storageQueue - targetBytes + springBytes) / (double)springBytes, 2.0);
 
 		if (limits->priority == TransactionPriority::DEFAULT &&
@@ -988,6 +989,7 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		}*/
 
 		// Don't let any storage server use up its target bytes faster than its MVCC window!
+		// Normalize rate in bytes and scale bytes/second rate by MAX_TRANSACTIONS_PER_BYTE to get TPSLimit
 		double maxBytesPerSecond =
 		    (targetBytes - springBytes) /
 		    ((((double)SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) / SERVER_KNOBS->VERSIONS_PER_SECOND) + 2.0);
@@ -996,11 +998,12 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		if (ssLimitReason == limitReason_t::unlimited)
 			ssLimitReason = limitReason_t::storage_server_write_bandwidth_mvcc;
 
+		// Q: What is the logic?
 		if (targetRateRatio > 0 && inputRate > 0) {
 			ASSERT(inputRate != 0);
 			double smoothedRate =
 			    std::max(ss.verySmoothDurableBytes.smoothRate(), actualTps / SERVER_KNOBS->MAX_TRANSACTIONS_PER_BYTE);
-			double x = smoothedRate / (inputRate * targetRateRatio);
+			double x = smoothedRate / (inputRate * targetRateRatio); //Q: logic?
 			double lim = actualTps * x;
 			if (lim < limitTps) {
 				limitTps = lim;
@@ -1021,8 +1024,9 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		}
 
 		ssReasons[ss.id] = ssLimitReason;
-	}
+	} // end of each SS metric
 
+	// Limit based on the worst SS with lowest tpsLimit value, excluding the top MAX_MACHINES_FALLING_BEHIND worst SS
 	std::set<Optional<Standalone<StringRef>>> ignoredMachines;
 	for (auto ss = storageTpsLimitReverseIndex.begin();
 	     ss != storageTpsLimitReverseIndex.end() && ss->first < limits->tpsLimit;
@@ -1070,6 +1074,7 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 				limits->durabilityLagLimit = SERVER_KNOBS->INITIAL_DURABILITY_LAG_MULTIPLIER * maxTps;
 			}
 			if (limitingDurabilityLag > limits->lastDurabilityLag) {
+				// SS durability lag gets worse (i.e., larger), needs to throttle to reduce the lag
 				limits->durabilityLagLimit = SERVER_KNOBS->DURABILITY_LAG_REDUCTION_RATE * limits->durabilityLagLimit;
 			}
 			if (limits->durabilityLagLimit < limits->tpsLimit) {
@@ -1095,6 +1100,8 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 	Version limitingVersionLag = 0;
 
 	{
+		// minSSVer: minimum SS version, i.e., the stalest SS
+		// minLimitingSSVer: minimum SS version used to limit TPS, i.e., after excluding SSes in ignoredMachines
 		Version minSSVer = std::numeric_limits<Version>::max();
 		Version minLimitingSSVer = std::numeric_limits<Version>::max();
 		for (const auto& it : self->storageQueueInfo) {
@@ -1120,6 +1127,10 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 
 		if (minSSVer != std::numeric_limits<Version>::max() && maxTLVer != std::numeric_limits<Version>::min()) {
 			// writeToReadLatencyLimit: 0 = infinte speed; 1 = TL durable speed ; 2 = half TL durable speed
+			// (maxTLVer - minLimitingSSVer) is the versions of data in tLog but not in SS;
+			// writeToReadLatencyLimit calculates the ratio of maxVersionDifference's data that
+			// the slowest SS is lagging behind tLog; The larger the ratio is, the slower SS is, and
+			// tLog cannot run at full speed because RK limits due to slow SS.
 			writeToReadLatencyLimit =
 			    ((maxTLVer - minLimitingSSVer) - limits->maxVersionDifference / 2) / (limits->maxVersionDifference / 4);
 			worstVersionLag = std::max((Version)0, maxTLVer - minSSVer);

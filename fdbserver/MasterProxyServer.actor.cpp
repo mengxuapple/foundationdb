@@ -439,7 +439,7 @@ ACTOR Future<Void> queueTransactionStartRequests(Reference<AsyncVar<ServerDBInfo
 					int64_t proxiesCount = std::max((int)db->get().client.proxies.size(), 1);
 					if (batchRateInfo->rate <= (1.0 / proxiesCount)) {
 						req.reply.sendError(batch_transaction_throttled());
-						stats->txnThrottled += req.transactionCount;
+						stats->txnThrottled += req.transactionCount; // count throttled batch txn
 						continue;
 					}
 
