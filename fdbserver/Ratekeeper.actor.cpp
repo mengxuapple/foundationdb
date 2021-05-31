@@ -919,6 +919,8 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 	// Look at each storage server's write queue and local rate, compute and store the desired rate ratio
 	for (auto i = self->storageQueueInfo.begin(); i != self->storageQueueInfo.end(); ++i) {
 		auto& ss = i->value;
+		// We do not limit on remote SS's queue.
+		// TODO: Is this a good idea?
 		if (!ss.valid || (self->remoteDC.present() && ss.locality.dcId() == self->remoteDC))
 			continue;
 		++sscount;
@@ -929,9 +931,11 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		    std::max(SERVER_KNOBS->MIN_AVAILABLE_SPACE,
 		             (int64_t)(SERVER_KNOBS->MIN_AVAILABLE_SPACE_RATIO * ss.smoothTotalSpace.smoothTotal()));
 
+		// worstFreeSpaceStorageServer: Minimum spare space to accept data
 		worstFreeSpaceStorageServer =
 		    std::min(worstFreeSpaceStorageServer, (int64_t)ss.smoothFreeSpace.smoothTotal() - minFreeSpace);
 
+		// TODO: Is the 0.2 in springBytes equation the best?
 		int64_t springBytes = std::max<int64_t>(
 		    1, std::min<int64_t>(limits->storageSpringBytes, (ss.smoothFreeSpace.smoothTotal() - minFreeSpace) * 0.2));
 		int64_t targetBytes = std::max<int64_t>(
@@ -959,6 +963,10 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		ssMetrics.diskUsage = ss.lastReply.diskUsage;
 
 		// Q: logic? goal?
+		// If SS's queue is in [targetBytes - springBytes, targetBytes], we prefer to increase the queue;
+		// If SS's queue is in [targetBytes, targetBytes + springBytes (or larger)], we prefer to decrease the queue.
+		// limit = (SS_output_rate / (SS_input_rate * targetRateRatio)) * actualTPS.
+		// targetRateRatio is the coefficient (scale value) of SS_input_rate.
 		double targetRateRatio = std::min((storageQueue - targetBytes + springBytes) / (double)springBytes, 2.0);
 
 		if (limits->priority == TransactionPriority::DEFAULT &&
@@ -993,6 +1001,7 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		double maxBytesPerSecond =
 		    (targetBytes - springBytes) /
 		    ((((double)SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) / SERVER_KNOBS->VERSIONS_PER_SECOND) + 2.0);
+		// Q: why actualTps * maxBytesPerSecond?
 		double limitTps = std::min(actualTps * maxBytesPerSecond / std::max(1.0e-8, inputRate),
 		                           maxBytesPerSecond * SERVER_KNOBS->MAX_TRANSACTIONS_PER_BYTE);
 		if (ssLimitReason == limitReason_t::unlimited)
@@ -1001,10 +1010,11 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		// Q: What is the logic?
 		if (targetRateRatio > 0 && inputRate > 0) {
 			ASSERT(inputRate != 0);
+			// verySmoothDurableBytes.smoothRate(): how fast SS can write data to disk
 			double smoothedRate =
 			    std::max(ss.verySmoothDurableBytes.smoothRate(), actualTps / SERVER_KNOBS->MAX_TRANSACTIONS_PER_BYTE);
 			double x = smoothedRate / (inputRate * targetRateRatio); //Q: logic?
-			double lim = actualTps * x;
+			double lim = actualTps * x; // x: SS's output speed (speed of writing to disk) / SS's input speed (speed of fetching data from tLogs) / targetRateRatio
 			if (lim < limitTps) {
 				limitTps = lim;
 				if (ssLimitReason == limitReason_t::unlimited ||
@@ -1052,6 +1062,8 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 
 	int64_t limitingDurabilityLag = 0;
 
+	// Limit if the largest durability lag is larger than
+	// the configured durability lag threshold (limits.durabilityLagTargetVersions)
 	std::set<Optional<Standalone<StringRef>>> ignoredDurabilityLagMachines;
 	for (auto ss = storageDurabilityLagReverseIndex.begin(); ss != storageDurabilityLagReverseIndex.end(); ++ss) {
 		if (ignoredDurabilityLagMachines.size() <
