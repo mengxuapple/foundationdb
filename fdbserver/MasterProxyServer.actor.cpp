@@ -374,6 +374,7 @@ ACTOR Future<Void> getRate(UID myID,
 			}
 		}
 		when(wait(leaseTimeout)) {
+			// TODO: Add number of leaseTimeout to ProxyMetrics
 			transactionRateInfo->disable();
 			batchTransactionRateInfo->disable();
 			TraceEvent(SevWarn, "MasterProxyRateLeaseExpired", myID).suppressFor(5.0);
@@ -437,7 +438,12 @@ ACTOR Future<Void> queueTransactionStartRequests(Reference<AsyncVar<ServerDBInfo
 				} else {
 					// Return error for batch_priority GRV requests
 					int64_t proxiesCount = std::max((int)db->get().client.proxies.size(), 1);
+					// Batch Txn is throttled here even when RK is not throttling, why?
+					// Why don't we queue batch GRV requests
 					if (batchRateInfo->rate <= (1.0 / proxiesCount)) {
+						// When proxy cannot refresh batchRateInfo from RK on time, proxy rejects batch req immediately.
+						// TODO: Sample on batchRateInfo field info when throttle happens. Sample rate should be tunable
+						// TODO: Add a knob to disable the if. Making batch txn same behavior as normal txn
 						req.reply.sendError(batch_transaction_throttled());
 						stats->txnThrottled += req.transactionCount; // count throttled batch txn
 						continue;
@@ -1904,6 +1910,10 @@ ACTOR static Future<Void> transactionStarter(MasterProxyInterface proxy,
 
 			auto& req = transactionQueue->front();
 			int tc = req.transactionCount;
+
+			// TODO: If we put batchGRV request to batchQueue when batchRateInfo is stale,
+			// we need to reject old batchGRV requests when the batchQueue is too long.
+			// We also need to expose the batchQueue size (and defaultQueue and systemQueue size) to ProxyMetrics
 
 			if (req.priority < TransactionPriority::DEFAULT &&
 			    !batchRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1], tc)) {
