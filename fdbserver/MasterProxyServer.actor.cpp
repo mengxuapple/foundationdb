@@ -426,7 +426,7 @@ ACTOR Future<Void> queueTransactionStartRequests(Reference<AsyncVar<ServerDBInfo
 					                             TaskPriority::ProxyGRVTimer));
 				}
 
-				++stats->txnRequestIn;
+				++stats->txnRequestIn; // accounting is wrong.
 				stats->txnStartIn += req.transactionCount;
 				if (req.priority >= TransactionPriority::IMMEDIATE) {
 					stats->txnSystemPriorityStartIn += req.transactionCount;
@@ -438,6 +438,7 @@ ACTOR Future<Void> queueTransactionStartRequests(Reference<AsyncVar<ServerDBInfo
 					// Return error for batch_priority GRV requests
 					int64_t proxiesCount = std::max((int)db->get().client.proxies.size(), 1);
 					if (batchRateInfo->rate <= (1.0 / proxiesCount)) {
+						// Disable this with a knob
 						req.reply.sendError(batch_transaction_throttled());
 						stats->txnThrottled += req.transactionCount;
 						continue;
@@ -1905,6 +1906,9 @@ ACTOR static Future<Void> transactionStarter(MasterProxyInterface proxy,
 			auto& req = transactionQueue->front();
 			int tc = req.transactionCount;
 
+			// Sanity check & clean up old batch requests.
+			// If req.time is 3s (knob) old, we send batch_txn_throttled error to client
+
 			if (req.priority < TransactionPriority::DEFAULT &&
 			    !batchRateInfo.canStart(transactionsStarted[0] + transactionsStarted[1], tc)) {
 				break;
@@ -2475,7 +2479,9 @@ ACTOR Future<Void> masterProxyServerCore(MasterProxyInterface proxy,
 
 			commitData.updateLatencyBandConfig(commitData.db->get().latencyBandConfig);
 		}
-		when(wait(onError)) {}
+		when(wait(onError)) {
+			// TODO: Log error message, error type and role.id
+		}
 		when(std::pair<vector<CommitTransactionRequest>, int> batchedRequests = waitNext(batchedCommits.getFuture())) {
 			// WARNING: this code is run at a high priority, so it needs to do as little work as possible
 			const vector<CommitTransactionRequest>& trs = batchedRequests.first;

@@ -2639,6 +2639,9 @@ struct TagPartitionedLogSystem : ILogSystem, ReferenceCounted<TagPartitionedLogS
 		}
 		filterLocalityDataForPolicy(logSet->tLogPolicy, &logSet->tLogLocalities);
 
+		// TODO: Shall we log each logServer's id we are waiting for to complete recovery?
+		// TODO: We should log which logServer throws error due to timeout. It tells us the master recovery reason.
+		// TODO: Check master_recovery_failed() and make recovery reason easier to identify
 		std::vector<Future<Void>> recoveryComplete;
 		for (int i = 0; i < logSet->logServers.size(); i++)
 			recoveryComplete.push_back(transformErrors(

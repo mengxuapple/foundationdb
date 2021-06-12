@@ -2365,6 +2365,7 @@ ACTOR Future<Void> tLogEnablePopReq(TLogEnablePopRequest enablePopReq, TLogData*
 	return Void();
 }
 
+// Here
 ACTOR Future<Void> serveTLogInterface(TLogData* self,
                                       TLogInterface tli,
                                       Reference<LogData> logData,
@@ -2393,8 +2394,14 @@ ACTOR Future<Void> serveTLogInterface(TLogData* self,
 				}
 
 				if (!logData->isPrimary && logData->stopped) {
+					// when the current remote tLog in the current generation is stopped (not accepting new commits),
+					// The current epoch's txn system is in the hang state;
+					// the tLog wants to trigger a recovery by locking its current Epoch to stop the master.
+					// This is a different mechanism to trigger recovery:
+					// when primary tLog's logData->stopped, it will trigger proxy to die and trigger recovery.
 					TraceEvent("TLogAlreadyStopped", self->dbgid).detail("LogId", logData->logId);
 					logData->removed = logData->removed && logData->logSystem->get()->endEpoch();
+					// tLog calls endEpoch() to stop master: tLog can talk to tLog
 				}
 			} else {
 				logData->logSystem->set(Reference<ILogSystem>());
@@ -2469,6 +2476,7 @@ void removeLog(TLogData* self, Reference<LogData> logData) {
 	    .detail("LogId", logData->logId)
 	    .detail("Input", logData->bytesInput.getValue())
 	    .detail("Durable", logData->bytesDurable.getValue());
+	// stopped cannot accept new commits
 	logData->stopped = true;
 	if (!logData->recoveryComplete.isSet()) {
 		logData->recoveryComplete.sendError(end_of_stream());

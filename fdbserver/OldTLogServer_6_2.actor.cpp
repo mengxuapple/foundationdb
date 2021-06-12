@@ -2161,6 +2161,8 @@ ACTOR Future<Void> rejoinMasters(TLogData* self,
 	}
 }
 
+// The TLog waits on itself finishing recoverying the inflight log data; then
+// replies to master that it is ready to use.
 ACTOR Future<Void> respondToRecovered(TLogInterface tli, Promise<Void> recoveryComplete) {
 	state bool finishedRecovery = true;
 	try {
@@ -2377,7 +2379,7 @@ ACTOR Future<Void> serveTLogInterface(TLogData* self,
 			if (!logData->stopped)
 				logData->addActor.send(tLogCommit(self, req, logData, warningCollectorInput));
 			else
-				req.reply.sendError(tlog_stopped());
+				req.reply.sendError(tlog_stopped());// TODO: Add a trace log:  tLog is stopped, commit request Gets tlog_stopped error. Log tLog ID
 		}
 		when(ReplyPromise<TLogLockResult> reply = waitNext(tli.lock.getFuture())) {
 			logData->addActor.send(tLogLock(self, reply, logData));
@@ -2394,7 +2396,7 @@ ACTOR Future<Void> serveTLogInterface(TLogData* self,
 			if (!logData->stopped)
 				req.reply.send(Void());
 			else
-				req.reply.sendError(tlog_stopped());
+				req.reply.sendError(tlog_stopped());//TODO: Log the error because it will trigger recovery
 		}
 		when(TLogDisablePopRequest req = waitNext(tli.disablePopRequest.getFuture())) {
 			if (self->ignorePopUid != "") {
@@ -3024,6 +3026,7 @@ ACTOR Future<Void> tLogStart(TLogData* self, InitializeTLogRequest req, Locality
 			    .detail("RecruitedId", recruited.id())
 			    .detail("EndEpoch", it.second->logSystem->get().getPtr() != 0);
 			if (!it.second->isPrimary && it.second->logSystem->get()) {
+				// TODO: Log: (TerminateEpoch, epochID), ("Reason", "TLogStoppedByNewRecruitment").("Tlog", tLogID)
 				it.second->removed = it.second->removed && it.second->logSystem->get()->endEpoch();
 			}
 			if (it.second->committingQueue.canBeSet()) {
@@ -3085,6 +3088,7 @@ ACTOR Future<Void> tLogStart(TLogData* self, InitializeTLogRequest req, Locality
 			    .detail("Tags", describe(req.recoverTags))
 			    .detail("Locality", req.locality)
 			    .detail("LogRouterTags", logData->logRouterTags);
+				// TODO: log logData->stopped and req.isPrimary
 
 			if (logData->recoveryComplete.isSet()) {
 				throw worker_removed();
@@ -3097,6 +3101,7 @@ ACTOR Future<Void> tLogStart(TLogData* self, InitializeTLogRequest req, Locality
 
 			if ((req.isPrimary || req.recoverFrom.logRouterTags == 0) && !logData->stopped &&
 			    logData->unrecoveredBefore <= req.recoverAt) {
+				// Fetch inflight txn data on old tLogs to current tLog
 				if (req.recoverFrom.logRouterTags > 0 && req.locality != tagLocalitySatellite) {
 					logData->logRouterPopToVersion = req.recoverAt;
 					std::vector<Tag> tags;
@@ -3116,6 +3121,7 @@ ACTOR Future<Void> tLogStart(TLogData* self, InitializeTLogRequest req, Locality
 				}
 				pulledRecoveryVersions = true;
 				logData->knownCommittedVersion = req.recoverAt;
+				// TODO: log progress and if logData->removed is ready.
 			}
 
 			if ((req.isPrimary || req.recoverFrom.logRouterTags == 0) && logData->version.get() < req.recoverAt &&
