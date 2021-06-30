@@ -278,6 +278,7 @@ Future<REPLY_TYPE(Request)> loadBalance(
 		for (int i = 0; i < alternatives->size(); i++) {
 			// countBest(): the number of alternatives in the same locality (i.e., DC by default) as alternatives[0].
 			// if the if-statement is correct, it won't try to send requests to the remote ones.
+			// In RF3, if we have no more than 1 bad servers, we won't use remote ones.
 			if (badServers < std::min(i, FLOW_KNOBS->LOAD_BALANCE_MAX_BAD_OPTIONS + 1) &&
 			    i == alternatives->countBest()) {
 				// When we have at least one healthy local server, and the bad

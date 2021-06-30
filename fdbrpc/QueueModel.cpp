@@ -34,6 +34,8 @@ void QueueModel::endRequest(uint64_t id, double latency, double penalty, double 
 	}
 
 	if (futureVersion) {
+		// futureVersion is true if server returns future_version or process behind.
+		// A server is treated as temporarily failed if it falls behind
 		if (now() > d.increaseBackoffTime) {
 			d.futureVersionBackoff = std::min(d.futureVersionBackoff * FLOW_KNOBS->FUTURE_VERSION_BACKOFF_GROWTH,
 			                                  FLOW_KNOBS->FUTURE_VERSION_MAX_BACKOFF);
